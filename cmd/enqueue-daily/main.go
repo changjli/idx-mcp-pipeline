@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"github.com/hibiken/asynq"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/config"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/tasks"
 )
 
 func main() {
@@ -17,7 +19,7 @@ func main() {
 
 	vip := config.NewViper()
 	log := config.NewLogger(vip)
-	asynqClient := config.NewAsynqClient(vip, log)
+	client := config.NewAsynqClient(vip, log)
 
 	date := time.Now()
 	if *dateStr != "" {
@@ -31,25 +33,16 @@ func main() {
 	dateKey := date.Format("2006-01-02")
 	log.Infof("enqueuing daily tasks for %s", dateKey)
 
-	tasks := []struct {
-		Type    string
-		Payload []byte
-	}{
-		{Type: "idx:stock_summary", Payload: []byte(`{"date":"` + dateKey + `"}`)},
-		{Type: "idx:announcements", Payload: []byte(`{"date":"` + dateKey + `"}`)},
-		{Type: "idx:broker_summary", Payload: []byte(`{"date":"` + dateKey + `"}`)},
-		{Type: "rss:ingest", Payload: []byte(`{"date":"` + dateKey + `"}`)},
-		{Type: "cleanup", Payload: []byte(`{"date":"` + dateKey + `"}`)},
-	}
-
-	for _, t := range tasks {
-		task := asynq.NewTask(t.Type, t.Payload)
-		info, err := asynqClient.Enqueue(task, asynq.Queue("ingest"))
-		if err != nil {
-			log.Errorf("failed to enqueue %s: %v", t.Type, err)
-			continue
+	info, err := tasks.EnqueueNoop(client, date)
+	if err != nil {
+		if errors.Is(err, asynq.ErrTaskIDConflict) {
+			log.Infof("task noop:%s already enqueued, skipping", dateKey)
+		} else {
+			log.Errorf("failed to enqueue noop:%s: %v", dateKey, err)
+			os.Exit(1)
 		}
-		log.Infof("enqueued %s: id=%s queue=%s", t.Type, info.ID, info.Queue)
+	} else {
+		log.Infof("enqueued noop:%s: id=%s queue=%s", dateKey, info.ID, info.Queue)
 	}
 
 	fmt.Println("done")

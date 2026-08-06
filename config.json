@@ -27,6 +27,9 @@
     "secret_key": "minioadmin",
     "bucket": "idx-mcp"
   },
+  "asynq": {
+    "dashboard_port": 8081
+  },
   "mcp": {
     "port": 8080,
     "token": "dev-token"
