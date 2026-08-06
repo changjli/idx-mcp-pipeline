@@ -1,0 +1,42 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "user": "idx_mcp",
+    "password": "idx_mcp_dev",
+    "name": "idx_mcp",
+    "sslmode": "disable",
+    "pool": {
+      "idle": 5,
+      "max": 10,
+      "lifetime": 300
+    }
+  },
+  "redis": {
+    "address": "localhost:6379",
+    "password": "",
+    "db": 0
+  },
+  "r2": {
+    "endpoint": "http://localhost:9000",
+    "region": "auto",
+    "access_key": "minioadmin",
+    "secret_key": "minioadmin",
+    "bucket": "idx-mcp"
+  },
+  "mcp": {
+    "port": 8080,
+    "token": "dev-token"
+  },
+  "idx": {
+    "base_url": "https://www.idx.co.id",
+    "rate_limit_per_sec": 1
+  },
+  "yahoo": {
+    "concurrency": 4,
+    "request_spacing_ms": 800
+  }
+}

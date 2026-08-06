@@ -1,0 +1,39 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/tmp/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Env
+.env
+.env.local
+
+# Build
+/dist/
+/build/
+
+# Wire generated
+internal/config/wire_gen.go
+
+# Docker
+/data/
+
+# Project
+.agents
+skills-lock.json
+
+
+# Personal 
+.scratch
+docs 
