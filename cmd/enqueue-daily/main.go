@@ -8,17 +8,37 @@ import (
 	"time"
 
 	"github.com/hibiken/asynq"
+	"github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/config"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/tasks"
 )
 
 func main() {
 	dateStr := flag.String("date", "", "trading date in YYYY-MM-DD format (default: today)")
+	startDateStr := flag.String("start-date", "", "bulk backfill start date in YYYY-MM-DD format")
+	endDateStr := flag.String("end-date", "", "bulk backfill end date in YYYY-MM-DD format")
 	flag.Parse()
 
 	vip := config.NewViper()
 	log := config.NewLogger(vip)
+
+	// Bulk backfill mode: --start-date and --end-date together.
+	if *startDateStr != "" || *endDateStr != "" {
+		if *startDateStr == "" || *endDateStr == "" {
+			log.Fatalf("--start-date and --end-date must be provided together")
+		}
+		if *dateStr != "" {
+			log.Fatalf("--date is mutually exclusive with --start-date/--end-date")
+		}
+		runBulkBackfill(vip, log, *startDateStr, *endDateStr)
+		return
+	}
+
+	// Single-date mode (unchanged).
 	client := config.NewAsynqClient(vip, log)
 
 	date := time.Now()
@@ -47,4 +67,45 @@ func main() {
 
 	fmt.Println("done")
 	os.Exit(0)
+}
+
+// runBulkBackfill connects to DB + IDX client directly and loops the date
+// range sequentially, upserting stock summary rows per date. No asynq task —
+// synchronous loop, manual invocation, one-off script.
+func runBulkBackfill(vip *viper.Viper, log *logrus.Logger, startStr, endStr string) {
+	start, err := time.Parse("2006-01-02", startStr)
+	if err != nil {
+		log.Fatalf("invalid --start-date format: %s (use YYYY-MM-DD)", startStr)
+	}
+	end, err := time.Parse("2006-01-02", endStr)
+	if err != nil {
+		log.Fatalf("invalid --end-date format: %s (use YYYY-MM-DD)", endStr)
+	}
+	if start.After(end) {
+		log.Fatalf("--start-date (%s) must be on or before --end-date (%s)", startStr, endStr)
+	}
+
+	db := config.NewDatabase(vip, log)
+	defer db.Close()
+
+	idxClient, err := client.InitDefaultClient(vip, log)
+	if err != nil {
+		log.Fatalf("failed to init IDX client: %v", err)
+	}
+	defer idxClient.Close()
+
+	tickerRepo := repository.NewTickerRepository(log)
+	dailyPriceRepo := repository.NewDailyPriceRepository(log)
+	sourceStatusRepo := repository.NewSourceStatusRepository(log)
+
+	log.Infof("bulk backfill: fetching %s to %s", startStr, endStr)
+	result := tasks.RunBulkBackfill(log, idxClient, db, tickerRepo, dailyPriceRepo, sourceStatusRepo, start, end)
+	log.Infof("bulk backfill complete: %d/%d dates succeeded, %d failed (%d empty/no-data)",
+		result.Succeeded, result.Total, result.Failed, result.Empty)
+
+	// A run where every date failed is indistinguishable from a no-op in
+	// automation — exit non-zero so callers can detect total failure.
+	if result.Total > 0 && result.Failed == result.Total {
+		os.Exit(1)
+	}
 }

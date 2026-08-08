@@ -107,21 +107,7 @@ func NewStockSummaryHandler(
 
 		// Upsert each row into daily_prices.
 		// Ticker must exist first (FK constraint) — auto-discover from response.
-		upserted := 0
-		for _, item := range rows {
-			if err := upsertTicker(db, tickerRepo, item); err != nil {
-				log.Warnf("stock_summary: ticker upsert failed for %s: %v", item.StockCode, err)
-				continue
-			}
-
-			price := itemToDailyPrice(item, p.Date)
-			if err := dailyPriceRepo.Upsert(db, price); err != nil {
-				log.Warnf("stock_summary: upsert failed for %s: %v", item.StockCode, err)
-				continue
-			}
-			upserted++
-		}
-
+		upserted := upsertStockSummaryRows(db, tickerRepo, dailyPriceRepo, rows, p.Date, log)
 		log.Infof("stock_summary: upserted %d/%d rows for date=%s", upserted, len(rows), p.Date)
 
 		// Update source_status on success.
@@ -153,8 +139,6 @@ func fetchStockSummary(idxClient *client.Client, date time.Time, log *logrus.Log
 	if resp.StatusCode >= 400 {
 		return StockSummaryResponse{}, fmt.Errorf("idx api error: status=%d body=%s", resp.StatusCode, truncate(string(body), 200))
 	}
-
-	log.Println(body)
 
 	var items StockSummaryResponse
 	if err := json.Unmarshal(body, &items); err != nil {
@@ -219,6 +203,27 @@ func upsertTicker(db *sqlx.DB, repo *repository.TickerRepository, item StockSumm
 		Active: true,
 	}
 	return repo.Upsert(db, ticker)
+}
+
+// upsertStockSummaryRows upserts all rows for one date into daily_prices.
+// Ticker must exist first (FK constraint) — auto-discover from response.
+// Individual row failures are logged and skipped. Returns rows upserted.
+func upsertStockSummaryRows(db *sqlx.DB, tickerRepo *repository.TickerRepository, dailyPriceRepo *repository.DailyPriceRepository, rows []StockSummaryItem, dateKey string, log *logrus.Logger) int {
+	upserted := 0
+	for _, item := range rows {
+		if err := upsertTicker(db, tickerRepo, item); err != nil {
+			log.Warnf("stock_summary: ticker upsert failed for %s: %v", item.StockCode, err)
+			continue
+		}
+
+		price := itemToDailyPrice(item, dateKey)
+		if err := dailyPriceRepo.Upsert(db, price); err != nil {
+			log.Warnf("stock_summary: upsert failed for %s: %v", item.StockCode, err)
+			continue
+		}
+		upserted++
+	}
+	return upserted
 }
 
 // recordSuccess updates source_status after a successful fetch.
