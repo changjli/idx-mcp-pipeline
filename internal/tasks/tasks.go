@@ -10,6 +10,7 @@ import (
 const (
 	TypeNoop          = "noop"
 	TypePipelineDaily = "pipeline:daily"
+	TypeStockSummary  = "idx:stock_summary"
 )
 
 // TaskKey returns a dedup key for a task type and date.

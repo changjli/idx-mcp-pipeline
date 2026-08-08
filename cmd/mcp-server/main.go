@@ -10,6 +10,7 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/sirupsen/logrus"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/config"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/controller"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/middleware"
@@ -27,16 +28,39 @@ func main() {
 
 	log.Info("starting mcp-server")
 
+	// ─── Repository layer ──────────────────────────────────────
+
+	tickerRepo := repository.NewTickerRepository(log)
+	dailyPriceRepo := repository.NewDailyPriceRepository(log)
+	anomalyRepo := repository.NewAnomalyRepository(log)
+	disclosureRepo := repository.NewDisclosureRepository(log)
+	brokerRepo := repository.NewBrokerRepository(log)
+	newsRepo := repository.NewNewsRepository(log)
+	newsTickerRepo := repository.NewNewsTickerRepository(log)
+	sourceStatusRepo := repository.NewSourceStatusRepository(log)
+	alertRepo := repository.NewAlertRepository(log)
+
 	// ─── asynq task infrastructure ──────────────────────────────
 
 	redisOpt := config.NewRedisConnOpt(vip)
 	asynqSrv := config.NewAsynqServer(vip, log)
 	asynqClient := config.NewAsynqClient(vip, log)
 
+	// IDX HTTP client (singleton)
+	idxClient, err := client.InitDefaultClient(vip, log)
+	if err != nil {
+		log.Fatalf("failed to init IDX client: %v", err)
+	}
+	defer idxClient.Close()
+
 	// Task mux: route task types to handlers
 	mux := asynq.NewServeMux()
 	mux.Handle(tasks.TypeNoop, tasks.NewNoopHandler(log))
 	mux.Handle(tasks.TypePipelineDaily, tasks.NewPipelineDailyHandler(log, asynqClient))
+	mux.Handle(tasks.TypeStockSummary, tasks.NewStockSummaryHandler(
+		log, idxClient, db,
+		tickerRepo, dailyPriceRepo, sourceStatusRepo, alertRepo,
+	))
 
 	// Start asynq server in background goroutine
 	go func() {
@@ -60,17 +84,6 @@ func main() {
 
 	// Self-heal: enqueue today's noop task if scheduler missed its tick
 	scheduler.SelfHealMissedTick(asynqClient, log)
-
-	// ─── Repository layer ──────────────────────────────────────
-
-	dailyPriceRepo := repository.NewDailyPriceRepository(log)
-	anomalyRepo := repository.NewAnomalyRepository(log)
-	disclosureRepo := repository.NewDisclosureRepository(log)
-	brokerRepo := repository.NewBrokerRepository(log)
-	newsRepo := repository.NewNewsRepository(log)
-	newsTickerRepo := repository.NewNewsTickerRepository(log)
-	sourceStatusRepo := repository.NewSourceStatusRepository(log)
-	alertRepo := repository.NewAlertRepository(log)
 
 	// ─── Use case layer ─────────────────────────────────────────
 

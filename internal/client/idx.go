@@ -118,6 +118,12 @@ func (c *Client) Close() {
 // Get performs a rate-limited, retried GET with Cloudflare cookie, TLS fallback,
 // and stale-while-error cache.
 func (c *Client) Get(path string) (*http.Response, error) {
+	return c.GetWithHeaders(path, nil)
+}
+
+// GetWithHeaders is like Get but allows setting additional request headers.
+// The headers map is merged on top of the default headers (User-Agent, Accept, etc.).
+func (c *Client) GetWithHeaders(path string, extraHeaders map[string]string) (*http.Response, error) {
 	url := c.resolveURL(path)
 
 	// Check cache first.
@@ -135,7 +141,7 @@ func (c *Client) Get(path string) (*http.Response, error) {
 	}
 
 	// Attempt request with retry.
-	resp, err := c.doWithRetry(url)
+	resp, err := c.doWithRetry(url, extraHeaders)
 	if err != nil {
 		// Stale-while-error: serve stale cache if available.
 		if body, status, headers, _ := c.cache.Get(url); body != nil {
@@ -173,7 +179,8 @@ func (c *Client) syntheticResponse(status int, headers http.Header, body []byte,
 }
 
 // doWithRetry executes the request with retry on transient failures.
-func (c *Client) doWithRetry(url string) (*http.Response, error) {
+// extraHeaders are merged on top of default headers.
+func (c *Client) doWithRetry(url string, extraHeaders map[string]string) (*http.Response, error) {
 	var lastErr error
 
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
@@ -194,6 +201,11 @@ func (c *Client) doWithRetry(url string) (*http.Response, error) {
 		req.Header.Set("User-Agent", c.config.UserAgent)
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+
+		// Apply extra headers (e.g. Referer).
+		for k, v := range extraHeaders {
+			req.Header.Set(k, v)
+		}
 
 		// Attach Cloudflare cookies.
 		c.cookies.ApplyCookies(req)

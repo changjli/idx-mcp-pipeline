@@ -31,18 +31,18 @@ func main() {
 	}
 
 	dateKey := date.Format("2006-01-02")
-	log.Infof("enqueuing daily tasks for %s", dateKey)
+	log.Infof("enqueuing stock_summary task for %s", dateKey)
 
-	info, err := tasks.EnqueueNoop(client, date)
+	info, err := tasks.EnqueueStockSummary(client, date)
 	if err != nil {
 		if errors.Is(err, asynq.ErrTaskIDConflict) {
-			log.Infof("task noop:%s already enqueued, skipping", dateKey)
+			log.Infof("task %s:%s already enqueued, skipping", tasks.TypeStockSummary, dateKey)
 		} else {
-			log.Errorf("failed to enqueue noop:%s: %v", dateKey, err)
+			log.Errorf("failed to enqueue %s:%s: %v", tasks.TypeStockSummary, dateKey, err)
 			os.Exit(1)
 		}
 	} else {
-		log.Infof("enqueued noop:%s: id=%s queue=%s", dateKey, info.ID, info.Queue)
+		log.Infof("enqueued %s:%s: id=%s queue=%s", tasks.TypeStockSummary, dateKey, info.ID, info.Queue)
 	}
 
 	fmt.Println("done")
