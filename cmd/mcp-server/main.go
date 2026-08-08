@@ -59,8 +59,15 @@ func main() {
 	mux.Handle(tasks.TypeNoop, tasks.NewNoopHandler(log))
 	mux.Handle(tasks.TypePipelineDaily, tasks.NewPipelineDailyHandler(log, asynqClient))
 	mux.Handle(tasks.TypeStockSummary, tasks.NewStockSummaryHandler(
-		log, idxClient, db,
+		log, idxClient, db, asynqClient,
 		tickerRepo, dailyPriceRepo, sourceStatusRepo, alertRepo,
+	))
+	minADTV := vip.GetInt64("anomaly.min_adtv_value")
+	if minADTV <= 0 {
+		minADTV = tasks.DefaultADTVMinValue
+	}
+	mux.Handle(tasks.TypeDetectAnomalies, tasks.NewDetectAnomaliesHandler(
+		log, asynqClient, db, dailyPriceRepo, anomalyRepo, minADTV,
 	))
 
 	// Start asynq server in background goroutine

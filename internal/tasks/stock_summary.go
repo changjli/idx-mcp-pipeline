@@ -71,11 +71,12 @@ func EnqueueStockSummary(client *asynq.Client, date time.Time, opts ...asynq.Opt
 
 // NewStockSummaryHandler returns an asynq handler for the idx:stock_summary task type.
 // Fetches GetStockSummary from IDX, parses OHLCV, upserts into daily_prices,
-// and updates source_status / alerts.
+// updates source_status / alerts, and chains a detect:anomalies task on success.
 func NewStockSummaryHandler(
 	log *logrus.Logger,
 	idxClient *client.Client,
 	db *sqlx.DB,
+	asynqClient *asynq.Client,
 	tickerRepo *repository.TickerRepository,
 	dailyPriceRepo *repository.DailyPriceRepository,
 	sourceStatusRepo *repository.SourceStatusRepository,
@@ -112,6 +113,14 @@ func NewStockSummaryHandler(
 
 		// Update source_status on success.
 		recordSuccess(db, sourceStatusRepo, p.Date, log)
+
+		// Chain detect:anomalies on success so anomaly detection runs after
+		// ingestion. Date-keyed TaskID dedups against concurrent chains.
+		if _, err := EnqueueDetectAnomalies(asynqClient, date); err != nil && err != asynq.ErrTaskIDConflict {
+			log.Warnf("stock_summary: failed to enqueue detect:anomalies: %v", err)
+		} else {
+			log.Infof("stock_summary: chained detect:anomalies for %s", p.Date)
+		}
 
 		return nil
 	}

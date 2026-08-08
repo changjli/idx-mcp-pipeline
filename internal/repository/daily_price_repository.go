@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
@@ -65,4 +67,73 @@ func (r *DailyPriceRepository) DeleteOlderThan(db *sqlx.DB, days int) error {
 		days,
 	)
 	return err
+}
+
+// AnomalyCandidate is one row of the anomaly detection query: a ticker that
+// traded on the target day, plus its volume baseline and prior close.
+type AnomalyCandidate struct {
+	Ticker         string   `db:"ticker"`
+	TodayVolume    *int64   `db:"today_volume"`
+	TodayValue     *int64   `db:"today_value"`
+	TodayClose     *float64 `db:"today_close"`
+	BaselineVolume *float64 `db:"baseline_volume"`
+	BaselineDays   int      `db:"baseline_days"`
+	PrevClose      *float64 `db:"prev_close"`
+}
+
+// ExistsForDate reports whether any daily_prices rows exist for a trading day.
+func (r *DailyPriceRepository) ExistsForDate(db *sqlx.DB, tradingDay string) (bool, error) {
+	var count int
+	err := db.Get(&count,
+		"SELECT COUNT(*) FROM daily_prices WHERE trading_day = $1",
+		tradingDay,
+	)
+	return count > 0, err
+}
+
+// AnomalyCandidates returns, per ticker that traded on the given day, the
+// today volume/close, the 20-day volume baseline (recomputed on read from
+// daily_prices via the (ticker, trading_day DESC) index), and the prior
+// trading day's close. No stored baseline column.
+func (r *DailyPriceRepository) AnomalyCandidates(db *sqlx.DB, tradingDay time.Time) ([]AnomalyCandidate, error) {
+	query := `
+		WITH today AS (
+			SELECT ticker, volume, value, close
+			FROM daily_prices
+			WHERE trading_day = $1
+		),
+		hist AS (
+			SELECT ticker, volume, close,
+			       ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY trading_day DESC) AS rn
+			FROM daily_prices
+			WHERE trading_day < $1
+		),
+		baseline AS (
+			SELECT ticker,
+			       AVG(volume) AS baseline_volume,
+			       COUNT(*)    AS baseline_days
+			FROM hist
+			WHERE rn <= 20
+			GROUP BY ticker
+		),
+		prev AS (
+			SELECT ticker, close AS prev_close
+			FROM hist
+			WHERE rn = 1
+		)
+		SELECT t.ticker,
+		       t.volume AS today_volume,
+		       t.value  AS today_value,
+		       t.close  AS today_close,
+		       b.baseline_volume,
+		       COALESCE(b.baseline_days, 0) AS baseline_days,
+		       p.prev_close
+		FROM today t
+		LEFT JOIN baseline b ON b.ticker = t.ticker
+		LEFT JOIN prev p ON p.ticker = t.ticker
+		ORDER BY t.ticker
+	`
+	var candidates []AnomalyCandidate
+	err := db.Select(&candidates, query, tradingDay)
+	return candidates, err
 }
