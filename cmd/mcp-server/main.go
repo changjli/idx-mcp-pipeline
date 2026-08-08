@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -84,6 +85,18 @@ func main() {
 
 	// Self-heal: enqueue today's noop task if scheduler missed its tick
 	scheduler.SelfHealMissedTick(asynqClient, log)
+
+	// Self-heal: recover archived stock_summary tasks (dead-end recovery).
+	// Run once at startup, then periodically.
+	inspector := asynq.NewInspector(redisOpt)
+	scheduler.SelfHealArchivedStockSummary(inspector, asynqClient, log)
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			scheduler.SelfHealArchivedStockSummary(inspector, asynqClient, log)
+		}
+	}()
 
 	// ─── Use case layer ─────────────────────────────────────────
 

@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"strings"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -14,6 +15,11 @@ import (
 const (
 	// DailyCronSpec fires at 4:05 PM WIB (Asia/Jakarta, UTC+7) every day.
 	DailyCronSpec = "CRON_TZ=Asia/Jakarta 5 16 * * *"
+
+	// stockSummaryRequeueDelay is how long a recovered archived task waits
+	// before firing — gives transient upstream blocks (e.g. Cloudflare 403)
+	// time to lift.
+	stockSummaryRequeueDelay = 30 * time.Minute
 )
 
 // NewScheduler creates an asynq Scheduler configured for WIB timezone.
@@ -82,4 +88,61 @@ func SelfHealMissedTick(client *asynq.Client, log *logrus.Logger) {
 	} else {
 		log.Infof("self-heal: enqueued missed noop task id=%s", info.ID)
 	}
+}
+
+// SelfHealArchivedStockSummary recovers archived idx:stock_summary tasks.
+// Archived tasks hold their date-keyed TaskID, blocking re-enqueue
+// (ErrTaskIDConflict) — a dead-end after retries are exhausted. Deletes the
+// archived task to free the ID, then re-enqueues with a delay so transient
+// upstream blocks (e.g. Cloudflare 403) have time to lift.
+func SelfHealArchivedStockSummary(inspector *asynq.Inspector, client *asynq.Client, log *logrus.Logger) {
+	archived, err := inspector.ListArchivedTasks("ingest")
+	if err != nil {
+		log.Warnf("self-heal: failed to list archived tasks: %v", err)
+		return
+	}
+
+	recovered := 0
+	for _, t := range archived {
+		if t.Type != tasks.TypeStockSummary {
+			continue
+		}
+
+		// Parse date from task ID: "idx:stock_summary:2026-08-08".
+		date, err := stockSummaryDateFromID(t.ID)
+		if err != nil {
+			log.Warnf("self-heal: invalid archived task id %q: %v", t.ID, err)
+			continue
+		}
+
+		// Delete to free the TaskID.
+		if err := inspector.DeleteTask("ingest", t.ID); err != nil {
+			log.Warnf("self-heal: failed to delete archived task %s: %v", t.ID, err)
+			continue
+		}
+
+		// Re-enqueue with delay so transient blocks can lift.
+		info, err := tasks.EnqueueStockSummary(client, date, asynq.ProcessIn(stockSummaryRequeueDelay))
+		if err == asynq.ErrTaskIDConflict {
+			log.Infof("self-heal: task %s already enqueued, skipping", t.ID)
+			continue
+		}
+		if err != nil {
+			log.Warnf("self-heal: failed to re-enqueue %s: %v", t.ID, err)
+			continue
+		}
+		log.Infof("self-heal: recovered archived stock_summary task %s -> new id=%s", t.ID, info.ID)
+		recovered++
+	}
+
+	if recovered > 0 {
+		log.Infof("self-heal: recovered %d archived stock_summary task(s)", recovered)
+	}
+}
+
+// stockSummaryDateFromID parses the date from a stock_summary task ID
+// of the form "idx:stock_summary:2026-08-08".
+func stockSummaryDateFromID(id string) (time.Time, error) {
+	dateStr := strings.TrimPrefix(id, tasks.TypeStockSummary+":")
+	return time.Parse("2006-01-02", dateStr)
 }

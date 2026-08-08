@@ -48,7 +48,8 @@ type StockSummaryResponse struct {
 
 // EnqueueStockSummary enqueues an idx:stock_summary task for the given date.
 // Uses a date-keyed TaskID for dedup. Returns ErrTaskIDConflict if already enqueued.
-func EnqueueStockSummary(client *asynq.Client, date time.Time) (*asynq.TaskInfo, error) {
+// Extra opts (e.g. asynq.ProcessIn) are appended to the default options.
+func EnqueueStockSummary(client *asynq.Client, date time.Time, opts ...asynq.Option) (*asynq.TaskInfo, error) {
 	dateKey := date.Format("2006-01-02")
 	taskKey := TaskKey(TypeStockSummary, dateKey)
 	payload := StockSummaryPayload{Date: dateKey}
@@ -58,12 +59,14 @@ func EnqueueStockSummary(client *asynq.Client, date time.Time) (*asynq.TaskInfo,
 	}
 
 	task := asynq.NewTask(TypeStockSummary, raw)
-	return client.Enqueue(task,
+	options := []asynq.Option{
 		asynq.TaskID(taskKey),
 		asynq.Queue("ingest"),
 		asynq.MaxRetry(3),
-		asynq.Retention(24*time.Hour),
-	)
+		asynq.Retention(24 * time.Hour),
+	}
+	options = append(options, opts...)
+	return client.Enqueue(task, options...)
 }
 
 // NewStockSummaryHandler returns an asynq handler for the idx:stock_summary task type.
