@@ -11,6 +11,7 @@ const (
 	TypeNoop            = "noop"
 	TypePipelineDaily   = "pipeline:daily"
 	TypeStockSummary    = "idx:stock_summary"
+	TypeAnnouncements   = "idx:announcements"
 	TypeDetectAnomalies = "detect:anomalies"
 )
 

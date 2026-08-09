@@ -99,7 +99,7 @@ func NewStockSummaryHandler(
 		resp, fetchErr := fetchStockSummary(idxClient, date, log)
 		if fetchErr != nil {
 			log.Errorf("stock_summary: fetch failed: %v", fetchErr)
-			recordFailure(db, sourceStatusRepo, alertRepo, p.Date, fetchErr, log)
+			recordSourceFailure(db, sourceStatusRepo, alertRepo, TypeStockSummary, stockSummaryMaxAgeSeconds, p.Date, fetchErr, log)
 			return fetchErr
 		}
 
@@ -112,7 +112,7 @@ func NewStockSummaryHandler(
 		log.Infof("stock_summary: upserted %d/%d rows for date=%s", upserted, len(rows), p.Date)
 
 		// Update source_status on success.
-		recordSuccess(db, sourceStatusRepo, p.Date, log)
+		recordSourceSuccess(db, sourceStatusRepo, TypeStockSummary, stockSummaryMaxAgeSeconds, nil, log)
 
 		// Chain detect:anomalies on success so anomaly detection runs after
 		// ingestion. Date-keyed TaskID dedups against concurrent chains.
@@ -233,60 +233,6 @@ func upsertStockSummaryRows(db *sqlx.DB, tickerRepo *repository.TickerRepository
 		upserted++
 	}
 	return upserted
-}
-
-// recordSuccess updates source_status after a successful fetch.
-// Clears LastError and resets consecutive_failures.
-func recordSuccess(db *sqlx.DB, repo *repository.SourceStatusRepository, date string, log *logrus.Logger) {
-	now := time.Now()
-	status := &entity.SourceStatus{
-		Source:              TypeStockSummary,
-		LastSuccessAt:       &now,
-		LastAttemptAt:       &now,
-		LastError:           nil,
-		ConsecutiveFailures: 0,
-		Stale:               false,
-		MaxAgeSeconds:       stockSummaryMaxAgeSeconds,
-	}
-	if err := repo.Upsert(db, status); err != nil {
-		log.Errorf("stock_summary: failed to update source_status: %v", err)
-	}
-}
-
-// recordFailure updates source_status (last_error, consecutive_failures, stale)
-// and inserts an alert row. Called when the stock summary fetch fails.
-func recordFailure(db *sqlx.DB, repo *repository.SourceStatusRepository, alertRepo *repository.AlertRepository, date string, fetchErr error, log *logrus.Logger) {
-	now := time.Now()
-	errStr := fetchErr.Error()
-
-	// Get current status to increment consecutive_failures.
-	current, _ := repo.FindBySource(db, TypeStockSummary)
-	consecutive := int32(1)
-	if current != nil {
-		consecutive = current.ConsecutiveFailures + 1
-	}
-
-	status := &entity.SourceStatus{
-		Source:              TypeStockSummary,
-		LastAttemptAt:       &now,
-		LastError:           &errStr,
-		ConsecutiveFailures: consecutive,
-		Stale:               consecutive >= 3,
-		MaxAgeSeconds:       stockSummaryMaxAgeSeconds,
-	}
-	if err := repo.Upsert(db, status); err != nil {
-		log.Errorf("stock_summary: failed to update source_status (failure): %v", err)
-	}
-
-	// Insert alert.
-	alert := &entity.Alert{
-		Source:    TypeStockSummary,
-		AlertType: "ingestion_error",
-		Message:   fmt.Sprintf("stock_summary fetch failed for %s (attempt %d): %s", date, consecutive, errStr),
-	}
-	if err := alertRepo.Insert(db, alert); err != nil {
-		log.Errorf("stock_summary: failed to insert alert: %v", err)
-	}
 }
 
 // truncate truncates a string to maxLen chars, appending "..." if truncated.

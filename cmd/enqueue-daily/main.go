@@ -21,6 +21,7 @@ func main() {
 	dateStr := flag.String("date", "", "trading date in YYYY-MM-DD format (default: today)")
 	startDateStr := flag.String("start-date", "", "bulk backfill start date in YYYY-MM-DD format")
 	endDateStr := flag.String("end-date", "", "bulk backfill end date in YYYY-MM-DD format")
+	announcementsFlag := flag.Bool("announcements", false, "enqueue idx:announcements task instead of stock_summary")
 	flag.Parse()
 
 	vip := config.NewViper()
@@ -34,11 +35,14 @@ func main() {
 		if *dateStr != "" {
 			log.Fatalf("--date is mutually exclusive with --start-date/--end-date")
 		}
+		if *announcementsFlag {
+			log.Fatalf("--announcements is mutually exclusive with --start-date/--end-date")
+		}
 		runBulkBackfill(vip, log, *startDateStr, *endDateStr)
 		return
 	}
 
-	// Single-date mode (unchanged).
+	// Single-date mode.
 	client := config.NewAsynqClient(vip, log)
 
 	date := time.Now()
@@ -51,18 +55,26 @@ func main() {
 	}
 
 	dateKey := date.Format("2006-01-02")
-	log.Infof("enqueuing stock_summary task for %s", dateKey)
 
-	info, err := tasks.EnqueueStockSummary(client, date)
+	// Announcement mode: enqueue idx:announcements instead of stock_summary.
+	taskType := tasks.TypeStockSummary
+	enqueue := func() (*asynq.TaskInfo, error) { return tasks.EnqueueStockSummary(client, date) }
+	if *announcementsFlag {
+		taskType = tasks.TypeAnnouncements
+		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueAnnouncements(client, date) }
+	}
+
+	log.Infof("enqueuing %s task for %s", taskType, dateKey)
+	info, err := enqueue()
 	if err != nil {
 		if errors.Is(err, asynq.ErrTaskIDConflict) {
-			log.Infof("task %s:%s already enqueued, skipping", tasks.TypeStockSummary, dateKey)
+			log.Infof("task %s:%s already enqueued, skipping", taskType, dateKey)
 		} else {
-			log.Errorf("failed to enqueue %s:%s: %v", tasks.TypeStockSummary, dateKey, err)
+			log.Errorf("failed to enqueue %s:%s: %v", taskType, dateKey, err)
 			os.Exit(1)
 		}
 	} else {
-		log.Infof("enqueued %s:%s: id=%s queue=%s", tasks.TypeStockSummary, dateKey, info.ID, info.Queue)
+		log.Infof("enqueued %s:%s: id=%s queue=%s", taskType, dateKey, info.ID, info.Queue)
 	}
 
 	fmt.Println("done")

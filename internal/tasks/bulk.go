@@ -7,7 +7,6 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -68,7 +67,7 @@ func RunBulkBackfill(
 
 	if lastSuccess != nil {
 		result.LastSuccessDate = lastSuccess.Format("2006-01-02")
-		recordBulkSuccess(db, sourceStatusRepo, *lastSuccess, log)
+		recordSourceSuccess(db, sourceStatusRepo, TypeStockSummary, stockSummaryMaxAgeSeconds, lastSuccess, log)
 	}
 
 	return result
@@ -82,23 +81,4 @@ func datesInRange(start, end time.Time) []time.Time {
 		dates = append(dates, d)
 	}
 	return dates
-}
-
-// recordBulkSuccess updates source_status once after a bulk backfill,
-// setting high_water_mark to the most recent date that produced data.
-func recordBulkSuccess(db *sqlx.DB, repo *repository.SourceStatusRepository, highWaterMark time.Time, log *logrus.Logger) {
-	now := time.Now()
-	status := &entity.SourceStatus{
-		Source:              TypeStockSummary,
-		LastSuccessAt:       &now,
-		LastAttemptAt:       &now,
-		LastError:           nil,
-		ConsecutiveFailures: 0,
-		Stale:               false,
-		MaxAgeSeconds:       stockSummaryMaxAgeSeconds,
-		HighWaterMark:       &highWaterMark,
-	}
-	if err := repo.Upsert(db, status); err != nil {
-		log.Errorf("bulk: failed to update source_status: %v", err)
-	}
 }

@@ -19,17 +19,22 @@ func NewDisclosureRepository(log *logrus.Logger) *DisclosureRepository {
 	}
 }
 
+// Upsert inserts or updates a disclosure keyed by the unique pdf_url.
+// On conflict it refreshes only the metadata, preserving extraction results.
+// passed_filter and extraction_status are NOT overwritten on re-fetch — they
+// are owned by the downstream filter/extraction pipeline (tickets 10-11).
+// extraction_status is omitted from the INSERT so the DB default ('pending')
+// applies; an empty entity value would violate the column's CHECK constraint.
 func (r *DisclosureRepository) Upsert(db *sqlx.DB, disclosure *entity.Disclosure) error {
 	query := `
-		INSERT INTO disclosures (ticker, announcement_date, title, pdf_url, attachment_idx, categories, passed_filter, extraction_status, fetched_at)
-		VALUES (:ticker, :announcement_date, :title, :pdf_url, :attachment_idx, :categories, :passed_filter, :extraction_status, NOW())
+		INSERT INTO disclosures (ticker, announcement_date, title, pdf_url, attachment_idx, categories, passed_filter, fetched_at)
+		VALUES (:ticker, :announcement_date, :title, :pdf_url, :attachment_idx, :categories, :passed_filter, NOW())
 		ON CONFLICT (pdf_url) DO UPDATE SET
 			ticker = EXCLUDED.ticker,
 			announcement_date = EXCLUDED.announcement_date,
 			title = EXCLUDED.title,
 			attachment_idx = EXCLUDED.attachment_idx,
 			categories = EXCLUDED.categories,
-			passed_filter = EXCLUDED.passed_filter,
 			fetched_at = NOW()
 	`
 	_, err := db.NamedExec(query, disclosure)

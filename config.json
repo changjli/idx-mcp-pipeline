@@ -4,7 +4,7 @@
   },
   "database": {
     "host": "localhost",
-    "port": 5432,
+    "port": 5433,
     "user": "idx_mcp",
     "password": "idx_mcp_dev",
     "name": "idx_mcp",
@@ -30,6 +30,9 @@
   "asynq": {
     "dashboard_port": 8081
   },
+  "anomaly": {
+    "min_adtv_value": 5000000000
+  },
   "mcp": {
     "port": 8080,
     "token": "dev-token"
@@ -43,6 +46,7 @@
     "max_delay": "30s",
     "cache_ttl": "6h",
     "cookie_refresh": "10m",
+    "disclosure_lookback_days": 7,
     "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   },
   "yahoo": {

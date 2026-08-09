@@ -62,6 +62,14 @@ func main() {
 		log, idxClient, db, asynqClient,
 		tickerRepo, dailyPriceRepo, sourceStatusRepo, alertRepo,
 	))
+	lookback := vip.GetInt("idx.disclosure_lookback_days")
+	if lookback <= 0 {
+		lookback = tasks.DefaultAnnouncementLookbackDays
+	}
+	mux.Handle(tasks.TypeAnnouncements, tasks.NewAnnouncementsHandler(
+		log, idxClient, db,
+		tickerRepo, disclosureRepo, sourceStatusRepo, alertRepo, lookback,
+	))
 	minADTV := vip.GetInt64("anomaly.min_adtv_value")
 	if minADTV <= 0 {
 		minADTV = tasks.DefaultADTVMinValue
@@ -93,15 +101,17 @@ func main() {
 	// Self-heal: enqueue today's noop task if scheduler missed its tick
 	scheduler.SelfHealMissedTick(asynqClient, log)
 
-	// Self-heal: recover archived stock_summary tasks (dead-end recovery).
-	// Run once at startup, then periodically.
+	// Self-heal: recover archived stock_summary and announcements tasks
+	// (dead-end recovery). Run once at startup, then periodically.
 	inspector := asynq.NewInspector(redisOpt)
 	scheduler.SelfHealArchivedStockSummary(inspector, asynqClient, log)
+	scheduler.SelfHealArchivedAnnouncements(inspector, asynqClient, log)
 	go func() {
 		ticker := time.NewTicker(15 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
 			scheduler.SelfHealArchivedStockSummary(inspector, asynqClient, log)
+			scheduler.SelfHealArchivedAnnouncements(inspector, asynqClient, log)
 		}
 	}()
 

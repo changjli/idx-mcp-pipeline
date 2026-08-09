@@ -11,7 +11,7 @@ dev-down:
 	docker compose down
 
 # ─── Migrations ──────────────────────────────────────────────────
-MIGRATE_DSN = "postgres://idx_mcp:idx_mcp_dev@localhost:5432/idx_mcp?sslmode=disable"
+MIGRATE_DSN = "postgres://idx_mcp:idx_mcp_dev@localhost:5433/idx_mcp?sslmode=disable"
 
 migrate-up:
 	migrate -path db/migrations -database $(MIGRATE_DSN) up
