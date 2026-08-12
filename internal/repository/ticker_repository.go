@@ -34,6 +34,22 @@ func (r *TickerRepository) FindByCode(db *sqlx.DB, code string) (*entity.Ticker,
 	return &ticker, nil
 }
 
+// InsertIfAbsent inserts a minimal ticker row (code, name) only when the code
+// is not already present. Unlike Upsert it never updates an existing row, so a
+// light-touch caller (e.g. the news matcher seeding an FK) can't wipe the
+// metadata — shares, listing info — that stock_summary populated.
+func (r *TickerRepository) InsertIfAbsent(db *sqlx.DB, code, name string) error {
+	if name == "" {
+		name = code
+	}
+	_, err := db.Exec(`
+		INSERT INTO tickers (code, name, active)
+		VALUES ($1, $2, true)
+		ON CONFLICT (code) DO NOTHING
+	`, code, name)
+	return err
+}
+
 func (r *TickerRepository) Upsert(db *sqlx.DB, ticker *entity.Ticker) error {
 	query := `
 		INSERT INTO tickers (code, name, listing_date, shares, listing_board, sektor, industri, active, first_seen_at, updated_at)

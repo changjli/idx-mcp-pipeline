@@ -22,6 +22,7 @@ func main() {
 	startDateStr := flag.String("start-date", "", "bulk backfill start date in YYYY-MM-DD format")
 	endDateStr := flag.String("end-date", "", "bulk backfill end date in YYYY-MM-DD format")
 	announcementsFlag := flag.Bool("announcements", false, "enqueue idx:announcements task instead of stock_summary")
+	rssFlag := flag.Bool("rss", false, "enqueue rss:ingest task instead of stock_summary")
 	flag.Parse()
 
 	vip := config.NewViper()
@@ -35,8 +36,8 @@ func main() {
 		if *dateStr != "" {
 			log.Fatalf("--date is mutually exclusive with --start-date/--end-date")
 		}
-		if *announcementsFlag {
-			log.Fatalf("--announcements is mutually exclusive with --start-date/--end-date")
+		if *announcementsFlag || *rssFlag {
+			log.Fatalf("--announcements/--rss are mutually exclusive with --start-date/--end-date")
 		}
 		runBulkBackfill(vip, log, *startDateStr, *endDateStr)
 		return
@@ -54,14 +55,21 @@ func main() {
 		}
 	}
 
+	if *announcementsFlag && *rssFlag {
+		log.Fatalf("--announcements and --rss are mutually exclusive")
+	}
+
 	dateKey := date.Format("2006-01-02")
 
-	// Announcement mode: enqueue idx:announcements instead of stock_summary.
+	// Task-mode selection: stock_summary by default, or announcements/rss.
 	taskType := tasks.TypeStockSummary
 	enqueue := func() (*asynq.TaskInfo, error) { return tasks.EnqueueStockSummary(client, date) }
 	if *announcementsFlag {
 		taskType = tasks.TypeAnnouncements
 		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueAnnouncements(client, date) }
+	} else if *rssFlag {
+		taskType = tasks.TypeRSS
+		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueRSS(client, date) }
 	}
 
 	log.Infof("enqueuing %s task for %s", taskType, dateKey)

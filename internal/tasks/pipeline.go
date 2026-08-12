@@ -35,6 +35,15 @@ func NewPipelineDailyHandler(log *logrus.Logger, client *asynq.Client) asynq.Han
 			log.Infof("pipeline:daily: enqueued announcements task id=%s", info.ID)
 		}
 
+		info, err = EnqueueRSS(client, now)
+		if err == asynq.ErrTaskIDConflict {
+			log.Infof("pipeline:daily: rss task for %s already enqueued", now.Format("2006-01-02"))
+		} else if err != nil {
+			log.Errorf("pipeline:daily: failed to enqueue rss: %v", err)
+		} else {
+			log.Infof("pipeline:daily: enqueued rss task id=%s", info.ID)
+		}
+
 		return nil
 	}
 }

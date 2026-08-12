@@ -19,17 +19,24 @@ func NewNewsRepository(log *logrus.Logger) *NewsRepository {
 	}
 }
 
-func (r *NewsRepository) Upsert(db *sqlx.DB, item *entity.NewsItem) error {
+// Upsert inserts a news item idempotently (url UNIQUE) and returns the row id.
+// The id feeds the news_tickers join — callers insert one join row per matched
+// ticker after this returns. On conflict only the mutable fields refresh:
+// source and published_at keep first-seen values, so a syndicated re-emission
+// by a second feed keeps the original publisher's attribution.
+func (r *NewsRepository) Upsert(db *sqlx.DB, item *entity.NewsItem) (int64, error) {
 	query := `
 		INSERT INTO news_items (title, url, source, published_at, snippet, fetched_at)
-		VALUES (:title, :url, :source, :published_at, :snippet, NOW())
+		VALUES ($1, $2, $3, $4, $5, NOW())
 		ON CONFLICT (url) DO UPDATE SET
 			title = EXCLUDED.title,
 			snippet = EXCLUDED.snippet,
 			fetched_at = NOW()
+		RETURNING id
 	`
-	_, err := db.NamedExec(query, item)
-	return err
+	var id int64
+	err := db.QueryRowx(query, item.Title, item.URL, item.Source, item.PublishedAt, item.Snippet).Scan(&id)
+	return id, err
 }
 
 func (r *NewsRepository) FindByTicker(db *sqlx.DB, ticker string, limit int) ([]entity.NewsItem, error) {

@@ -112,6 +112,17 @@ func SelfHealArchivedAnnouncements(inspector *asynq.Inspector, client *asynq.Cli
 	)
 }
 
+// SelfHealArchivedRSS recovers archived rss:ingest tasks.
+func SelfHealArchivedRSS(inspector *asynq.Inspector, client *asynq.Client, log *logrus.Logger) {
+	selfHealArchived(inspector, client, log,
+		tasks.TypeRSS, "rss",
+		rssDateFromID,
+		func(date time.Time) (*asynq.TaskInfo, error) {
+			return tasks.EnqueueRSS(client, date, asynq.ProcessIn(archivedRequeueDelay))
+		},
+	)
+}
+
 // selfHealArchived recovers archived tasks of one type. Archived tasks hold
 // their date-keyed TaskID, blocking re-enqueue (ErrTaskIDConflict) — a dead-end
 // after retries are exhausted. Deletes each archived task to free the ID, then
@@ -179,5 +190,12 @@ func announcementsDateFromID(id string) (time.Time, error) {
 // of the form "idx:stock_summary:2026-08-08".
 func stockSummaryDateFromID(id string) (time.Time, error) {
 	dateStr := strings.TrimPrefix(id, tasks.TypeStockSummary+":")
+	return time.Parse("2006-01-02", dateStr)
+}
+
+// rssDateFromID parses the date from an rss task ID of the form
+// "rss:ingest:2026-08-10".
+func rssDateFromID(id string) (time.Time, error) {
+	dateStr := strings.TrimPrefix(id, tasks.TypeRSS+":")
 	return time.Parse("2006-01-02", dateStr)
 }

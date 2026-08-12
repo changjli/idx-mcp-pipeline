@@ -17,6 +17,7 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/middleware"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/scheduler"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/storage"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/tasks"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/usecase"
 )
@@ -40,6 +41,7 @@ func main() {
 	newsTickerRepo := repository.NewNewsTickerRepository(log)
 	sourceStatusRepo := repository.NewSourceStatusRepository(log)
 	alertRepo := repository.NewAlertRepository(log)
+	rawFileRepo := repository.NewRawFileRepository(log)
 
 	// ─── asynq task infrastructure ──────────────────────────────
 
@@ -77,6 +79,26 @@ func main() {
 	mux.Handle(tasks.TypeDetectAnomalies, tasks.NewDetectAnomaliesHandler(
 		log, asynqClient, db, dailyPriceRepo, anomalyRepo, minADTV,
 	))
+	// R2 claim-check is optional: without r2.* credentials the handler skips
+	// the raw-XML upload (nil store) instead of hammering a default endpoint.
+	var r2Store storage.ObjectStore
+	if vip.GetString("r2.access_key") != "" {
+		r2Bucket := vip.GetString("r2.bucket")
+		if r2Bucket == "" {
+			r2Bucket = "idx-mcp"
+		}
+		r2Store = storage.NewR2Store(config.NewR2Client(vip, log), r2Bucket)
+	} else {
+		log.Warn("r2 not configured — rss raw-XML claim-check disabled")
+	}
+	mux.Handle(tasks.TypeRSS, tasks.NewRSSHandler(
+		log,
+		&http.Client{Timeout: tasks.RSSHTTPTimeout},
+		r2Store,
+		tasks.DefaultRSSFeeds,
+		db,
+		tickerRepo, newsRepo, newsTickerRepo, sourceStatusRepo, alertRepo, rawFileRepo,
+	))
 
 	// Start asynq server in background goroutine
 	go func() {
@@ -101,17 +123,19 @@ func main() {
 	// Self-heal: enqueue today's noop task if scheduler missed its tick
 	scheduler.SelfHealMissedTick(asynqClient, log)
 
-	// Self-heal: recover archived stock_summary and announcements tasks
+	// Self-heal: recover archived stock_summary, announcements, and rss tasks
 	// (dead-end recovery). Run once at startup, then periodically.
 	inspector := asynq.NewInspector(redisOpt)
 	scheduler.SelfHealArchivedStockSummary(inspector, asynqClient, log)
 	scheduler.SelfHealArchivedAnnouncements(inspector, asynqClient, log)
+	scheduler.SelfHealArchivedRSS(inspector, asynqClient, log)
 	go func() {
 		ticker := time.NewTicker(15 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
 			scheduler.SelfHealArchivedStockSummary(inspector, asynqClient, log)
 			scheduler.SelfHealArchivedAnnouncements(inspector, asynqClient, log)
+			scheduler.SelfHealArchivedRSS(inspector, asynqClient, log)
 		}
 	}()
 

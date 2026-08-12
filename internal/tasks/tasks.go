@@ -13,6 +13,7 @@ const (
 	TypeStockSummary    = "idx:stock_summary"
 	TypeAnnouncements   = "idx:announcements"
 	TypeDetectAnomalies = "detect:anomalies"
+	TypeRSS             = "rss:ingest"
 )
 
 // TaskKey returns a dedup key for a task type and date.
