@@ -8,12 +8,13 @@ import (
 
 // Task type constants for asynq task queue.
 const (
-	TypeNoop            = "noop"
-	TypePipelineDaily   = "pipeline:daily"
-	TypeStockSummary    = "idx:stock_summary"
-	TypeAnnouncements   = "idx:announcements"
-	TypeDetectAnomalies = "detect:anomalies"
-	TypeRSS             = "rss:ingest"
+	TypeNoop               = "noop"
+	TypePipelineDaily      = "pipeline:daily"
+	TypeStockSummary       = "idx:stock_summary"
+	TypeAnnouncements      = "idx:announcements"
+	TypeDetectAnomalies    = "detect:anomalies"
+	TypeRSS                = "rss:ingest"
+	TypeBrokerStockSummary = "idx:broker_stock_summary"
 )
 
 // TaskKey returns a dedup key for a task type and date.

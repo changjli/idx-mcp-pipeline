@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -59,6 +60,37 @@ func (r *DailyPriceRepository) FindByTickerAndDay(db *sqlx.DB, ticker string, tr
 		return nil, err
 	}
 	return &price, nil
+}
+
+// LatestTradingDay returns the most recent trading day with a stored EOD row
+// for a ticker. Data presence is the trading-day signal (no separate calendar).
+// Returns sql.ErrNoRows when the ticker has no price history.
+func (r *DailyPriceRepository) LatestTradingDay(db *sqlx.DB, ticker string) (*time.Time, error) {
+	var day sql.NullTime
+	err := db.Get(&day,
+		"SELECT MAX(trading_day) FROM daily_prices WHERE ticker = $1",
+		ticker,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if !day.Valid {
+		return nil, sql.ErrNoRows
+	}
+	return &day.Time, nil
+}
+
+// TradingDaysInRange returns the distinct trading days with a stored EOD row
+// for a ticker between two dates (inclusive), ascending. Data presence is the
+// trading-day signal — weekends and IDX holidays have no row, so they are
+// naturally excluded without a calendar.
+func (r *DailyPriceRepository) TradingDaysInRange(db *sqlx.DB, ticker string, from, to time.Time) ([]time.Time, error) {
+	var days []time.Time
+	err := db.Select(&days,
+		"SELECT DISTINCT trading_day FROM daily_prices WHERE ticker = $1 AND trading_day BETWEEN $2 AND $3 ORDER BY trading_day",
+		ticker, from, to,
+	)
+	return days, err
 }
 
 func (r *DailyPriceRepository) DeleteOlderThan(db *sqlx.DB, days int) error {

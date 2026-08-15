@@ -143,7 +143,35 @@ func NewDetectAnomaliesHandler(
 			return fmt.Errorf("detect anomalies: %w", err)
 		}
 		log.Infof("detect:anomalies: wrote %d anomaly row(s) for %s", written, today.Format("2006-01-02"))
+
+		// Auto-trigger: each flagged ticker emits an idx:broker_stock_summary
+		// signal so its per-stock broker summary is fetched and stored without
+		// an AI round-trip. TaskID dedup makes repeat signals no-ops.
+		if written > 0 {
+			enqueueBrokerSummariesForAnomalies(client, db, anomalyRepo, today, log)
+		}
 		return nil
+	}
+}
+
+// enqueueBrokerSummariesForAnomalies enqueues an idx:broker_stock_summary task
+// for each distinct ticker flagged on the given trading day. Duplicate signals
+// (ErrTaskIDConflict) are expected and ignored.
+func enqueueBrokerSummariesForAnomalies(client *asynq.Client, db *sqlx.DB, anomalyRepo *repository.AnomalyRepository, day time.Time, log *logrus.Logger) {
+	anomalies, err := anomalyRepo.FindByDate(db, day.Format("2006-01-02"))
+	if err != nil {
+		log.Warnf("detect:anomalies: query flagged tickers: %v", err)
+		return
+	}
+	seen := make(map[string]bool)
+	for _, a := range anomalies {
+		if seen[a.Ticker] {
+			continue
+		}
+		seen[a.Ticker] = true
+		if _, err := EnqueueBrokerStockSummary(client, a.Ticker, day); err != nil && err != asynq.ErrTaskIDConflict {
+			log.Warnf("detect:anomalies: enqueue broker summary for %s: %v", a.Ticker, err)
+		}
 	}
 }
 

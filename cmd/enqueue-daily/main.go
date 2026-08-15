@@ -23,6 +23,7 @@ func main() {
 	endDateStr := flag.String("end-date", "", "bulk backfill end date in YYYY-MM-DD format")
 	announcementsFlag := flag.Bool("announcements", false, "enqueue idx:announcements task instead of stock_summary")
 	rssFlag := flag.Bool("rss", false, "enqueue rss:ingest task instead of stock_summary")
+	brokerSummaryTicker := flag.String("broker-summary", "", "enqueue idx:broker_stock_summary task for this ticker (e.g. RAJA)")
 	flag.Parse()
 
 	vip := config.NewViper()
@@ -36,8 +37,8 @@ func main() {
 		if *dateStr != "" {
 			log.Fatalf("--date is mutually exclusive with --start-date/--end-date")
 		}
-		if *announcementsFlag || *rssFlag {
-			log.Fatalf("--announcements/--rss are mutually exclusive with --start-date/--end-date")
+		if *announcementsFlag || *rssFlag || *brokerSummaryTicker != "" {
+			log.Fatalf("--announcements/--rss/--broker-summary are mutually exclusive with --start-date/--end-date")
 		}
 		runBulkBackfill(vip, log, *startDateStr, *endDateStr)
 		return
@@ -58,10 +59,14 @@ func main() {
 	if *announcementsFlag && *rssFlag {
 		log.Fatalf("--announcements and --rss are mutually exclusive")
 	}
+	if *brokerSummaryTicker != "" && (*announcementsFlag || *rssFlag) {
+		log.Fatalf("--broker-summary is mutually exclusive with --announcements/--rss")
+	}
 
 	dateKey := date.Format("2006-01-02")
 
-	// Task-mode selection: stock_summary by default, or announcements/rss.
+	// Task-mode selection: stock_summary by default, or announcements/rss/
+	// broker-summary.
 	taskType := tasks.TypeStockSummary
 	enqueue := func() (*asynq.TaskInfo, error) { return tasks.EnqueueStockSummary(client, date) }
 	if *announcementsFlag {
@@ -70,6 +75,9 @@ func main() {
 	} else if *rssFlag {
 		taskType = tasks.TypeRSS
 		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueRSS(client, date) }
+	} else if *brokerSummaryTicker != "" {
+		taskType = tasks.TypeBrokerStockSummary
+		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueBrokerStockSummary(client, *brokerSummaryTicker, date) }
 	}
 
 	log.Infof("enqueuing %s task for %s", taskType, dateKey)

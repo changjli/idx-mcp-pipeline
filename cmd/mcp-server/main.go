@@ -14,6 +14,7 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/config"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/controller"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/middleware"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/scheduler"
@@ -42,6 +43,7 @@ func main() {
 	sourceStatusRepo := repository.NewSourceStatusRepository(log)
 	alertRepo := repository.NewAlertRepository(log)
 	rawFileRepo := repository.NewRawFileRepository(log)
+	brokerStockSummaryRepo := repository.NewBrokerStockSummaryRepository(log)
 
 	// ─── asynq task infrastructure ──────────────────────────────
 
@@ -98,6 +100,16 @@ func main() {
 		tasks.DefaultRSSFeeds,
 		db,
 		tickerRepo, newsRepo, newsTickerRepo, sourceStatusRepo, alertRepo, rawFileRepo,
+	))
+
+	// Per-stock broker summary: on-demand fetch + persist, auto-triggered by
+	// anomaly detection. Shares the same usecase the MCP tool (ticket 10) wires.
+	ipotClient := ipot.NewClient(ipot.DefaultConfig(), log)
+	brokerStockSummaryUC := usecase.NewBrokerStockSummaryUseCase(
+		db, log, validate, ipotClient, brokerStockSummaryRepo, dailyPriceRepo,
+	)
+	mux.Handle(tasks.TypeBrokerStockSummary, tasks.NewBrokerStockSummaryHandler(
+		log, db, brokerStockSummaryUC, sourceStatusRepo, alertRepo,
 	))
 
 	// Start asynq server in background goroutine
