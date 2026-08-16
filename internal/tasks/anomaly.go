@@ -150,6 +150,15 @@ func NewDetectAnomaliesHandler(
 		if written > 0 {
 			enqueueBrokerSummariesForAnomalies(client, db, anomalyRepo, today, log)
 		}
+
+		// Filter disclosures unconditionally (even zero anomalies): non-anomaly
+		// disclosures still need marking passed_filter=false, and passing ones
+		// proceed to extraction. Chained here (not from idx:announcements)
+		// because anomalies are detected after announcements in the pipeline —
+		// the anomaly-gate needs today's anomaly rows to exist.
+		if _, err := EnqueueFilterDisclosures(client, today); err != nil && err != asynq.ErrTaskIDConflict {
+			log.Warnf("detect:anomalies: enqueue filter:disclosures: %v", err)
+		}
 		return nil
 	}
 }

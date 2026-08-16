@@ -227,8 +227,9 @@ func fetchAnnouncements(idxClient *client.Client, from, to time.Time, log *logru
 // per PDF attachment. Rows carry a trimmed ticker (IDX pads Kode_Emiten with
 // spaces), the announcement date, and the attachment index. Attachments without
 // a PDF URL are skipped. New rows default to extraction_status='pending' and
-// passed_filter=false (DB defaults); the pdf_url is the idempotency key.
-// Returns nil when the announcement date doesn't parse.
+// passed_filter=NULL (pending — the filter task owns the transition); the
+// pdf_url is the idempotency key. Returns nil when the announcement date
+// doesn't parse.
 func replyToDisclosures(reply AnnouncementReply) []*entity.Disclosure {
 	date, err := parseAnnouncementDate(reply.Pengumuman.TglPengumuman)
 	if err != nil {

@@ -24,6 +24,8 @@ func main() {
 	announcementsFlag := flag.Bool("announcements", false, "enqueue idx:announcements task instead of stock_summary")
 	rssFlag := flag.Bool("rss", false, "enqueue rss:ingest task instead of stock_summary")
 	brokerSummaryTicker := flag.String("broker-summary", "", "enqueue idx:broker_stock_summary task for this ticker (e.g. RAJA)")
+	filterFlag := flag.Bool("filter", false, "enqueue filter:disclosures task instead of stock_summary")
+	extractID := flag.Int64("extract", 0, "enqueue extract:disclosure task for this disclosure id")
 	flag.Parse()
 
 	vip := config.NewViper()
@@ -37,8 +39,8 @@ func main() {
 		if *dateStr != "" {
 			log.Fatalf("--date is mutually exclusive with --start-date/--end-date")
 		}
-		if *announcementsFlag || *rssFlag || *brokerSummaryTicker != "" {
-			log.Fatalf("--announcements/--rss/--broker-summary are mutually exclusive with --start-date/--end-date")
+		if *announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *filterFlag || *extractID != 0 {
+			log.Fatalf("--announcements/--rss/--broker-summary/--filter/--extract are mutually exclusive with --start-date/--end-date")
 		}
 		runBulkBackfill(vip, log, *startDateStr, *endDateStr)
 		return
@@ -62,6 +64,12 @@ func main() {
 	if *brokerSummaryTicker != "" && (*announcementsFlag || *rssFlag) {
 		log.Fatalf("--broker-summary is mutually exclusive with --announcements/--rss")
 	}
+	if *filterFlag && (*announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *extractID != 0) {
+		log.Fatalf("--filter is mutually exclusive with --announcements/--rss/--broker-summary/--extract")
+	}
+	if *extractID != 0 && (*announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *filterFlag) {
+		log.Fatalf("--extract is mutually exclusive with --announcements/--rss/--broker-summary/--filter")
+	}
 
 	dateKey := date.Format("2006-01-02")
 
@@ -77,14 +85,26 @@ func main() {
 		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueRSS(client, date) }
 	} else if *brokerSummaryTicker != "" {
 		taskType = tasks.TypeBrokerStockSummary
-		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueBrokerStockSummary(client, *brokerSummaryTicker, date) }
+		enqueue = func() (*asynq.TaskInfo, error) {
+			return tasks.EnqueueBrokerStockSummary(client, *brokerSummaryTicker, date)
+		}
+	} else if *filterFlag {
+		taskType = tasks.TypeFilterDisclosures
+		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueFilterDisclosures(client, date) }
+	} else if *extractID != 0 {
+		taskType = tasks.TypeExtractDisclosure
+		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueExtractDisclosure(client, *extractID) }
 	}
 
-	log.Infof("enqueuing %s task for %s", taskType, dateKey)
+	target := dateKey
+	if *extractID != 0 {
+		target = fmt.Sprintf("disclosure %d", *extractID)
+	}
+	log.Infof("enqueuing %s task for %s", taskType, target)
 	info, err := enqueue()
 	if err != nil {
 		if errors.Is(err, asynq.ErrTaskIDConflict) {
-			log.Infof("task %s:%s already enqueued, skipping", taskType, dateKey)
+			log.Infof("task %s:%s already enqueued, skipping", taskType, target)
 		} else {
 			log.Errorf("failed to enqueue %s:%s: %v", taskType, dateKey, err)
 			os.Exit(1)

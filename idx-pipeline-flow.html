@@ -1,0 +1,350 @@
+<title>IDX MCP Pipeline Flow</title>
+<style>
+  :root{
+    --bg:#13151a; --surface:#1b1e25; --surface-2:#232730;
+    --text:#e9e7e2; --muted:#8b8f99; --border:#2c313b;
+    --accent:#e0912f; --accent-ink:#1a1206; --accent-soft:rgba(224,145,47,.16);
+    --store:#5fa393; --store-soft:rgba(95,163,147,.16);
+    --redis:#c75d52; --redis-soft:rgba(199,93,82,.14);
+    --write:#5fa393; --grid:rgba(255,255,255,.04);
+  }
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme="dark"]){
+      --bg:#f4f1ea; --surface:#ffffff; --surface-2:#faf7f0;
+      --text:#1c1f26; --muted:#6a6e78; --border:#ddd6c9;
+      --accent:#b97012; --accent-ink:#fff7ec; --accent-soft:rgba(185,112,18,.12);
+      --store:#3f7a6e; --store-soft:rgba(63,122,110,.12);
+      --redis:#a8443a; --redis-soft:rgba(168,68,58,.10);
+      --write:#3f7a6e; --grid:rgba(0,0,0,.04);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#13151a; --surface:#1b1e25; --surface-2:#232730;
+    --text:#e9e7e2; --muted:#8b8f99; --border:#2c313b;
+    --accent:#e0912f; --accent-ink:#1a1206; --accent-soft:rgba(224,145,47,.16);
+    --store:#5fa393; --store-soft:rgba(95,163,147,.16);
+    --redis:#c75d52; --redis-soft:rgba(199,93,82,.14);
+    --write:#5fa393; --grid:rgba(255,255,255,.04);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    line-height:1.55; -webkit-font-smoothing:antialiased;
+    padding:48px 24px 64px;
+  }
+  .wrap{max-width:1080px;margin:0 auto}
+  h1,h2,h3{font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;font-weight:600;letter-spacing:-.01em;text-wrap:balance}
+  h1{font-size:clamp(30px,4.4vw,46px);line-height:1.06;margin:0 0 14px}
+  h2{font-size:21px;margin:40px 0 4px;color:var(--text)}
+  h3{font-size:16px;margin:26px 0 8px;color:var(--text)}
+  p{margin:0 0 14px;color:var(--text);max-width:64ch}
+  .lede{font-size:17px;color:var(--muted);max-width:60ch;margin:0 0 8px}
+  .eyebrow{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);font-weight:600;margin:0 0 18px}
+  code, .mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;font-size:.92em}
+  a{color:var(--accent);text-decoration:none}
+
+  .figure{margin:30px 0 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:22px 18px 12px;overflow-x:auto}
+  .figure svg{display:block;width:100%;height:auto;max-width:1040px;margin:0 auto}
+  figcaption{font-size:13px;color:var(--muted);margin:14px 4px 0;max-width:90ch;line-height:1.5}
+  figcaption b{color:var(--text);font-weight:600}
+
+  .legend{display:flex;flex-wrap:wrap;gap:10px 22px;margin:18px 4px 0;font-size:13px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:8px}
+  .swatch{display:inline-block;width:22px;height:0}
+  .sw-line{border-top:2px solid var(--accent)}
+  .sw-dash{border-top:2px dashed var(--muted)}
+  .sw-write{border-top:2px solid var(--write)}
+  .sw-redis{background:var(--redis-soft);border:1px solid var(--redis);width:14px;height:10px;border-radius:2px}
+
+  .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:18px;margin:24px 0 0}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:18px 18px 16px}
+  .card h3{margin:0 0 10px;font-family:ui-sans-serif,system-ui,sans-serif;font-size:14px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  .card ul{margin:0;padding-left:18px;color:var(--text)}
+  .card li{margin:0 0 6px;font-size:14px}
+  .card li .mono{color:var(--accent)}
+
+  .note{font-size:13px;color:var(--muted);border-left:2px solid var(--accent);padding:4px 0 4px 14px;margin:18px 0;max-width:64ch}
+  hr{border:0;border-top:1px solid var(--border);margin:34px 0}
+  .muted{color:var(--muted)}
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">IDX-MCP-PIPELINE · Go monorepo</p>
+  <h1>The daily-ingestion pipeline, end to end</h1>
+  <p class="lede">A cron fires one root task; asynq workers fan out, fetch from external sources, upsert into Postgres and an object store, and chain derived tasks. An MCP HTTP server reads the results. Redis is the decoupling bus between every stage.</p>
+
+  <div class="figure">
+    <figure>
+      <svg viewBox="0 0 1080 900" role="img" aria-label="IDX MCP pipeline flow: cron and CLI and self-heal feed an asynq Redis queue, which drives a task tree of ingest and derived workers writing to Postgres and R2, read by an MCP HTTP server with six endpoints.">
+        <defs>
+          <marker id="ah-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#e0912f"/>
+          </marker>
+          <marker id="ah-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#8b8f99"/>
+          </marker>
+          <marker id="ah-write" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#5fa393"/>
+          </marker>
+          <marker id="ah-read" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#e9e7e2"/>
+          </marker>
+        </defs>
+
+        <style>
+          .lbl{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;fill:#e9e7e2;font-weight:600}
+          .sub{font-family:ui-sans-serif,system-ui,sans-serif;font-size:11px;fill:#8b8f99}
+          .src{font-family:ui-sans-serif,system-ui,sans-serif;font-size:12px;fill:#e9e7e2;font-weight:600}
+          .srcsub{font-family:ui-sans-serif,system-ui,sans-serif;font-size:10px;fill:#8b8f99}
+          .band{font-family:ui-sans-serif,system-ui,sans-serif;font-size:12px;fill:#e9e7e2;font-weight:600;letter-spacing:.03em}
+          .bandsub{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;fill:#8b8f99}
+          .edge{font-family:ui-sans-serif,system-ui,sans-serif;font-size:10.5px;fill:#8b8f99}
+          .edge-a{fill:#e0912f}
+          .store-l{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;fill:#e9e7e2;font-weight:700}
+          .store-s{font-family:ui-sans-serif,system-ui,sans-serif;font-size:10.5px;fill:#8b8f99}
+          .tbl{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;fill:#9fbfb7}
+          @media (prefers-color-scheme: light){ .lbl,.src,.band,.store-l{fill:#1c1f26} .sub,.srcsub,.bandsub,.edge,.store-s{fill:#6a6e78} .tbl{fill:#3f7a6e} .edge-a{fill:#b97012} }
+        </style>
+
+        <!-- trigger band -->
+        <g>
+          <rect x="40" y="22" width="320" height="44" rx="6" fill="#1b1e25" stroke="#2c313b"/>
+          <text x="56" y="42" class="band">asynq scheduler</text>
+          <text x="56" y="58" class="bandsub">cron 16:05 WIB → pipeline:daily</text>
+
+          <rect x="460" y="22" width="220" height="44" rx="6" fill="#1b1e25" stroke="#2c313b"/>
+          <text x="476" y="42" class="band">enqueue-daily CLI</text>
+          <text x="476" y="58" class="bandsub">manual · any task</text>
+
+          <rect x="720" y="22" width="320" height="44" rx="6" fill="#1b1e25" stroke="#2c313b"/>
+          <text x="736" y="42" class="band">self-heal</text>
+          <text x="736" y="58" class="bandsub">startup + every 15min · recovers archived</text>
+        </g>
+
+        <!-- arrows triggers -> redis -->
+        <line x1="200" y1="66" x2="200" y2="92" stroke="#8b8f99" stroke-width="1.5" marker-end="url(#ah-muted)"/>
+        <line x1="570" y1="66" x2="570" y2="92" stroke="#8b8f99" stroke-width="1.5" marker-end="url(#ah-muted)"/>
+        <line x1="880" y1="66" x2="880" y2="92" stroke="#8b8f99" stroke-width="1.5" marker-end="url(#ah-muted)"/>
+
+        <!-- redis bus -->
+        <rect x="40" y="96" width="1000" height="34" rx="6" fill="rgba(199,93,82,.14)" stroke="#c75d52" stroke-dasharray="5 4"/>
+        <text x="540" y="118" class="band" text-anchor="middle">asynq task queue · Redis</text>
+        <text x="540" y="118" class="bandsub" text-anchor="middle" dx="170">dedup by date-keyed TaskID</text>
+
+        <!-- redis -> pipeline:daily -->
+        <line x1="540" y1="130" x2="540" y2="150" stroke="#e0912f" stroke-width="2" marker-end="url(#ah-accent)"/>
+
+        <!-- pipeline:daily root -->
+        <g>
+          <rect x="435" y="152" width="210" height="52" rx="6" fill="rgba(224,145,47,.16)" stroke="#e0912f" stroke-width="1.5"/>
+          <text x="540" y="176" class="lbl" text-anchor="middle">pipeline:daily</text>
+          <text x="540" y="193" class="sub" text-anchor="middle">fan-out root</text>
+        </g>
+
+        <!-- fan-out to 3 ingest -->
+        <path d="M540,204 L540,220 L250,220 L250,236" fill="none" stroke="#e0912f" stroke-width="2" marker-end="url(#ah-accent)"/>
+        <path d="M540,204 L540,236" fill="none" stroke="#e0912f" stroke-width="2" marker-end="url(#ah-accent)"/>
+        <path d="M540,204 L540,220 L830,220 L830,236" fill="none" stroke="#e0912f" stroke-width="2" marker-end="url(#ah-accent)"/>
+
+        <!-- ingest workers -->
+        <g>
+          <rect x="160" y="238" width="180" height="56" rx="6" fill="#1b1e25" stroke="#2c313b"/>
+          <text x="250" y="262" class="lbl" text-anchor="middle">idx:stock_summary</text>
+          <text x="250" y="280" class="sub" text-anchor="middle">EOD prices · source_status</text>
+        </g>
+        <g>
+          <rect x="450" y="238" width="180" height="56" rx="6" fill="#1b1e25" stroke="#2c313b"/>
+          <text x="540" y="262" class="lbl" text-anchor="middle">idx:announcements</text>
+          <text x="540" y="280" class="sub" text-anchor="middle">disclosures (pending)</text>
+        </g>
+        <g>
+          <rect x="745" y="238" width="170" height="56" rx="6" fill="#1b1e25" stroke="#2c313b"/>
+          <text x="830" y="262" class="lbl" text-anchor="middle">rss:ingest</text>
+          <text x="830" y="280" class="sub" text-anchor="middle">news · news_ticker</text>
+        </g>
+
+        <!-- external sources -->
+        <g>
+          <rect x="30" y="244" width="116" height="44" rx="22" fill="rgba(255,255,255,.02)" stroke="#8b8f99" stroke-dasharray="4 3"/>
+          <text x="88" y="263" class="src" text-anchor="middle">IDX API</text>
+          <text x="88" y="278" class="srcsub" text-anchor="middle">EOD + filings</text>
+        </g>
+        <line x1="146" y1="266" x2="158" y2="266" stroke="#8b8f99" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ah-muted)"/>
+        <path d="M146,266 C 360,266 470,266 448,266" fill="none" stroke="#8b8f99" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ah-muted)"/>
+
+        <g>
+          <rect x="934" y="244" width="116" height="44" rx="22" fill="rgba(255,255,255,.02)" stroke="#8b8f99" stroke-dasharray="4 3"/>
+          <text x="992" y="263" class="src" text-anchor="middle">RSS feeds</text>
+          <text x="992" y="278" class="srcsub" text-anchor="middle">news</text>
+        </g>
+        <line x1="934" y1="266" x2="917" y2="266" stroke="#8b8f99" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ah-muted)"/>
+
+        <!-- stock_summary -> detect:anomalies (chain) -->
+        <line x1="250" y1="294" x2="250" y2="320" stroke="#e0912f" stroke-width="2" marker-end="url(#ah-accent)"/>
+        <text x="262" y="312" class="edge edge-a">chains</text>
+
+        <g>
+          <rect x="150" y="322" width="200" height="56" rx="6" fill="#1b1e25" stroke="#2c313b"/>
+          <text x="250" y="346" class="lbl" text-anchor="middle">detect:anomalies</text>
+          <text x="250" y="364" class="sub" text-anchor="middle">liquidity-gated · ADTV</text>
+        </g>
+
+        <!-- detect -> filter (chain) -->
+        <path d="M250,378 L250,400 L180,400 L180,422" fill="none" stroke="#e0912f" stroke-width="2" marker-end="url(#ah-accent)"/>
+        <text x="196" y="395" class="edge edge-a">chains · today</text>
+        <!-- detect -> broker (chain) -->
+        <path d="M250,378 L250,400 L440,400 L440,422" fill="none" stroke="#e0912f" stroke-width="2" marker-end="url(#ah-accent)"/>
+        <text x="300" y="395" class="edge edge-a">chains · per ticker</text>
+
+        <g>
+          <rect x="80" y="424" width="200" height="56" rx="6" fill="#1b1e25" stroke="#2c313b"/>
+          <text x="180" y="448" class="lbl" text-anchor="middle">filter:disclosures</text>
+          <text x="180" y="466" class="sub" text-anchor="middle">3-layer filter</text>
+        </g>
+        <g>
+          <rect x="325" y="424" width="230" height="56" rx="6" fill="#1b1e25" stroke="#2c313b"/>
+          <text x="440" y="448" class="lbl" text-anchor="middle">idx:broker_stock_summary</text>
+          <text x="440" y="466" class="sub" text-anchor="middle">per anomalous ticker</text>
+        </g>
+
+        <!-- IPOT source -> broker -->
+        <g>
+          <rect x="30" y="430" width="116" height="44" rx="22" fill="rgba(255,255,255,.02)" stroke="#8b8f99" stroke-dasharray="4 3"/>
+          <text x="88" y="449" class="src" text-anchor="middle">IPOT</text>
+          <text x="88" y="464" class="srcsub" text-anchor="middle">broker flow</text>
+        </g>
+        <path d="M146,452 L323,452" fill="none" stroke="#8b8f99" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ah-muted)"/>
+
+        <!-- filter -> extract (chain) -->
+        <line x1="180" y1="480" x2="180" y2="516" stroke="#e0912f" stroke-width="2" marker-end="url(#ah-accent)"/>
+        <text x="192" y="503" class="edge edge-a">chains · per passing row</text>
+
+        <g>
+          <rect x="75" y="518" width="210" height="56" rx="6" fill="#1b1e25" stroke="#2c313b"/>
+          <text x="180" y="542" class="lbl" text-anchor="middle">extract:disclosure</text>
+          <text x="180" y="560" class="sub" text-anchor="middle">PDF → text (per row)</text>
+        </g>
+
+        <!-- stores -->
+        <g>
+          <rect x="120" y="640" width="440" height="110" rx="10" fill="rgba(95,163,147,.16)" stroke="#5fa393" stroke-width="1.5"/>
+          <text x="340" y="666" class="store-l" text-anchor="middle">Postgres</text>
+          <text x="340" y="682" class="store-s" text-anchor="middle">repository layer · idempotent upserts</text>
+          <text x="150" y="706" class="tbl">daily_prices</text>
+          <text x="262" y="706" class="tbl">disclosures</text>
+          <text x="372" y="706" class="tbl">anomalies</text>
+          <text x="460" y="706" class="tbl">news</text>
+          <text x="150" y="724" class="tbl">news_ticker</text>
+          <text x="262" y="724" class="tbl">broker_stock_summary</text>
+          <text x="420" y="724" class="tbl">source_status</text>
+          <text x="528" y="724" class="tbl">alerts</text>
+          <text x="150" y="742" class="tbl">raw_files</text>
+          <text x="230" y="742" class="tbl">tickers · brokers</text>
+        </g>
+
+        <g>
+          <rect x="700" y="640" width="320" height="110" rx="10" fill="rgba(95,163,147,.16)" stroke="#5fa393" stroke-width="1.5"/>
+          <text x="860" y="668" class="store-l" text-anchor="middle">R2 / MinIO</text>
+          <text x="860" y="684" class="store-s" text-anchor="middle">S3-compatible object store</text>
+          <text x="860" y="712" class="tbl" text-anchor="middle">raw XML claim-checks (rss)</text>
+          <text x="860" y="730" class="tbl" text-anchor="middle">disclosure PDFs + extracted text</text>
+        </g>
+
+        <!-- write arrows to Postgres (teal, thin) -->
+        <path d="M250,294 C 250,610 300,620 300,638" fill="none" stroke="#5fa393" stroke-width="1.3" opacity=".75" marker-end="url(#ah-write)"/>
+        <path d="M540,294 C 540,600 360,620 360,638" fill="none" stroke="#5fa393" stroke-width="1.3" opacity=".75" marker-end="url(#ah-write)"/>
+        <path d="M300,378 C 300,560 300,610 300,638" fill="none" stroke="#5fa393" stroke-width="1.3" opacity=".75" marker-end="url(#ah-write)"/>
+        <path d="M180,480 C 180,580 250,620 250,638" fill="none" stroke="#5fa393" stroke-width="1.3" opacity=".75" marker-end="url(#ah-write)"/>
+        <path d="M440,480 C 440,580 400,620 400,638" fill="none" stroke="#5fa393" stroke-width="1.3" opacity=".75" marker-end="url(#ah-write)"/>
+        <!-- extract -> R2 + Postgres(text) -->
+        <path d="M285,546 C 520,546 720,600 760,638" fill="none" stroke="#5fa393" stroke-width="1.3" opacity=".75" marker-end="url(#ah-write)"/>
+        <path d="M180,574 C 180,610 250,625 260,638" fill="none" stroke="#5fa393" stroke-width="1.3" opacity=".75" marker-end="url(#ah-write)"/>
+        <!-- rss -> R2 + Postgres -->
+        <path d="M830,294 C 830,560 860,610 860,638" fill="none" stroke="#5fa393" stroke-width="1.3" opacity=".75" marker-end="url(#ah-write)"/>
+        <path d="M830,294 C 830,500 560,620 540,638" fill="none" stroke="#5fa393" stroke-width="1.3" opacity=".55" marker-end="url(#ah-write)"/>
+
+        <!-- MCP read bar -->
+        <g>
+          <rect x="40" y="800" width="1000" height="76" rx="8" fill="#232730" stroke="#2c313b"/>
+          <text x="60" y="826" class="band">MCP HTTP server · :8080</text>
+          <text x="60" y="842" class="bandsub">token-auth · reads Postgres</text>
+          <text x="240" y="830" class="lbl" font-size="11">get_market_anomalies</text>
+          <text x="430" y="830" class="lbl" font-size="11">list_idx_disclosures</text>
+          <text x="240" y="852" class="lbl" font-size="11">read_idx_disclosure</text>
+          <text x="430" y="852" class="lbl" font-size="11">get_ticker_news</text>
+          <text x="600" y="830" class="lbl" font-size="11">get_broker_summary</text>
+          <text x="600" y="852" class="lbl" font-size="11">get_pipeline_status</text>
+        </g>
+        <!-- MCP reads Postgres (up arrow) -->
+        <line x1="340" y1="800" x2="340" y2="752" stroke="#e9e7e2" stroke-width="1.6" marker-end="url(#ah-read)"/>
+        <text x="350" y="780" class="edge">reads</text>
+      </svg>
+      <figcaption>
+        <b>Read top-down.</b> Three triggers drop tasks into the Redis queue: a daily cron (16:05 WIB, just after IDX 16:00 close) enqueues the <span class="mono">pipeline:daily</span> root; a CLI enqueues any single task manually; a self-heal loop recovers archived tasks that exhausted retries. <span class="mono">pipeline:daily</span> fans out three independent ingest tasks. <b>Solid saffron arrows are task chains</b> — a worker enqueues the next task once its data lands: <span class="mono">stock_summary</span> → <span class="mono">detect:anomalies</span> → (<span class="mono">filter:disclosures</span> → <span class="mono">extract:disclosure</span>) and <span class="mono">broker_stock_summary</span>. <b>Dashed arrows are external fetches</b> (IDX API, RSS, IPOT). <b>Teal arrows are upserts</b> into Postgres / R2. The MCP HTTP server at the bottom reads Postgres — no write path back.
+      </figcaption>
+    </figure>
+  </div>
+
+  <div class="legend">
+    <span><i class="swatch sw-line"></i> task chain (enqueues next)</span>
+    <span><i class="swatch sw-dash"></i> external source fetch</span>
+    <span><i class="swatch sw-write"></i> DB / object-store write</span>
+    <span><i class="swatch sw-redis"></i> Redis task queue</span>
+  </div>
+
+  <h2>The two halves</h2>
+  <p>The pipeline splits cleanly into a <b>write side</b> (asynq workers populating Postgres and R2 on a schedule) and a <b>read side</b> (an MCP HTTP server exposing that data as JSON over a token-authed REST surface). They share only the database — workers never call the MCP server, and the MCP server never enqueues tasks. That separation is what lets ingestion run unattended while a separate consumer (an LLM tool client) queries the results.</p>
+
+  <div class="cols">
+    <div class="card">
+      <h3>Write side · task chain</h3>
+      <ul>
+        <li><span class="mono">pipeline:daily</span> — root; fans out 3 ingest tasks, failures decoupled</li>
+        <li><span class="mono">idx:stock_summary</span> — IDX EOD → <span class="mono">daily_prices</span>, then chains anomaly detection</li>
+        <li><span class="mono">idx:announcements</span> — IDX filings → <span class="mono">disclosures</span> (status <span class="mono">pending</span>)</li>
+        <li><span class="mono">rss:ingest</span> — RSS → <span class="mono">news</span> + ticker match; raw XML claim-check to R2</li>
+        <li><span class="mono">detect:anomalies</span> — liquidity-gated (min ADTV); chains filter + broker summary</li>
+        <li><span class="mono">filter:disclosures</span> — 3-layer filter over pending disclosures; chains extract per passing row</li>
+        <li><span class="mono">extract:disclosure</span> — PDF download → R2 → text extraction</li>
+        <li><span class="mono">idx:broker_stock_summary</span> — IPOT fetch per anomalous ticker</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Read side · MCP endpoints</h3>
+      <ul>
+        <li><span class="mono">get_market_anomalies</span></li>
+        <li><span class="mono">list_idx_disclosures</span></li>
+        <li><span class="mono">read_idx_disclosure</span></li>
+        <li><span class="mono">get_ticker_news</span></li>
+        <li><span class="mono">get_broker_summary</span></li>
+        <li><span class="mono">get_pipeline_status</span></li>
+      </ul>
+      <p class="note" style="margin-top:14px">All six handlers currently return <span class="mono">501 Not Implemented</span> — the routes and use-case wiring exist, the response bodies don't yet. That's the next layer of work.</p>
+    </div>
+  </div>
+
+  <h2>Reliability layers worth knowing</h2>
+  <p>Three mechanisms keep the pipeline from silently losing days. <b>Idempotency</b> sits at two layers: DB upserts (re-running a date overwrites, not duplicates) and asynq <span class="mono">TaskID</span> dedup keyed by <span class="mono">{type}:{date}</span> — a re-enqueue of the same date hits <span class="mono">ErrTaskIDConflict</span> and is skipped. <b>Self-heal</b> recovers archived tasks (retries exhausted, usually a transient Cloudflare 403): it deletes the archived entry to free the ID, then re-enqueues with a 30-minute delay so the block has time to lift. <b>Decoupled fan-out</b> means an announcements or RSS failure is logged, not fatal — the stock-summary chain still runs.</p>
+
+  <div class="cols">
+    <div class="card">
+      <h3>Two binaries</h3>
+      <ul>
+        <li><span class="mono">mcp-server</span> — long-running: asynq server + scheduler + self-heal + HTTP read API + asynq dashboard on <span class="mono">:8081</span></li>
+        <li><span class="mono">enqueue-daily</span> — one-shot CLI: enqueue a single task by date, or bulk-backfill a date range synchronously (no asynq)</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Storage</h3>
+      <ul>
+        <li><b>Redis</b> — asynq queue + scheduler state</li>
+        <li><b>Postgres</b> — all structured results (10 tables)</li>
+        <li><b>R2 / MinIO</b> — S3-compatible; raw XML + PDFs + extracted text. Optional: nil store leaves rows pending; filter re-enqueues them next run</li>
+      </ul>
+    </div>
+  </div>
+
+  <p class="muted" style="margin-top:30px">Drawn from the current working tree — <span class="mono">cmd/mcp-server/main.go</span>, <span class="mono">internal/tasks/</span>, <span class="mono">internal/scheduler/</span>, <span class="mono">internal/controller/mcp.go</span>. MCP read handlers are stubs; disclosure extraction (ticket 11) is implemented and DB-verified.</p>
+</div>

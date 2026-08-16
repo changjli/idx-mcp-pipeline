@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jmoiron/sqlx"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
@@ -97,7 +97,7 @@ func TestAnnouncementsUpsert_EndToEnd(t *testing.T) {
 		AnnouncementDate string `db:"announcement_date"`
 		PdfURL           string `db:"pdf_url"`
 		AttachmentIdx    int32  `db:"attachment_idx"`
-		PassedFilter     bool   `db:"passed_filter"`
+		PassedFilter     *bool  `db:"passed_filter"`
 		ExtractionStatus string `db:"extraction_status"`
 		FetchedAt        string `db:"fetched_at"`
 	}
@@ -116,8 +116,8 @@ func TestAnnouncementsUpsert_EndToEnd(t *testing.T) {
 	if row.AttachmentIdx != 0 {
 		t.Errorf("expected attachment_idx 0, got %d", row.AttachmentIdx)
 	}
-	if row.PassedFilter {
-		t.Error("expected passed_filter false")
+	if row.PassedFilter != nil {
+		t.Errorf("expected passed_filter NULL (pending), got %v", *row.PassedFilter)
 	}
 	if row.ExtractionStatus != "pending" {
 		t.Errorf("expected extraction_status pending, got %s", row.ExtractionStatus)

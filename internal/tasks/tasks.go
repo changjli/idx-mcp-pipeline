@@ -15,6 +15,8 @@ const (
 	TypeDetectAnomalies    = "detect:anomalies"
 	TypeRSS                = "rss:ingest"
 	TypeBrokerStockSummary = "idx:broker_stock_summary"
+	TypeFilterDisclosures  = "filter:disclosures"
+	TypeExtractDisclosure  = "extract:disclosure"
 )
 
 // TaskKey returns a dedup key for a task type and date.

@@ -14,6 +14,7 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/config"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/controller"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/extract"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/middleware"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
@@ -100,6 +101,20 @@ func main() {
 		tasks.DefaultRSSFeeds,
 		db,
 		tickerRepo, newsRepo, newsTickerRepo, sourceStatusRepo, alertRepo, rawFileRepo,
+	))
+
+	// Disclosure filter + extraction (ticket 11): filter:disclosures is
+	// chained from detect:anomalies; extract:disclosure is chained per passing
+	// disclosure. Extraction needs R2 — a nil store leaves rows pending.
+	mux.Handle(tasks.TypeFilterDisclosures, tasks.NewFilterDisclosuresHandler(
+		log, asynqClient, db, disclosureRepo, anomalyRepo,
+	))
+	mux.Handle(tasks.TypeExtractDisclosure, tasks.NewExtractDisclosureHandler(
+		log, asynqClient,
+		&http.Client{Timeout: tasks.ExtractHTTPTimeout},
+		r2Store,
+		db, disclosureRepo, rawFileRepo,
+		extract.PDFExtractor{},
 	))
 
 	// Per-stock broker summary: on-demand fetch + persist, auto-triggered by

@@ -1,11 +1,20 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 )
+
+// DisclosureFilterLookbackDays is the anomaly-gate lookback window: a
+// disclosure matches an anomaly when its announcement_date falls within this
+// many days before the anomaly's trading_day. Shared by the filter task and
+// the read-time join (ticket 10).
+const DisclosureFilterLookbackDays = 7
 
 type DisclosureRepository struct {
 	*Repository[entity.Disclosure]
@@ -61,6 +70,44 @@ func (r *DisclosureRepository) FindByTickerAndDate(db *sqlx.DB, ticker string, d
 		ticker, date,
 	)
 	return disclosures, err
+}
+
+// FindPendingForFilter returns the disclosures the filter task (ticket 11)
+// should process on the given run date:
+//   - never-filtered rows (passed_filter IS NULL, any date — catch-up for
+//     days the filter didn't run);
+//   - rejected rows announced within the 7-day lookback (re-checked for
+//     delayed anomalies — a disclosure's market impact can lag its
+//     announcement by days);
+//   - passing rows still awaiting extraction (re-enqueue extract so a missed
+//     or R2-less run self-heals).
+//
+// Passing rows are sticky: once true, the gate is never re-evaluated.
+func (r *DisclosureRepository) FindPendingForFilter(db *sqlx.DB, today time.Time) ([]entity.Disclosure, error) {
+	lookback := today.AddDate(0, 0, -DisclosureFilterLookbackDays)
+	var rows []entity.Disclosure
+	err := db.Select(&rows, `
+		SELECT * FROM disclosures
+		WHERE passed_filter IS NULL
+		   OR (passed_filter = false AND announcement_date >= $1)
+		   OR (passed_filter = true AND extraction_status = 'pending')
+		ORDER BY announcement_date, id
+	`, lookback)
+	return rows, err
+}
+
+// MarkFiltered records the filter verdict. categories is stored only for
+// passing rows; rejected rows get NULL.
+func (r *DisclosureRepository) MarkFiltered(db *sqlx.DB, id int64, passed bool, categories []string) error {
+	var cats any
+	if passed {
+		cats = pq.StringArray(categories)
+	}
+	_, err := db.Exec(
+		"UPDATE disclosures SET passed_filter = $2, categories = $3 WHERE id = $1",
+		id, passed, cats,
+	)
+	return err
 }
 
 func (r *DisclosureRepository) UpdateExtractionStatus(db *sqlx.DB, id int64, status string, r2Key *string, errMsg *string) error {

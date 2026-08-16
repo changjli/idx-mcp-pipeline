@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
@@ -59,4 +61,21 @@ func (r *AnomalyRepository) ExistsForDate(db *sqlx.DB, tradingDay string) (bool,
 		tradingDay,
 	)
 	return count > 0, err
+}
+
+// ExistsForTickerInWindow reports whether an anomaly exists for the ticker
+// with trading_day within [announcementDate, announcementDate + lookbackDays].
+// The anomaly-gate (ticket 11): a disclosure's market impact can lag its
+// announcement by days, so the match window extends forward from the
+// announcement date, not just the same day.
+func (r *AnomalyRepository) ExistsForTickerInWindow(db *sqlx.DB, ticker string, announcementDate time.Time, lookbackDays int) (bool, error) {
+	end := announcementDate.AddDate(0, 0, lookbackDays)
+	var exists bool
+	err := db.Get(&exists, `
+		SELECT EXISTS(
+			SELECT 1 FROM anomalies
+			WHERE ticker = $1 AND trading_day BETWEEN $2 AND $3
+		)
+	`, ticker, announcementDate, end)
+	return exists, err
 }
