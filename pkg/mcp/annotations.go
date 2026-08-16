@@ -2,9 +2,9 @@ package mcp
 
 // ToolAnnotations declares MCP tool metadata for client-side behavior hints.
 type ToolAnnotations struct {
-	ReadOnlyHint     bool `json:"readOnlyHint"`
-	DestructiveHint  bool `json:"destructiveHint"`
-	OpenWorldHint    bool `json:"openWorldHint"`
+	ReadOnlyHint    bool `json:"readOnlyHint"`
+	DestructiveHint bool `json:"destructiveHint"`
+	OpenWorldHint   bool `json:"openWorldHint"`
 }
 
 // DefaultAnnotations returns the standard read-only tool annotations.

@@ -5,6 +5,7 @@ type ErrorCode string
 
 const (
 	ErrorCodeInvalidTicker   ErrorCode = "INVALID_TICKER"
+	ErrorCodeInvalidArgument ErrorCode = "INVALID_ARGUMENT"
 	ErrorCodeNotFound        ErrorCode = "NOT_FOUND"
 	ErrorCodeSourceStale     ErrorCode = "SOURCE_STALE"
 	ErrorCodeUpstream429     ErrorCode = "UPSTREAM_429"

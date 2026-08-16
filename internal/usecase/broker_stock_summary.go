@@ -18,14 +18,6 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
-// Sentinel errors the controller maps to MCP error codes.
-var (
-	ErrInvalidTicker = errors.New("invalid ticker")
-	ErrNoTradingDay  = errors.New("no trading day found for ticker")
-	ErrPersist       = errors.New("persist broker summary failed")
-	ErrInvalidRange  = errors.New("invalid date range")
-)
-
 // tickerPattern matches IDX ticker codes (2-6 uppercase letters).
 var tickerPattern = regexp.MustCompile(`^[A-Z]{2,6}$`)
 

@@ -13,9 +13,9 @@ import (
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/config"
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/controller"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/extract"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/mcpserver"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/middleware"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/scheduler"
@@ -170,7 +170,7 @@ func main() {
 
 	anomalyUC := usecase.NewAnomalyUseCase(db, log, validate, dailyPriceRepo, anomalyRepo)
 	disclosureUC := usecase.NewDisclosureUseCase(db, log, validate, disclosureRepo)
-	brokerUC := usecase.NewBrokerUseCase(db, log, validate, brokerRepo)
+	brokerUC := usecase.NewBrokerUseCase(db, log, validate, brokerRepo, dailyPriceRepo)
 	newsUC := usecase.NewNewsUseCase(db, log, validate, newsRepo, newsTickerRepo)
 	pipelineUC := usecase.NewPipelineUseCase(db, log, validate, sourceStatusRepo, alertRepo)
 
@@ -192,13 +192,22 @@ func main() {
 	}
 	go startDashboard(dashboardPort, redisOpt, log)
 
+	// MCP server over streamable HTTP (ticket 10): 7 tools, bearer-token
+	// auth on every request, structured error envelopes, staleness metadata.
 	authMW := middleware.NewAuth(vip.GetString("mcp.token"))
-	router.Group(func(r chi.Router) {
-		r.Use(authMW.Authenticate)
-
-		mcpCtrl := controller.NewMCPController(log, anomalyUC, disclosureUC, brokerUC, newsUC, pipelineUC)
-		mcpCtrl.RegisterRoutes(r)
+	mcpSrv := mcpserver.NewServer(mcpserver.Deps{
+		Log:                  log,
+		DB:                   db,
+		AnomalyUC:            anomalyUC,
+		DisclosureUC:         disclosureUC,
+		BrokerUC:             brokerUC,
+		NewsUC:               newsUC,
+		PipelineUC:           pipelineUC,
+		BrokerStockSummaryUC: brokerStockSummaryUC,
+		SourceStatusRepo:     sourceStatusRepo,
+		TickerRepo:           tickerRepo,
 	})
+	router.Mount("/mcp", authMW.Authenticate(mcpSrv.Handler()))
 
 	port := vip.GetInt("mcp.port")
 	if port == 0 {

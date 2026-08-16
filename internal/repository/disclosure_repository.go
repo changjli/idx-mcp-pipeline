@@ -72,6 +72,21 @@ func (r *DisclosureRepository) FindByTickerAndDate(db *sqlx.DB, ticker string, d
 	return disclosures, err
 }
 
+// FindByTickerWithDate returns a ticker's disclosures (metadata only — the
+// caller selects fields), optionally filtered to one announcement date, newest
+// first. date is "YYYY-MM-DD"; nil means all dates.
+func (r *DisclosureRepository) FindByTickerWithDate(db *sqlx.DB, ticker string, date *string, limit int) ([]entity.Disclosure, error) {
+	var rows []entity.Disclosure
+	err := db.Select(&rows, `
+		SELECT * FROM disclosures
+		WHERE ticker = $1
+		  AND ($2::date IS NULL OR announcement_date = $2::date)
+		ORDER BY announcement_date DESC, id DESC
+		LIMIT $3
+	`, ticker, date, limit)
+	return rows, err
+}
+
 // FindPendingForFilter returns the disclosures the filter task (ticket 11)
 // should process on the given run date:
 //   - never-filtered rows (passed_filter IS NULL, any date — catch-up for

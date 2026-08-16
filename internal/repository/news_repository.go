@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
@@ -48,6 +50,29 @@ func (r *NewsRepository) FindByTicker(db *sqlx.DB, ticker string, limit int) ([]
 		ORDER BY ni.published_at DESC
 		LIMIT $2
 	`, ticker, limit)
+	return items, err
+}
+
+// NewsItemWithMatch is one news item plus the match_method recorded on its
+// news_tickers join row (ticket 10's get_ticker_news returns match_method).
+type NewsItemWithMatch struct {
+	entity.NewsItem
+	MatchMethod string `db:"match_method"`
+}
+
+// FindByTickerWithMatch returns a ticker's news items (optionally filtered to
+// published_at >= since) with each item's match_method, newest first.
+func (r *NewsRepository) FindByTickerWithMatch(db *sqlx.DB, ticker string, since *time.Time, limit int) ([]NewsItemWithMatch, error) {
+	var items []NewsItemWithMatch
+	err := db.Select(&items, `
+		SELECT ni.*, nt.match_method
+		FROM news_items ni
+		JOIN news_tickers nt ON nt.news_id = ni.id
+		WHERE nt.ticker = $1
+		  AND ($2::timestamptz IS NULL OR ni.published_at >= $2)
+		ORDER BY ni.published_at DESC
+		LIMIT $3
+	`, ticker, since, limit)
 	return items, err
 }
 

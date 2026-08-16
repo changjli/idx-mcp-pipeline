@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
@@ -61,6 +62,45 @@ func (r *AnomalyRepository) ExistsForDate(db *sqlx.DB, tradingDay string) (bool,
 		tradingDay,
 	)
 	return count > 0, err
+}
+
+// AnomalyWithDisclosures is one anomaly row plus the disclosure IDs the
+// read-time JOIN (ticket 10) derived for it: disclosures for the same ticker
+// announced within the filter's lookback window before the anomaly's trading
+// day that passed the filter. Mirrors the filter task's anomaly-gate semantics
+// so an anomaly's disclosure_ids match what filter:disclosures actually passed.
+type AnomalyWithDisclosures struct {
+	entity.Anomaly
+	DisclosureIDs pq.Int64Array `db:"disclosure_ids"`
+}
+
+// FindByDateWithDisclosures returns the anomalies for a trading day (optionally
+// filtered to one ticker) with their derived disclosure_ids. The disclosure
+// match window is [trading_day - DisclosureFilterLookbackDays, trading_day] —
+// the same window the filter task uses — not just the same-day match, so a
+// disclosure announced days before the anomaly's trading day still links.
+func (r *AnomalyRepository) FindByDateWithDisclosures(db *sqlx.DB, tradingDay string, ticker *string) ([]AnomalyWithDisclosures, error) {
+	day, err := time.Parse("2006-01-02", tradingDay)
+	if err != nil {
+		return nil, err
+	}
+	lookbackStart := day.AddDate(0, 0, -DisclosureFilterLookbackDays)
+	var rows []AnomalyWithDisclosures
+	err = db.Select(&rows, `
+		SELECT a.*,
+		       COALESCE(array_agg(d.id) FILTER (WHERE d.id IS NOT NULL), '{}') AS disclosure_ids
+		FROM anomalies a
+		LEFT JOIN disclosures d
+		  ON d.ticker = a.ticker
+		 AND d.announcement_date >= $2
+		 AND d.announcement_date <= a.trading_day
+		 AND d.passed_filter = true
+		WHERE a.trading_day = $1
+		  AND ($3::text IS NULL OR a.ticker = $3)
+		GROUP BY a.id
+		ORDER BY a.ticker
+	`, tradingDay, lookbackStart, ticker)
+	return rows, err
 }
 
 // ExistsForTickerInWindow reports whether an anomaly exists for the ticker

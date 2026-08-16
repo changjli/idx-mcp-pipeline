@@ -80,6 +80,21 @@ func (r *DailyPriceRepository) LatestTradingDay(db *sqlx.DB, ticker string) (*ti
 	return &day.Time, nil
 }
 
+// LatestTradingDayAll returns the most recent trading day with any stored EOD
+// row across all tickers. Used by MCP tools that default their date argument to
+// the most recent trading day. Returns sql.ErrNoRows when daily_prices is empty.
+func (r *DailyPriceRepository) LatestTradingDayAll(db *sqlx.DB) (*time.Time, error) {
+	var day sql.NullTime
+	err := db.Get(&day, "SELECT MAX(trading_day) FROM daily_prices")
+	if err != nil {
+		return nil, err
+	}
+	if !day.Valid {
+		return nil, sql.ErrNoRows
+	}
+	return &day.Time, nil
+}
+
 // TradingDaysInRange returns the distinct trading days with a stored EOD row
 // for a ticker between two dates (inclusive), ascending. Data presence is the
 // trading-day signal — weekends and IDX holidays have no row, so they are
