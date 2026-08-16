@@ -15,6 +15,17 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
+// filterSelfRetryDelay is the delay between self-synchronizing retries while
+// waiting for idx:announcements to have written disclosures fetched on the
+// run date. Mirrors detect:anomalies' wait for daily_prices.
+const filterSelfRetryDelay = 30 * time.Second
+
+// filterMaxSelfRetry is the self-retry budget (~10 x 30s = 5 min wait). After
+// exhausting it, the filter proceeds anyway — catch-up rows (passed_filter IS
+// NULL, any date) still need processing, and today's disclosures (if they
+// arrive late) are caught by the next day's run.
+const filterMaxSelfRetry = 10
+
 // Disclosure whitelist categories (ticket 11, layer 2): material-event titles
 // kept for extraction. Titles are matched case-insensitively as substrings —
 // real IDX titles are longer than the category names ("Pemanggilan RUPS
@@ -40,7 +51,8 @@ var disclosureExclusionKeywords = []string{
 
 // FilterDisclosuresPayload is the payload for a filter:disclosures task.
 type FilterDisclosuresPayload struct {
-	Date string `json:"date"` // YYYY-MM-DD — the anomaly trading day that triggered the run
+	Date    string `json:"date"`    // YYYY-MM-DD — the anomaly trading day that triggered the run
+	Attempt int    `json:"attempt"` // self-synchronizing retry counter (waits for idx:announcements)
 }
 
 // EnqueueFilterDisclosures enqueues a filter:disclosures task for the given
@@ -51,18 +63,44 @@ type FilterDisclosuresPayload struct {
 func EnqueueFilterDisclosures(client *asynq.Client, date time.Time) (*asynq.TaskInfo, error) {
 	dateKey := date.Format("2006-01-02")
 	taskKey := TaskKey(TypeFilterDisclosures, dateKey)
-	payload := FilterDisclosuresPayload{Date: dateKey}
-	raw, err := json.Marshal(payload)
+	task, err := filterDisclosuresTask(dateKey, 0)
 	if err != nil {
-		return nil, fmt.Errorf("marshal filter:disclosures payload: %w", err)
+		return nil, err
 	}
-	task := asynq.NewTask(TypeFilterDisclosures, raw)
 	return client.Enqueue(task,
 		asynq.TaskID(taskKey),
 		asynq.Queue("ingest"),
 		asynq.MaxRetry(3),
 		asynq.Retention(24*time.Hour),
 	)
+}
+
+// filterDisclosuresTask builds the asynq task for a filter:disclosures payload.
+func filterDisclosuresTask(date string, attempt int) (*asynq.Task, error) {
+	payload := FilterDisclosuresPayload{Date: date, Attempt: attempt}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal filter:disclosures payload: %w", err)
+	}
+	return asynq.NewTask(TypeFilterDisclosures, raw), nil
+}
+
+// reenqueueFilterDisclosures re-enqueues a filter:disclosures task with a delay
+// while self-syncing on idx:announcements. Uses a unique TaskID (no dedup key)
+// because the current task still holds the date-keyed ID while active — mirrors
+// reenqueueDetectAnomalies.
+func reenqueueFilterDisclosures(client *asynq.Client, date string, attempt int) error {
+	task, err := filterDisclosuresTask(date, attempt)
+	if err != nil {
+		return err
+	}
+	_, err = client.Enqueue(task,
+		asynq.Queue("ingest"),
+		asynq.ProcessIn(filterSelfRetryDelay),
+		asynq.MaxRetry(3),
+		asynq.Retention(24*time.Hour),
+	)
+	return err
 }
 
 // NewFilterDisclosuresHandler returns an asynq handler for the
@@ -83,6 +121,32 @@ func NewFilterDisclosuresHandler(
 		today, err := time.Parse("2006-01-02", p.Date)
 		if err != nil {
 			return fmt.Errorf("invalid date %q: %w", p.Date, err)
+		}
+
+		// Self-synchronizing: wait for idx:announcements to have written
+		// disclosures fetched on the run date. filter is chained from
+		// detect:anomalies (anomalies already written), but announcements is
+		// an independent fan-out with no sync to filter — without this gate,
+		// a slow announcements endpoint makes filter win the race and today's
+		// disclosures sit pending until the next day's catch-up run.
+		announcementsDone, err := disclosureRepo.ExistsFetchedOnDate(db, p.Date)
+		if err != nil {
+			return fmt.Errorf("check announcements presence: %w", err)
+		}
+		if !announcementsDone {
+			if p.Attempt >= filterMaxSelfRetry {
+				log.Warnf("filter:disclosures: no disclosures fetched on %s after %d attempts — proceeding on catch-up rows", p.Date, p.Attempt)
+				// Fall through to runFilter: catch-up rows (passed_filter IS
+				// NULL, any date) still need processing today. Today's
+				// disclosures, if they arrive after this point, are caught by
+				// the next day's run.
+			} else {
+				log.Infof("filter:disclosures: announcements for %s not present (attempt %d), retrying in %s", p.Date, p.Attempt, filterSelfRetryDelay)
+				if err := reenqueueFilterDisclosures(client, p.Date, p.Attempt+1); err != nil {
+					return fmt.Errorf("re-enqueue filter:disclosures: %w", err)
+				}
+				return nil // release current task; re-enqueued copy carries Attempt+1
+			}
 		}
 
 		enqueue := func(id int64) {

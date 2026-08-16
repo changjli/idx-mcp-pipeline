@@ -96,6 +96,22 @@ func (r *DisclosureRepository) FindPendingForFilter(db *sqlx.DB, today time.Time
 	return rows, err
 }
 
+// ExistsFetchedOnDate reports whether any disclosure was upserted (fetched_at)
+// on the given calendar day. It is the "idx:announcements ran today" marker
+// used by filter:disclosures self-sync — announcements stamps fetched_at=NOW()
+// on every upserted row, so a row fetched on day D means announcements
+// completed for D. date is "YYYY-MM-DD". The day-range predicate keeps the
+// query sargable if an index on fetched_at is added later.
+func (r *DisclosureRepository) ExistsFetchedOnDate(db *sqlx.DB, date string) (bool, error) {
+	var ok bool
+	err := db.Get(&ok,
+		`SELECT EXISTS(SELECT 1 FROM disclosures
+		   WHERE fetched_at >= $1::date AND fetched_at < ($1::date + interval '1 day'))`,
+		date,
+	)
+	return ok, err
+}
+
 // MarkFiltered records the filter verdict. categories is stored only for
 // passing rows; rejected rows get NULL.
 func (r *DisclosureRepository) MarkFiltered(db *sqlx.DB, id int64, passed bool, categories []string) error {
