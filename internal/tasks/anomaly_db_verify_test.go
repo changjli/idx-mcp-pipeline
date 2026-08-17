@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jmoiron/sqlx"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
@@ -52,7 +52,7 @@ func TestDetectAnomalies_EndToEnd(t *testing.T) {
 	db.MustExec("INSERT INTO daily_prices (ticker, trading_day, open, high, low, close, volume, value, frequency, source) VALUES ($1,$2,100,111,99,110,2800000,2000000,2000,'idx')",
 		"TESTB", today)
 
-	written, err := detectAnomalies(db, dailyRepo, anomalyRepo, today, DefaultADTVMinValue, log)
+	written, err := detectAnomalies(db, dailyRepo, anomalyRepo, today, DefaultADTVMinValue, "test", log)
 	if err != nil {
 		t.Fatalf("detectAnomalies: %v", err)
 	}

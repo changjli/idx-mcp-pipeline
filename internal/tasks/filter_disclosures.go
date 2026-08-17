@@ -154,7 +154,8 @@ func NewFilterDisclosuresHandler(
 				log.Warnf("filter:disclosures: enqueue extract for disclosure %d: %v", id, err)
 			}
 		}
-		return runFilter(log, db, disclosureRepo, anomalyRepo, today, enqueue)
+		taskID, _ := asynq.GetTaskID(ctx)
+		return runFilter(log, db, disclosureRepo, anomalyRepo, today, taskID, enqueue)
 	}
 }
 
@@ -167,6 +168,7 @@ func runFilter(
 	disclosureRepo *repository.DisclosureRepository,
 	anomalyRepo *repository.AnomalyRepository,
 	today time.Time,
+	taskID string,
 	enqueue func(id int64),
 ) error {
 	rows, err := disclosureRepo.FindPendingForFilter(db, today)
@@ -205,8 +207,16 @@ func runFilter(
 		}
 	}
 
-	log.Infof("filter:disclosures: %d pending processed (%d passed, %d rejected), %d passing re-enqueued for extraction",
-		len(rows), passed, rejected, reExtracted)
+	logEvent(log, logrus.InfoLevel, "disclosure_filtered", "disclosure filter run complete",
+		logrus.Fields{
+			"task_id":      taskID,
+			"source":       TypeFilterDisclosures,
+			"date":         today.Format("2006-01-02"),
+			"total":        len(rows),
+			"passed":       passed,
+			"rejected":     rejected,
+			"re_extracted": reExtracted,
+		})
 	return nil
 }
 

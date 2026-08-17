@@ -81,7 +81,7 @@ func TestRunFilter_EndToEnd(t *testing.T) {
 	var enqueued []int64
 	enqueue := func(id int64) { enqueued = append(enqueued, id) }
 
-	if err := runFilter(log, db, disclosureRepo, anomalyRepo, today, enqueue); err != nil {
+	if err := runFilter(log, db, disclosureRepo, anomalyRepo, today, "test", enqueue); err != nil {
 		t.Fatalf("runFilter: %v", err)
 	}
 

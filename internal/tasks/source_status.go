@@ -53,16 +53,26 @@ func recordSourceFailure(db *sqlx.DB, repo *repository.SourceStatusRepository, a
 		consecutive = current.ConsecutiveFailures + 1
 	}
 
+	stale := consecutive >= 3
 	status := &entity.SourceStatus{
 		Source:              source,
 		LastAttemptAt:       &now,
 		LastError:           &errStr,
 		ConsecutiveFailures: consecutive,
-		Stale:               consecutive >= 3,
+		Stale:               stale,
 		MaxAgeSeconds:       maxAgeSeconds,
 	}
 	if err := repo.Upsert(db, status); err != nil {
 		log.Errorf("%s: failed to update source_status (failure): %v", source, err)
+	}
+
+	// source_stale_raised fires only on the transition into stale (3+
+	// consecutive failures) — the operator signal that a source is down. Later
+	// failures of an already-stale source stay quiet; recovery is signalled by
+	// the next recordSourceSuccess.
+	if stale && current != nil && current.ConsecutiveFailures < 3 {
+		logEvent(log, logrus.WarnLevel, "source_stale_raised", "source marked stale after consecutive failures",
+			logrus.Fields{"source": source, "consecutive_failures": consecutive, "error": errStr})
 	}
 
 	// Insert alert.

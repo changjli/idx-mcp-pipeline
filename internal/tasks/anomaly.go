@@ -138,7 +138,8 @@ func NewDetectAnomaliesHandler(
 			return fmt.Errorf("invalid date %q: %w", p.Date, err)
 		}
 
-		written, err := detectAnomalies(db, dailyPriceRepo, anomalyRepo, today, minADTV, log)
+		taskID, _ := asynq.GetTaskID(ctx)
+		written, err := detectAnomalies(db, dailyPriceRepo, anomalyRepo, today, minADTV, taskID, log)
 		if err != nil {
 			return fmt.Errorf("detect anomalies: %w", err)
 		}
@@ -194,6 +195,7 @@ func detectAnomalies(
 	anomalyRepo *repository.AnomalyRepository,
 	today time.Time,
 	minADTV int64,
+	taskID string,
 	log *logrus.Logger,
 ) (int, error) {
 	candidates, err := dailyPriceRepo.AnomalyCandidates(db, today)
@@ -218,6 +220,8 @@ func detectAnomalies(
 				continue
 			}
 			written++
+			logEvent(log, logrus.InfoLevel, "anomaly_detected", "volume anomaly detected",
+				logrus.Fields{"task_id": taskID, "source": TypeDetectAnomalies, "ticker": c.Ticker, "type": a.Type, "direction": a.Direction, "magnitude_pct": a.MagnitudePct, "date": today.Format("2006-01-02")})
 		} else if c.TodayVolume != nil && c.BaselineDays < anomalyBaselineDays {
 			skippedVolume++
 		}
@@ -228,6 +232,8 @@ func detectAnomalies(
 				continue
 			}
 			written++
+			logEvent(log, logrus.InfoLevel, "anomaly_detected", "price anomaly detected",
+				logrus.Fields{"task_id": taskID, "source": TypeDetectAnomalies, "ticker": c.Ticker, "type": a.Type, "direction": a.Direction, "magnitude_pct": a.MagnitudePct, "date": today.Format("2006-01-02")})
 		}
 	}
 

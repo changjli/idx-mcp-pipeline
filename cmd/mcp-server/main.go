@@ -203,9 +203,21 @@ func main() {
 	}
 	go startDashboard(dashboardPort, redisOpt, log)
 
+	// /statusz (ticket 13): bearer-gated source_status dump for quick debugging.
+	// /healthz above is unauthenticated for Koyeb uptime checks.
+	authMW := middleware.NewAuth(vip.GetString("mcp.token"))
+	router.Get("/statusz", authMW.Authenticate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		statuses, err := sourceStatusRepo.FindAll(db)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(statuses)
+	})).ServeHTTP)
+
 	// MCP server over streamable HTTP (tickets 10 + 12): 8 tools, bearer-token
 	// auth on every request, structured error envelopes, staleness metadata.
-	authMW := middleware.NewAuth(vip.GetString("mcp.token"))
 	mcpSrv := mcpserver.NewServer(mcpserver.Deps{
 		Log:                  log,
 		DB:                   db,

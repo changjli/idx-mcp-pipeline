@@ -41,12 +41,20 @@ func RunBulkBackfill(
 		dateKey := d.Format("2006-01-02")
 		result.Total++
 
-		resp, err := fetchStockSummary(idxClient, d, log)
+		path := stockSummaryPath(d)
+		startTime := time.Now()
+		logEvent(log, logrus.InfoLevel, "fetch_start", "bulk backfill fetch",
+			logrus.Fields{"source": TypeStockSummary, "date": dateKey, "fetch_url": path})
+		resp, err := fetchStockSummary(idxClient, path, log)
+		latency := time.Since(startTime).Milliseconds()
 		if err != nil {
-			log.Errorf("bulk: fetch failed for %s: %v", dateKey, err)
+			logEvent(log, logrus.ErrorLevel, "fetch_failure", "bulk backfill fetch failed",
+				logrus.Fields{"source": TypeStockSummary, "date": dateKey, "error": err.Error(), "latency_ms": latency})
 			result.Failed++
 			continue
 		}
+		logEvent(log, logrus.InfoLevel, "fetch_success", "bulk backfill fetched",
+			logrus.Fields{"source": TypeStockSummary, "date": dateKey, "rows": len(resp.Data), "latency_ms": latency})
 
 		rows := resp.Data
 		if len(rows) == 0 {

@@ -134,15 +134,21 @@ func NewAnnouncementsHandler(
 			from = runDate
 		}
 
+		taskID, _ := asynq.GetTaskID(ctx)
+		start := time.Now()
+		logEvent(log, logrus.InfoLevel, "fetch_start", "fetching announcement metadata",
+			logrus.Fields{"task_id": taskID, "source": TypeAnnouncements, "date": p.Date, "fetch_url": announcementsPath(from, runDate, 0)})
 		replies, fetchErr := fetchAnnouncements(idxClient, from, runDate, log)
+		latency := time.Since(start).Milliseconds()
 		if fetchErr != nil {
-			log.Errorf("announcements: fetch failed: %v", fetchErr)
+			logEvent(log, logrus.ErrorLevel, "fetch_failure", "announcements fetch failed",
+				logrus.Fields{"task_id": taskID, "source": TypeAnnouncements, "date": p.Date, "error": fetchErr.Error(), "latency_ms": latency})
 			recordSourceFailure(db, sourceStatusRepo, alertRepo, TypeAnnouncements, announcementsMaxAgeSeconds, p.Date, fetchErr, log)
 			return fetchErr
 		}
 
-		log.Infof("announcements: fetched %d announcement(s) in window %s..%s",
-			len(replies), from.Format("2006-01-02"), runDate.Format("2006-01-02"))
+		logEvent(log, logrus.InfoLevel, "fetch_success", "announcement metadata fetched",
+			logrus.Fields{"task_id": taskID, "source": TypeAnnouncements, "date": p.Date, "rows": len(replies), "latency_ms": latency})
 
 		upserted, upsertErr := upsertDisclosureRows(db, tickerRepo, disclosureRepo, replies, log)
 		if upsertErr != nil {
@@ -170,6 +176,16 @@ func NewAnnouncementsHandler(
 	}
 }
 
+// announcementsPath builds the IDX GetAnnouncement endpoint path for one page
+// of the [from, to] date window. Shared by the handler (fetch_url log field)
+// and the paginated fetch.
+func announcementsPath(from, to time.Time, indexFrom int) string {
+	return fmt.Sprintf(
+		"/primary/ListedCompany/GetAnnouncement?kodeEmiten=&emitenType=*&indexFrom=%d&pageSize=%d&dateFrom=%s&dateTo=%s&lang=id&keyword=",
+		indexFrom, announcementsPageSize, from.Format("20060102"), to.Format("20060102"),
+	)
+}
+
 // fetchAnnouncements calls the IDX GetAnnouncement API with offset pagination
 // over the [from, to] date window and returns every announcement reply.
 func fetchAnnouncements(idxClient *client.Client, from, to time.Time, log *logrus.Logger) ([]AnnouncementReply, error) {
@@ -178,10 +194,7 @@ func fetchAnnouncements(idxClient *client.Client, from, to time.Time, log *logru
 	indexFrom := 0
 
 	for page := 0; page < announcementsMaxPages; page++ {
-		path := fmt.Sprintf(
-			"/primary/ListedCompany/GetAnnouncement?kodeEmiten=&emitenType=*&indexFrom=%d&pageSize=%d&dateFrom=%s&dateTo=%s&lang=id&keyword=",
-			indexFrom, announcementsPageSize, from.Format("20060102"), to.Format("20060102"),
-		)
+		path := announcementsPath(from, to, indexFrom)
 		headers := map[string]string{"Referer": announcementsReferer}
 		resp, err := idxClient.GetWithHeaders(path, headers)
 		if err != nil {

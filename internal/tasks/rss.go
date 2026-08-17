@@ -141,20 +141,27 @@ func NewRSSHandler(
 		log.Infof("rss: ingesting feeds, run date=%s (%d tickers in universe)",
 			runDate.Format("2006-01-02"), len(tickers))
 
+		taskID, _ := asynq.GetTaskID(ctx)
 		matchedTotal := 0
 		fetchedFeeds := 0
 		var firstErr error
 		for _, feed := range feeds {
+			start := time.Now()
+			logEvent(log, logrus.InfoLevel, "fetch_start", "fetching feed",
+				logrus.Fields{"task_id": taskID, "source": TypeRSS, "feed": feed.Name, "fetch_url": feed.URL})
 			_, articles, err := fetchFeed(httpClient, feed)
+			latency := time.Since(start).Milliseconds()
 			if err != nil {
-				log.Errorf("rss: feed %s (%s) failed: %v", feed.Name, feed.URL, err)
+				logEvent(log, logrus.ErrorLevel, "fetch_failure", "feed fetch failed",
+					logrus.Fields{"task_id": taskID, "source": TypeRSS, "feed": feed.Name, "fetch_url": feed.URL, "error": err.Error(), "latency_ms": latency})
 				if firstErr == nil {
 					firstErr = err
 				}
 				continue
 			}
 			fetchedFeeds++
-			log.Infof("rss: feed %s returned %d article(s)", feed.Name, len(articles))
+			logEvent(log, logrus.InfoLevel, "fetch_success", "feed fetched",
+				logrus.Fields{"task_id": taskID, "source": TypeRSS, "feed": feed.Name, "fetch_url": feed.URL, "rows": len(articles), "latency_ms": latency})
 
 			n, err := storeArticles(db, matcher, tickerRepo, newsRepo, newsTickerRepo, feed, articles, log)
 			if err != nil {
@@ -335,7 +342,7 @@ var rssNameStopwords = map[string]bool{
 // codePattern is a compiled code-matching regex. UppercaseOnly forces a
 // case-sensitive match (used for stopword codes).
 type codePattern struct {
-	re           *regexp.Regexp
+	re            *regexp.Regexp
 	uppercaseOnly bool
 }
 

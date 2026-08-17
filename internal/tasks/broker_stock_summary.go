@@ -69,16 +69,21 @@ func NewBrokerStockSummaryHandler(
 			return fmt.Errorf("invalid date %q: %w", p.Date, err)
 		}
 
-		log.Infof("broker_stock_summary: fetching %s for %s", p.Ticker, p.Date)
+		taskID, _ := asynq.GetTaskID(ctx)
+		start := time.Now()
+		logEvent(log, logrus.InfoLevel, "fetch_start", "fetching broker stock summary",
+			logrus.Fields{"task_id": taskID, "source": TypeBrokerStockSummary, "ticker": p.Ticker, "date": p.Date})
 
 		if _, err := uc.GetStockBrokerSummary(ctx, p.Ticker, &date); err != nil {
-			log.Errorf("broker_stock_summary: %s %s failed: %v", p.Ticker, p.Date, err)
+			logEvent(log, logrus.ErrorLevel, "fetch_failure", "broker stock summary fetch failed",
+				logrus.Fields{"task_id": taskID, "source": TypeBrokerStockSummary, "ticker": p.Ticker, "date": p.Date, "error": err.Error(), "latency_ms": time.Since(start).Milliseconds()})
 			recordSourceFailure(db, sourceStatusRepo, alertRepo, TypeBrokerStockSummary, brokerStockSummaryMaxAgeSeconds, p.Date, err, log)
 			return err
 		}
 
 		recordSourceSuccess(db, sourceStatusRepo, TypeBrokerStockSummary, brokerStockSummaryMaxAgeSeconds, nil, log)
-		log.Infof("broker_stock_summary: stored %s for %s", p.Ticker, p.Date)
+		logEvent(log, logrus.InfoLevel, "fetch_success", "broker stock summary stored",
+			logrus.Fields{"task_id": taskID, "source": TypeBrokerStockSummary, "ticker": p.Ticker, "date": p.Date, "latency_ms": time.Since(start).Milliseconds()})
 		return nil
 	}
 }

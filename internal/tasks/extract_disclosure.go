@@ -138,8 +138,10 @@ func NewExtractDisclosureHandler(
 			return nil
 		}
 
+		taskID, _ := asynq.GetTaskID(ctx)
 		h := &extractDisclosureRunner{
 			log:            log,
+			taskID:         taskID,
 			httpClient:     httpClient,
 			r2Store:        r2Store,
 			db:             db,
@@ -158,6 +160,7 @@ func NewExtractDisclosureHandler(
 // run() is testable without Redis (reenqueue is injected).
 type extractDisclosureRunner struct {
 	log            *logrus.Logger
+	taskID         string
 	httpClient     *http.Client
 	r2Store        storage.ObjectStore
 	db             *sqlx.DB
@@ -227,7 +230,15 @@ func (h *extractDisclosureRunner) run(ctx context.Context, d *entity.Disclosure,
 	if err := h.disclosureRepo.UpdateExtractionStatus(h.db, d.ID, "ok", &key, nil); err != nil {
 		return h.retryOrGiveUp(d.ID, attempt, "status_update_failed", err)
 	}
-	h.log.Infof("extract:disclosure: disclosure %d ok (%d bytes text, key=%s)", d.ID, len(text), key)
+	logEvent(h.log, logrus.InfoLevel, "extraction_success", "disclosure text extracted and stored",
+		logrus.Fields{
+			"task_id":       h.taskID,
+			"source":        TypeExtractDisclosure,
+			"disclosure_id": d.ID,
+			"ticker":        disclosureTicker(d),
+			"size_bytes":    len(text),
+			"r2_key":        key,
+		})
 	return nil
 }
 
@@ -246,10 +257,12 @@ func (h *extractDisclosureRunner) retryOrGiveUp(id int64, attempt int, reason st
 		if err := h.reenqueue(attempt+1, delay); err != nil {
 			return err
 		}
-		h.log.Warnf("extract:disclosure: %s for disclosure %d (attempt %d), retrying in %s", reason, id, attempt, delay)
+		logEvent(h.log, logrus.WarnLevel, "extraction_failed", "extraction failed, retrying",
+			logrus.Fields{"task_id": h.taskID, "source": TypeExtractDisclosure, "disclosure_id": id, "reason": reason, "error": errMsg(err), "attempt": attempt, "retry_in_ms": delay.Milliseconds()})
 		return nil
 	}
-	h.log.Warnf("extract:disclosure: %s for disclosure %d (attempt %d), giving up", reason, id, attempt)
+	logEvent(h.log, logrus.WarnLevel, "extraction_failed", "extraction failed, giving up",
+		logrus.Fields{"task_id": h.taskID, "source": TypeExtractDisclosure, "disclosure_id": id, "reason": reason, "error": errMsg(err), "attempt": attempt})
 	return nil
 }
 
@@ -262,8 +275,25 @@ func (h *extractDisclosureRunner) failPermanent(id int64, reason string, err err
 	if err := h.disclosureRepo.UpdateExtractionStatus(h.db, id, "failed", nil, &msg); err != nil {
 		return err
 	}
-	h.log.Warnf("extract:disclosure: %s for disclosure %d (permanent)", reason, id)
+	logEvent(h.log, logrus.WarnLevel, "extraction_failed", "extraction failed permanently",
+		logrus.Fields{"task_id": h.taskID, "source": TypeExtractDisclosure, "disclosure_id": id, "reason": reason, "error": errMsg(err)})
 	return nil
+}
+
+// errMsg flattens an error for the log field, or "" when nil.
+func errMsg(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// disclosureTicker returns the disclosure's ticker, or "unknown" when nil.
+func disclosureTicker(d *entity.Disclosure) string {
+	if d.Ticker == nil {
+		return "unknown"
+	}
+	return *d.Ticker
 }
 
 // downloadBounded fetches a URL into memory, aborting once the body exceeds

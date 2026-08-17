@@ -93,18 +93,25 @@ func NewStockSummaryHandler(
 			return fmt.Errorf("invalid date %q: %w", p.Date, err)
 		}
 
-		log.Infof("stock_summary: fetching for date=%s", p.Date)
+		taskID, _ := asynq.GetTaskID(ctx)
+		path := stockSummaryPath(date)
+		start := time.Now()
+		logEvent(log, logrus.InfoLevel, "fetch_start", "fetching stock summary",
+			logrus.Fields{"task_id": taskID, "source": TypeStockSummary, "date": p.Date, "fetch_url": path})
 
 		// Fetch from IDX API.
-		resp, fetchErr := fetchStockSummary(idxClient, date, log)
+		resp, fetchErr := fetchStockSummary(idxClient, path, log)
+		latency := time.Since(start).Milliseconds()
 		if fetchErr != nil {
-			log.Errorf("stock_summary: fetch failed: %v", fetchErr)
+			logEvent(log, logrus.ErrorLevel, "fetch_failure", "stock summary fetch failed",
+				logrus.Fields{"task_id": taskID, "source": TypeStockSummary, "date": p.Date, "error": fetchErr.Error(), "latency_ms": latency})
 			recordSourceFailure(db, sourceStatusRepo, alertRepo, TypeStockSummary, stockSummaryMaxAgeSeconds, p.Date, fetchErr, log)
 			return fetchErr
 		}
 
 		rows := resp.Data
-		log.Infof("stock_summary: fetched %d rows for date=%s", len(rows), p.Date)
+		logEvent(log, logrus.InfoLevel, "fetch_success", "stock summary fetched",
+			logrus.Fields{"task_id": taskID, "source": TypeStockSummary, "date": p.Date, "rows": len(rows), "latency_ms": latency})
 
 		// Upsert each row into daily_prices.
 		// Ticker must exist first (FK constraint) — auto-discover from response.
@@ -126,11 +133,15 @@ func NewStockSummaryHandler(
 	}
 }
 
-// fetchStockSummary calls the IDX GetStockSummary API and parses the response.
-func fetchStockSummary(idxClient *client.Client, date time.Time, log *logrus.Logger) (StockSummaryResponse, error) {
+// stockSummaryPath builds the IDX GetStockSummary endpoint path for a date.
+// Shared by the handler (for the fetch_url log field) and the fetch itself.
+func stockSummaryPath(date time.Time) string {
 	dateIDX := date.Format("20060102") // YYYYMMDD
-	path := fmt.Sprintf("/primary/TradingSummary/GetStockSummary?length=9999&start=0&date=%s", dateIDX)
+	return fmt.Sprintf("/primary/TradingSummary/GetStockSummary?length=9999&start=0&date=%s", dateIDX)
+}
 
+// fetchStockSummary calls the IDX GetStockSummary API and parses the response.
+func fetchStockSummary(idxClient *client.Client, path string, log *logrus.Logger) (StockSummaryResponse, error) {
 	headers := map[string]string{
 		"Referer": "https://www.idx.co.id/en/market-data/trading-summary/stock-summary/",
 	}
