@@ -121,6 +121,26 @@ func (c *Client) Get(path string) (*http.Response, error) {
 	return c.GetWithHeaders(path, nil)
 }
 
+// GetStream performs a session-aware GET (rate-limited, Cloudflare-cookie'd,
+// retried, TLS-fallback) WITHOUT caching or buffering the body. The caller owns
+// the response and must close Body. Unlike Get/GetWithHeaders, the body is
+// never read into memory nor stored in the stale cache — disclosure PDFs run
+// up to 10MB and must not be held there. resolveURL passes absolute URLs
+// through untouched, so StaticData PDF links work without a double base-URL.
+func (c *Client) GetStream(path string, extraHeaders map[string]string) (*http.Response, error) {
+	url := c.resolveURL(path)
+
+	// Rate limit.
+	c.limiter.Wait()
+
+	// Ensure Cloudflare cookie is fresh.
+	if err := c.cookies.EnsureFresh(); err != nil {
+		c.log.Warnf("cookie refresh failed: %v", err)
+	}
+
+	return c.doWithRetry(url, extraHeaders)
+}
+
 // GetWithHeaders is like Get but allows setting additional request headers.
 // The headers map is merged on top of the default headers (User-Agent, Accept, etc.).
 func (c *Client) GetWithHeaders(path string, extraHeaders map[string]string) (*http.Response, error) {

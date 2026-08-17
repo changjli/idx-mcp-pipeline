@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,8 +24,8 @@ import (
 )
 
 const (
-	// extractMaxPDFBytes caps a disclosure PDF at 10MB — checked via HEAD
-	// before download and enforced again by the bounded read buffer.
+	// extractMaxPDFBytes caps a disclosure PDF at 10MB — probed via a ranged
+	// GET before download and enforced again by the bounded read buffer.
 	extractMaxPDFBytes = 10 * 1024 * 1024
 	// extractTimeout caps text extraction per disclosure (30s). OCR (ticket
 	// 16) will need its own budget — scans are slower than text layers.
@@ -36,9 +37,16 @@ const (
 	// disclosureTextRetentionDays is the raw_files retention for extracted
 	// disclosure text (90 days; metadata survives eviction).
 	disclosureTextRetentionDays = 90
-	// ExtractHTTPTimeout bounds the whole download (HEAD + GET) per attempt.
-	ExtractHTTPTimeout = 60 * time.Second
 )
+
+// pdfFetcher is the injected seam for disclosure PDF downloads. The caller
+// owns the returned response body and must close it — no buffering, no
+// caching. client.Client's GetStream satisfies it with the full Cloudflare
+// session (cookies, browser headers, pacing); a fake backed by httptest keeps
+// unit tests hermetic (no real upstream, per CLAUDE.md).
+type pdfFetcher interface {
+	GetStream(url string, extraHeaders map[string]string) (*http.Response, error)
+}
 
 // extractRetryDelays is the self-managed retry backoff for transient failures
 // (network, timeout, 5xx). Longer than asynq's default so a bad PDF or a
@@ -100,7 +108,7 @@ func reenqueueExtractDisclosure(client *asynq.Client, id int64, attempt int, del
 func NewExtractDisclosureHandler(
 	log *logrus.Logger,
 	client *asynq.Client,
-	httpClient *http.Client,
+	fetcher pdfFetcher,
 	r2Store storage.ObjectStore,
 	db *sqlx.DB,
 	disclosureRepo *repository.DisclosureRepository,
@@ -142,7 +150,7 @@ func NewExtractDisclosureHandler(
 		h := &extractDisclosureRunner{
 			log:            log,
 			taskID:         taskID,
-			httpClient:     httpClient,
+			fetcher:        fetcher,
 			r2Store:        r2Store,
 			db:             db,
 			disclosureRepo: disclosureRepo,
@@ -161,7 +169,7 @@ func NewExtractDisclosureHandler(
 type extractDisclosureRunner struct {
 	log            *logrus.Logger
 	taskID         string
-	httpClient     *http.Client
+	fetcher        pdfFetcher
 	r2Store        storage.ObjectStore
 	db             *sqlx.DB
 	disclosureRepo *repository.DisclosureRepository
@@ -174,21 +182,11 @@ type extractDisclosureRunner struct {
 // failed and re-enqueue a delayed retry while the attempt budget remains;
 // permanent failures (too_large, empty_text) mark failed and stop.
 func (h *extractDisclosureRunner) run(ctx context.Context, d *entity.Disclosure, attempt int) error {
-	// HEAD: reject oversized PDFs before downloading.
-	head, err := h.httpClient.Head(d.PdfURL)
-	if err != nil {
-		return h.retryOrGiveUp(d.ID, attempt, "head_failed", err)
-	}
-	head.Body.Close()
-	if head.StatusCode >= 400 {
-		return h.retryOrGiveUp(d.ID, attempt, fmt.Sprintf("head_http_%d", head.StatusCode), nil)
-	}
-	if head.ContentLength > extractMaxPDFBytes {
-		return h.failPermanent(d.ID, "too_large", nil)
-	}
-
-	// Bounded download: never full-load an unknown-size file into memory.
-	data, err := downloadBounded(h.httpClient, d.PdfURL, extractMaxPDFBytes)
+	// Session-aware fetch: ranged-GET size probe (Cloudflare 403s a bare HEAD)
+	// then bounded download. Fetch failures are retryable; too_large is
+	// permanent — a re-download won't shrink the PDF. Per-attempt download
+	// budget is the client's idx.timeout (default 30s).
+	data, err := fetchPDF(h.fetcher, d.PdfURL, extractMaxPDFBytes)
 	if err != nil {
 		if errors.Is(err, errPDFTooLarge) {
 			return h.failPermanent(d.ID, "too_large", nil)
@@ -296,11 +294,48 @@ func disclosureTicker(d *entity.Disclosure) string {
 	return *d.Ticker
 }
 
-// downloadBounded fetches a URL into memory, aborting once the body exceeds
-// maxBytes. The Content-Length check is a fast path; the LimitedReader is the
-// enforcement for chunked/unknown-size responses.
-func downloadBounded(client *http.Client, url string, maxBytes int64) ([]byte, error) {
-	resp, err := client.Get(url)
+// fetchPDF downloads a disclosure PDF through the session-aware fetcher,
+// bounded to maxBytes. The size probe is a ranged GET (Range: bytes=0-0) —
+// Cloudflare 403s a bare HEAD on the StaticData path — and the probe body is
+// closed unread. The total comes from Content-Range, or Content-Length when
+// the server ignores the range.
+func fetchPDF(f pdfFetcher, url string, maxBytes int64) ([]byte, error) {
+	probe, err := f.GetStream(url, map[string]string{"Range": "bytes=0-0"})
+	if err != nil {
+		return nil, fmt.Errorf("size probe: %w", err)
+	}
+	// Status before size: a 403 (Cloudflare block) must surface as a retryable
+	// fetch error, never as errPDFTooLarge — the CDN's 403 body could carry a
+	// Content-Length/Content-Range that only coincidentally exceeds the cap.
+	probe.Body.Close()
+	if probe.StatusCode >= 400 {
+		return nil, fmt.Errorf("size probe: http status %d", probe.StatusCode)
+	}
+	if probeSize(probe) > maxBytes {
+		return nil, errPDFTooLarge
+	}
+	return downloadBounded(f, url, maxBytes)
+}
+
+// probeSize extracts the full resource size from a ranged-GET response,
+// preferring Content-Range ("bytes 0-0/TOTAL") and falling back to
+// Content-Length. -1 means unknown.
+func probeSize(resp *http.Response) int64 {
+	if cr := resp.Header.Get("Content-Range"); cr != "" {
+		if _, after, ok := strings.Cut(cr, "/"); ok {
+			if total, err := strconv.ParseInt(strings.TrimSpace(after), 10, 64); err == nil {
+				return total
+			}
+		}
+	}
+	return resp.ContentLength
+}
+
+// downloadBounded fetches a URL through the session-aware fetcher into memory,
+// aborting once the body exceeds maxBytes. The Content-Length check is a fast
+// path; the LimitedReader is the enforcement for chunked/unknown-size responses.
+func downloadBounded(f pdfFetcher, url string, maxBytes int64) ([]byte, error) {
+	resp, err := f.GetStream(url, nil)
 	if err != nil {
 		return nil, err
 	}

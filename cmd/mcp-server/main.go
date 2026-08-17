@@ -111,7 +111,7 @@ func main() {
 	))
 	mux.Handle(tasks.TypeExtractDisclosure, tasks.NewExtractDisclosureHandler(
 		log, asynqClient,
-		&http.Client{Timeout: tasks.ExtractHTTPTimeout},
+		idxClient, // session-aware: Cloudflare cookies, browser headers, pacing
 		r2Store,
 		db, disclosureRepo, rawFileRepo,
 		extract.PDFExtractor{},

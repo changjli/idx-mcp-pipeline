@@ -73,7 +73,7 @@ func TestExtractDisclosure_EndToEnd(t *testing.T) {
 	disclosureRepo := repository.NewDisclosureRepository(log)
 	rawFileRepo := repository.NewRawFileRepository(log)
 
-	// PDF server: HEAD + GET both serve the body.
+	// PDF server: probe (ranged GET) + download both serve the body.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("%PDF-1.4 fake body"))
 	}))
@@ -96,7 +96,7 @@ func TestExtractDisclosure_EndToEnd(t *testing.T) {
 	store := newMemStore()
 	runner := &extractDisclosureRunner{
 		log:            log,
-		httpClient:     srv.Client(),
+		fetcher:        httpClientFetcher{srv.Client()},
 		r2Store:        store,
 		db:             db,
 		disclosureRepo: disclosureRepo,
@@ -198,7 +198,7 @@ func TestExtractDisclosure_EmptyText(t *testing.T) {
 	store := newMemStore()
 	runner := &extractDisclosureRunner{
 		log:            log,
-		httpClient:     srv.Client(),
+		fetcher:        httpClientFetcher{srv.Client()},
 		r2Store:        store,
 		db:             db,
 		disclosureRepo: disclosureRepo,
@@ -239,7 +239,7 @@ func TestExtractDisclosure_EmptyText(t *testing.T) {
 }
 
 // TestExtractDisclosure_TooLarge verifies a PDF over the 10MB cap is rejected
-// at the HEAD check and marked failed.
+// at the size probe and marked failed.
 func TestExtractDisclosure_TooLarge(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
@@ -271,7 +271,7 @@ func TestExtractDisclosure_TooLarge(t *testing.T) {
 	store := newMemStore()
 	runner := &extractDisclosureRunner{
 		log:            log,
-		httpClient:     srv.Client(),
+		fetcher:        httpClientFetcher{srv.Client()},
 		r2Store:        store,
 		db:             db,
 		disclosureRepo: disclosureRepo,
