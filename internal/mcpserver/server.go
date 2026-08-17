@@ -64,6 +64,7 @@ func (s *Server) Handler() http.Handler {
 	srv.AddTool(toolGetTickerNews, s.handleGetTickerNews)
 	srv.AddTool(toolGetBrokerSummary, s.handleGetBrokerSummary)
 	srv.AddTool(toolListIdxDisclosures, s.handleListIdxDisclosures)
+	srv.AddTool(toolReadIdxDisclosure, s.handleReadIdxDisclosure)
 	srv.AddTool(toolGetPipelineStatus, s.handleGetPipelineStatus)
 	srv.AddTool(toolGetStockBrokerSummary, s.handleGetStockBrokerSummary)
 	srv.AddTool(toolGetStockBrokerSummaryHistory, s.handleGetStockBrokerSummaryHistory)

@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,8 +13,8 @@ import (
 	"testing"
 
 	"github.com/hibiken/asynq"
-	"github.com/jmoiron/sqlx"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
@@ -30,6 +31,12 @@ func (f *fakeObjectStore) PutObject(ctx context.Context, key string, data []byte
 	defer f.mu.Unlock()
 	f.keys = append(f.keys, key)
 	return nil
+}
+
+// GetObject completes the ObjectStore interface; the RSS path never reads
+// back, so any lookup is an error.
+func (f *fakeObjectStore) GetObject(context.Context, string) ([]byte, error) {
+	return nil, errors.New("rss fake store is write-only")
 }
 
 func (f *fakeObjectStore) storedKeys() []string {

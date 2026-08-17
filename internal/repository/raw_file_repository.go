@@ -31,6 +31,17 @@ func (r *RawFileRepository) Insert(db *sqlx.DB, rf *entity.RawFile) error {
 	return err
 }
 
+// FindByStorageKey returns the claim-check row for a stored object, or
+// sql.ErrNoRows. read_idx_disclosure uses it to detect eviction (deleted_at
+// set) before attempting an R2 fetch.
+func (r *RawFileRepository) FindByStorageKey(db *sqlx.DB, storageKey string) (*entity.RawFile, error) {
+	var rf entity.RawFile
+	if err := db.Get(&rf, "SELECT * FROM raw_files WHERE storage_key = $1", storageKey); err != nil {
+		return nil, err
+	}
+	return &rf, nil
+}
+
 func (r *RawFileRepository) MarkDeleted(db *sqlx.DB, storageKey string) error {
 	_, err := db.Exec(
 		"UPDATE raw_files SET deleted_at = NOW() WHERE storage_key = $1",

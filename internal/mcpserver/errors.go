@@ -25,6 +25,8 @@ func exceptionToEnvelope(err error) mcp.ErrorEnvelope {
 		return mcp.NewError(mcp.ErrorCodeInvalidArgument, err.Error(), false)
 	case errors.Is(err, usecase.ErrNoTradingDay):
 		return mcp.NewError(mcp.ErrorCodeNotFound, err.Error(), false)
+	case errors.Is(err, usecase.ErrNotFound):
+		return mcp.NewError(mcp.ErrorCodeNotFound, err.Error(), false)
 	case errors.Is(err, ipot.ErrUpstream429):
 		return mcp.NewError(mcp.ErrorCodeUpstream429, err.Error(), true)
 	case errors.Is(err, usecase.ErrPersist):

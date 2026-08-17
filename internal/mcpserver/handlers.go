@@ -3,6 +3,9 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -44,6 +47,27 @@ func envelopeResult(env mcp.ErrorEnvelope) *mcpgo.CallToolResult {
 		return mcpgo.NewToolResultError(`{"error":{"code":"INTERNAL","message":"marshal envelope","retryable":false}}`)
 	}
 	return mcpgo.NewToolResultError(string(raw))
+}
+
+// disclosureIDArg extracts disclosure_id in either the documented string form
+// or the numeric form get_market_anomalies emits in disclosure_ids, so an LLM
+// copying a numeric ID doesn't break the tool chain.
+func disclosureIDArg(args map[string]any) (int64, bool) {
+	switch v := args["disclosure_id"].(type) {
+	case string:
+		id, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil || id <= 0 {
+			return 0, false
+		}
+		return id, true
+	case float64:
+		if v < 1 || v > math.MaxInt64 || v != math.Trunc(v) {
+			return 0, false
+		}
+		return int64(v), true
+	default:
+		return 0, false
+	}
 }
 
 // argLimit extracts the limit argument, defaulting to defaultLimit and capping
@@ -174,6 +198,28 @@ func (s *Server) handleListIdxDisclosures(ctx context.Context, req mcpgo.CallToo
 	return textResult(disclosureListResponse{
 		DisclosureListData: data,
 		StalenessMetadata:  stalenessFor(s.db, s.sourceStatusRepo, sourceIdxAnnouncements, time.Now()),
+	}), nil
+}
+
+// disclosureReadResponse wraps the usecase data with staleness metadata.
+type disclosureReadResponse struct {
+	*usecase.ReadIdxDisclosureData
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleReadIdxDisclosure(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	id, ok := disclosureIDArg(req.GetArguments())
+	if !ok {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid disclosure_id", false)), nil
+	}
+
+	data, err := s.disclosureUC.ReadIdxDisclosure(ctx, id)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(disclosureReadResponse{
+		ReadIdxDisclosureData: data,
+		StalenessMetadata:     stalenessFor(s.db, s.sourceStatusRepo, sourceIdxAnnouncements, time.Now()),
 	}), nil
 }
 

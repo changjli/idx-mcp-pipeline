@@ -14,6 +14,8 @@ var (
 	// ErrInvalidArgument — any other input validation failure (bad date
 	// format, out-of-bounds limit). Maps to INVALID_ARGUMENT.
 	ErrInvalidArgument = errors.New("invalid argument")
+	// ErrNotFound — the requested row does not exist. Maps to NOT_FOUND.
+	ErrNotFound = errors.New("not found")
 	// ErrPersist — persisting a fetched broker summary failed (DB write).
 	ErrPersist = errors.New("persist broker summary failed")
 )

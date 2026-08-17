@@ -33,6 +33,16 @@ func (m *memStore) PutObject(_ context.Context, key string, data []byte) error {
 	return nil
 }
 
+func (m *memStore) GetObject(_ context.Context, key string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	data, ok := m.objects[key]
+	if !ok {
+		return nil, storage.ErrObjectNotFound
+	}
+	return append([]byte(nil), data...), nil
+}
+
 // fakeExtractor returns a fixed text/error, isolating the runner from PDF
 // parsing (covered in internal/extract).
 type fakeExtractor struct {

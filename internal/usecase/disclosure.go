@@ -2,21 +2,38 @@ package usecase
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/storage"
 )
+
+// DisclosureTextStore fetches extracted disclosure text from object storage.
+// *storage.R2Store satisfies this; tests use a fake. Only the read path is
+// needed — writing lives in the extract task.
+type DisclosureTextStore interface {
+	GetObject(ctx context.Context, key string) ([]byte, error)
+}
+
+// maxDisclosureTextBytes bounds read_idx_disclosure's text payload to 64KB so
+// one disclosure can't blow up the MCP response.
+const maxDisclosureTextBytes = 64 * 1024
 
 type DisclosureUseCase struct {
 	DB             *sqlx.DB
 	Log            *logrus.Logger
 	Validate       *validator.Validate
 	DisclosureRepo *repository.DisclosureRepository
+	TextStore      DisclosureTextStore
+	RawFileRepo    *repository.RawFileRepository
 }
 
 func NewDisclosureUseCase(
@@ -24,12 +41,16 @@ func NewDisclosureUseCase(
 	log *logrus.Logger,
 	validate *validator.Validate,
 	disclosureRepo *repository.DisclosureRepository,
+	textStore DisclosureTextStore,
+	rawFileRepo *repository.RawFileRepository,
 ) *DisclosureUseCase {
 	return &DisclosureUseCase{
 		DB:             db,
 		Log:            log,
 		Validate:       validate,
 		DisclosureRepo: disclosureRepo,
+		TextStore:      textStore,
+		RawFileRepo:    rawFileRepo,
 	}
 }
 
@@ -76,4 +97,116 @@ func (uc *DisclosureUseCase) ListIdxDisclosures(ctx context.Context, ticker stri
 		})
 	}
 	return resp, nil
+}
+
+// ReadIdxDisclosureData is a read_idx_disclosure response. Text is non-null
+// only when status is "ok"; Error is populated only when status is "failed".
+// A pending/failed/evicted disclosure is a success body — the consumer reads
+// status instead of parsing an error.
+type ReadIdxDisclosureData struct {
+	Ticker *string `json:"ticker"`
+	Title  string  `json:"title"`
+	Date   string  `json:"date"`
+	PdfURL string  `json:"pdf_url"`
+	Text   *string `json:"text"`
+	Status string  `json:"status"`
+	Error  *string `json:"error,omitempty"`
+}
+
+// ReadIdxDisclosure returns one disclosure's metadata plus its pre-extracted
+// text when available. Pure storage reader — no upstream network fetch.
+//
+// status mirrors extraction_status: "pending" (not yet processed by today's
+// job), "ok" (text fetched and truncated to 64KB), "failed" (extraction errored
+// or exceeded caps, error field populated), or "evicted" (text R2 object past
+// the 90-day retention — metadata still served).
+func (uc *DisclosureUseCase) ReadIdxDisclosure(ctx context.Context, id int64) (*ReadIdxDisclosureData, error) {
+	d, err := uc.DisclosureRepo.FindByID(uc.DB, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find disclosure %d: %w", id, err)
+	}
+
+	resp := &ReadIdxDisclosureData{
+		Ticker: d.Ticker,
+		Title:  d.Title,
+		Date:   d.AnnouncementDate.Format("2006-01-02"),
+		PdfURL: d.PdfURL,
+		Status: d.ExtractionStatus,
+	}
+	if d.ExtractionStatus == "failed" {
+		resp.Error = d.ExtractionError
+	}
+	if d.ExtractionStatus != "ok" {
+		return resp, nil
+	}
+	if d.TextR2Key == nil {
+		// Corrupt row: extract sets text_r2_key atomically with status 'ok'.
+		// Downgrade rather than claim ok with no way to serve text.
+		uc.Log.Warnf("read_idx_disclosure: disclosure %d ok without text key", d.ID)
+		resp.Status = "pending"
+		return resp, nil
+	}
+	if uc.TextStore == nil {
+		// R2 not configured — the extract task leaves rows pending in this
+		// state, so an ok row here is corrupt; downgrade to pending rather
+		// than claim ok with text unavailable.
+		uc.Log.Warnf("read_idx_disclosure: text store not configured, disclosure %d downgraded to pending", d.ID)
+		resp.Status = "pending"
+		return resp, nil
+	}
+
+	data, evicted, err := uc.fetchText(ctx, *d.TextR2Key)
+	if err != nil {
+		return nil, err
+	}
+	if evicted {
+		resp.Status = "evicted"
+		return resp, nil
+	}
+	text := truncateDisclosureText(string(data))
+	resp.Text = &text
+	return resp, nil
+}
+
+// fetchText reads a disclosure's extracted text, reporting eviction through
+// the bool return: either the claim-check row is marked deleted or the R2
+// object no longer exists. A missing raw_files row is fine — the row is only
+// required for eviction signaling, not for serving.
+func (uc *DisclosureUseCase) fetchText(ctx context.Context, key string) (data []byte, evicted bool, err error) {
+	// The claim-check row is optional — it only signals eviction. A nil repo
+	// (alternate wiring) skips the check and relies on the R2 404 path.
+	if uc.RawFileRepo != nil {
+		rf, rerr := uc.RawFileRepo.FindByStorageKey(uc.DB, key)
+		if rerr != nil && !errors.Is(rerr, sql.ErrNoRows) {
+			return nil, false, rerr
+		}
+		if rf != nil && rf.DeletedAt != nil {
+			return nil, true, nil
+		}
+	}
+
+	data, err = uc.TextStore.GetObject(ctx, key)
+	if errors.Is(err, storage.ErrObjectNotFound) {
+		return nil, true, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("fetch disclosure text %s: %w", key, err)
+	}
+	return data, false, nil
+}
+
+// truncateDisclosureText caps text at maxDisclosureTextBytes bytes, backing
+// off to a UTF-8 rune boundary so the cut never splits a multibyte character.
+func truncateDisclosureText(s string) string {
+	if len(s) <= maxDisclosureTextBytes {
+		return s
+	}
+	cut := maxDisclosureTextBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

@@ -6,7 +6,7 @@ import (
 
 // instructions is the server-level instructions string (draft from spec §11,
 // trimmed to the tools actually wired — read_idx_disclosure is ticket 12).
-const instructions = "IDX Market Analyzer co-pilot. Tools read a daily-persisted IDX pipeline (no live network fetch in V1, except get_stock_broker_summary which fetches per-stock broker data on demand). get_market_anomalies — volume/price anomalies for a trading day, each with disclosure_ids to follow into list_idx_disclosures. list_idx_disclosures — browse a ticker's filings (metadata only). get_ticker_news — RSS headlines tagged to a ticker. get_broker_summary — aggregate per-broker activity for a date. get_stock_broker_summary — per-stock top buyers/sellers for a ticker+day (fetches + persists). get_stock_broker_summary_history — stored per-stock broker history over a date range. get_pipeline_status — pipeline health / staleness. All outputs carry data_stale + last_good_date; if stale, note it to the user."
+const instructions = "IDX Market Analyzer co-pilot. Tools read a daily-persisted IDX pipeline (no live network fetch in V1, except get_stock_broker_summary which fetches per-stock broker data on demand). get_market_anomalies — volume/price anomalies for a trading day, each with disclosure_ids to follow into list_idx_disclosures or read_idx_disclosure. list_idx_disclosures — browse a ticker's filings (metadata only). read_idx_disclosure — one disclosure's metadata plus pre-extracted text (truncated to 64KB); check its status field (ok/pending/failed/evicted) before assuming text is present. get_ticker_news — RSS headlines tagged to a ticker. get_broker_summary — aggregate per-broker activity for a date. get_stock_broker_summary — per-stock top buyers/sellers for a ticker+day (fetches + persists). get_stock_broker_summary_history — stored per-stock broker history over a date range. get_pipeline_status — pipeline health / staleness. All outputs carry data_stale + last_good_date; if stale, note it to the user."
 
 // readOnlyAnnotations marks a tool read-only: clients skip confirmation
 // prompts. Every tool declares readOnlyHint=true, destructiveHint=false,
@@ -52,6 +52,13 @@ var toolListIdxDisclosures = mcpgo.NewTool("list_idx_disclosures",
 	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. RAJA or RAJA.JK)."), mcpgo.Required()),
 	mcpgo.WithString("date", mcpgo.Description("Only disclosures announced on this date, YYYY-MM-DD.")),
 	mcpgo.WithNumber("limit", mcpgo.Description("Max disclosures to return. Defaults to 20."), mcpgo.DefaultNumber(20)),
+	readOnlyAnnotations(),
+)
+
+// toolReadIdxDisclosure — one disclosure's metadata plus extracted text.
+var toolReadIdxDisclosure = mcpgo.NewTool("read_idx_disclosure",
+	mcpgo.WithDescription("A disclosure's metadata plus its pre-extracted text, truncated to 64KB. The status field tells you whether text is present: ok, pending (not yet processed), failed (extraction errored), or evicted (text past 90-day retention; metadata still served)."),
+	mcpgo.WithString("disclosure_id", mcpgo.Description("Postgres surrogate ID from get_market_anomalies.disclosure_ids or list_idx_disclosures."), mcpgo.Required()),
 	readOnlyAnnotations(),
 )
 

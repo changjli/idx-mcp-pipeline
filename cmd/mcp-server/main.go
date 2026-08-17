@@ -169,7 +169,9 @@ func main() {
 	// ─── Use case layer ─────────────────────────────────────────
 
 	anomalyUC := usecase.NewAnomalyUseCase(db, log, validate, dailyPriceRepo, anomalyRepo)
-	disclosureUC := usecase.NewDisclosureUseCase(db, log, validate, disclosureRepo)
+	// read_idx_disclosure (ticket 12) reads extracted text from R2; a nil
+	// store (r2 not configured) serves metadata-only responses.
+	disclosureUC := usecase.NewDisclosureUseCase(db, log, validate, disclosureRepo, r2Store, rawFileRepo)
 	brokerUC := usecase.NewBrokerUseCase(db, log, validate, brokerRepo, dailyPriceRepo)
 	newsUC := usecase.NewNewsUseCase(db, log, validate, newsRepo, newsTickerRepo)
 	pipelineUC := usecase.NewPipelineUseCase(db, log, validate, sourceStatusRepo, alertRepo)
@@ -192,7 +194,7 @@ func main() {
 	}
 	go startDashboard(dashboardPort, redisOpt, log)
 
-	// MCP server over streamable HTTP (ticket 10): 7 tools, bearer-token
+	// MCP server over streamable HTTP (tickets 10 + 12): 8 tools, bearer-token
 	// auth on every request, structured error envelopes, staleness metadata.
 	authMW := middleware.NewAuth(vip.GetString("mcp.token"))
 	mcpSrv := mcpserver.NewServer(mcpserver.Deps{
