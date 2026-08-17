@@ -50,13 +50,18 @@ func (r *RawFileRepository) MarkDeleted(db *sqlx.DB, storageKey string) error {
 	return err
 }
 
-func (r *RawFileRepository) FindExpired(db *sqlx.DB) ([]entity.RawFile, error) {
+// FindExpired returns up to `limit` raw_files past their retention window
+// (deleted_at IS NULL, stored_at older than retention_days). The caller loops
+// until an empty batch so a large backlog is evicted incrementally instead of
+// materializing the whole set at once.
+func (r *RawFileRepository) FindExpired(db *sqlx.DB, limit int) ([]entity.RawFile, error) {
 	var files []entity.RawFile
 	err := db.Select(&files, `
 		SELECT * FROM raw_files
 		WHERE deleted_at IS NULL
 		AND stored_at < NOW() - (retention_days || ' days')::INTERVAL
 		ORDER BY stored_at
-	`)
+		LIMIT $1
+	`, limit)
 	return files, err
 }

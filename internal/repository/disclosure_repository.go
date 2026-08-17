@@ -141,6 +141,27 @@ func (r *DisclosureRepository) MarkFiltered(db *sqlx.DB, id int64, passed bool, 
 	return err
 }
 
+// FindEvictable returns up to `limit` disclosures whose extracted text on R2
+// is past the retention window: extraction_status='ok' with a text_r2_key,
+// extracted more than `days` ago. The cleanup task deletes the R2 object and
+// marks the row 'evicted' (metadata kept indefinitely). Guarding on
+// extraction_status='ok' makes the query idempotent — already-evicted rows
+// never reappear. The caller loops until an empty batch so a large backlog is
+// evicted incrementally.
+func (r *DisclosureRepository) FindEvictable(db *sqlx.DB, days, limit int) ([]entity.Disclosure, error) {
+	var rows []entity.Disclosure
+	err := db.Select(&rows, `
+		SELECT * FROM disclosures
+		WHERE extraction_status = 'ok'
+		  AND text_r2_key IS NOT NULL
+		  AND extracted_at < NOW() - make_interval(days => $1)
+		ORDER BY id
+		LIMIT $2`,
+		days, limit,
+	)
+	return rows, err
+}
+
 func (r *DisclosureRepository) UpdateExtractionStatus(db *sqlx.DB, id int64, status string, r2Key *string, errMsg *string) error {
 	query := `
 		UPDATE disclosures SET

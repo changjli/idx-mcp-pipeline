@@ -17,6 +17,7 @@ const (
 	TypeBrokerStockSummary = "idx:broker_stock_summary"
 	TypeFilterDisclosures  = "filter:disclosures"
 	TypeExtractDisclosure  = "extract:disclosure"
+	TypeCleanup            = "cleanup"
 )
 
 // TaskKey returns a dedup key for a task type and date.

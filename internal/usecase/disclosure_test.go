@@ -34,6 +34,11 @@ func (f *fakeTextStore) GetObject(_ context.Context, key string) ([]byte, error)
 	return append([]byte(nil), data...), nil
 }
 
+func (f *fakeTextStore) DeleteObject(_ context.Context, key string) error {
+	delete(f.objects, key)
+	return nil
+}
+
 func newDisclosureTestUC(t *testing.T, db *sqlx.DB, store DisclosureTextStore) *DisclosureUseCase {
 	t.Helper()
 	log := logrus.New()

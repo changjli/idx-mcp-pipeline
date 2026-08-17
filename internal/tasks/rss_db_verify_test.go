@@ -39,6 +39,11 @@ func (f *fakeObjectStore) GetObject(context.Context, string) ([]byte, error) {
 	return nil, errors.New("rss fake store is write-only")
 }
 
+// DeleteObject completes the ObjectStore interface; the RSS path never deletes.
+func (f *fakeObjectStore) DeleteObject(context.Context, string) error {
+	return nil
+}
+
 func (f *fakeObjectStore) storedKeys() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

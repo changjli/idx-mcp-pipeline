@@ -76,10 +76,16 @@ func (r *NewsRepository) FindByTickerWithMatch(db *sqlx.DB, ticker string, since
 	return items, err
 }
 
-func (r *NewsRepository) DeleteOlderThan(db *sqlx.DB, days int) error {
-	_, err := db.Exec(
+// DeleteOlderThan deletes news_items rows whose published_at is older than the
+// retention window. Callers must delete the news_tickers join rows first (FK).
+// Returns the number of rows deleted.
+func (r *NewsRepository) DeleteOlderThan(db *sqlx.DB, days int) (int64, error) {
+	res, err := db.Exec(
 		"DELETE FROM news_items WHERE published_at < NOW() - make_interval(days => $1)",
 		days,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

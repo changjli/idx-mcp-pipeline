@@ -22,6 +22,9 @@ var ErrObjectNotFound = errors.New("object not found")
 type ObjectStore interface {
 	PutObject(ctx context.Context, key string, data []byte) error
 	GetObject(ctx context.Context, key string) ([]byte, error)
+	// DeleteObject removes an object. S3 DeleteObject is idempotent — deleting
+	// a missing key succeeds — so retention cleanup can re-run safely.
+	DeleteObject(ctx context.Context, key string) error
 }
 
 // R2Store writes objects to a Cloudflare R2 bucket (S3-compatible API).
@@ -45,6 +48,20 @@ func (s *R2Store) PutObject(ctx context.Context, key string, data []byte) error 
 	})
 	if err != nil {
 		return fmt.Errorf("r2 put %s/%s: %w", s.bucket, key, err)
+	}
+	return nil
+}
+
+// DeleteObject removes an object from the bucket. Idempotent: deleting a
+// missing key succeeds, so cleanup can re-run without erroring on already-
+// evicted objects.
+func (s *R2Store) DeleteObject(ctx context.Context, key string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("r2 delete %s/%s: %w", s.bucket, key, err)
 	}
 	return nil
 }

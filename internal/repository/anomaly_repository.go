@@ -108,6 +108,20 @@ func (r *AnomalyRepository) FindByDateWithDisclosures(db *sqlx.DB, tradingDay st
 // The anomaly-gate (ticket 11): a disclosure's market impact can lag its
 // announcement by days, so the match window extends forward from the
 // announcement date, not just the same day.
+// DeleteOlderThan deletes anomalies rows whose trading_day is older than the
+// retention window. The anomaly-gate only needs a 7-day lookback, so old rows
+// are pure growth. Returns rows deleted.
+func (r *AnomalyRepository) DeleteOlderThan(db *sqlx.DB, days int) (int64, error) {
+	res, err := db.Exec(
+		"DELETE FROM anomalies WHERE trading_day < NOW() - make_interval(days => $1)",
+		days,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (r *AnomalyRepository) ExistsForTickerInWindow(db *sqlx.DB, ticker string, announcementDate time.Time, lookbackDays int) (bool, error) {
 	end := announcementDate.AddDate(0, 0, lookbackDays)
 	var exists bool

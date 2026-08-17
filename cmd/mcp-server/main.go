@@ -117,6 +117,15 @@ func main() {
 		extract.PDFExtractor{},
 	))
 
+	// Retention cleanup (ticket 13): evicts expired data per the tiered
+	// retention policy. Chained from pipeline:daily with a delay; idempotent.
+	mux.Handle(tasks.TypeCleanup, tasks.NewCleanupHandler(
+		log, db,
+		dailyPriceRepo, brokerRepo, brokerStockSummaryRepo,
+		newsRepo, newsTickerRepo, alertRepo, anomalyRepo,
+		rawFileRepo, disclosureRepo, r2Store,
+	))
+
 	// Per-stock broker summary: on-demand fetch + persist, auto-triggered by
 	// anomaly detection. Shares the same usecase the MCP tool (ticket 10) wires.
 	ipotClient := ipot.NewClient(ipot.DefaultConfig(), log)

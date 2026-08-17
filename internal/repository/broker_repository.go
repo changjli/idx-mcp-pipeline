@@ -42,10 +42,15 @@ func (r *BrokerRepository) FindByDate(db *sqlx.DB, tradingDay string) ([]entity.
 	return summaries, err
 }
 
-func (r *BrokerRepository) DeleteOlderThan(db *sqlx.DB, days int) error {
-	_, err := db.Exec(
+// DeleteOlderThan deletes broker_summaries rows whose trading_day is older
+// than the retention window. Returns the number of rows deleted.
+func (r *BrokerRepository) DeleteOlderThan(db *sqlx.DB, days int) (int64, error) {
+	res, err := db.Exec(
 		"DELETE FROM broker_summaries WHERE trading_day < NOW() - make_interval(days => $1)",
 		days,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

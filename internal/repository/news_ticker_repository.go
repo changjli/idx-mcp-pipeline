@@ -28,3 +28,20 @@ func (r *NewsTickerRepository) Insert(db *sqlx.DB, nt *entity.NewsTicker) error 
 	_, err := db.NamedExec(query, nt)
 	return err
 }
+
+// DeleteOlderThan deletes news_tickers join rows whose parent news_item is
+// older than the retention window. Must run before NewsRepository.DeleteOlderThan
+// (news_tickers.news_id FK references news_items.id). Returns rows deleted.
+func (r *NewsTickerRepository) DeleteOlderThan(db *sqlx.DB, days int) (int64, error) {
+	res, err := db.Exec(`
+		DELETE FROM news_tickers nt
+		USING news_items ni
+		WHERE nt.news_id = ni.id
+		  AND ni.published_at < NOW() - make_interval(days => $1)`,
+		days,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}

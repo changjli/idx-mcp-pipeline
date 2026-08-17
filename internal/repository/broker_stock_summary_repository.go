@@ -155,3 +155,29 @@ func (r *BrokerStockSummaryRepository) FindTotalsByTickerAndDateRange(db *sqlx.D
 	)
 	return totals, err
 }
+
+// DeleteOlderThan deletes broker_stock_summaries rows whose trading_day is
+// older than the retention window. Returns rows deleted.
+func (r *BrokerStockSummaryRepository) DeleteOlderThan(db *sqlx.DB, days int) (int64, error) {
+	res, err := db.Exec(
+		"DELETE FROM broker_stock_summaries WHERE trading_day < NOW() - make_interval(days => $1)",
+		days,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteTotalsOlderThan deletes broker_stock_summary_totals rows whose
+// trading_day is older than the retention window. Returns rows deleted.
+func (r *BrokerStockSummaryRepository) DeleteTotalsOlderThan(db *sqlx.DB, days int) (int64, error) {
+	res, err := db.Exec(
+		"DELETE FROM broker_stock_summary_totals WHERE trading_day < NOW() - make_interval(days => $1)",
+		days,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}

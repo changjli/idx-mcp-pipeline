@@ -37,10 +37,15 @@ func (r *AlertRepository) FindRecent(db *sqlx.DB, limit int) ([]entity.Alert, er
 	return alerts, err
 }
 
-func (r *AlertRepository) DeleteOlderThan(db *sqlx.DB, days int) error {
-	_, err := db.Exec(
+// DeleteOlderThan deletes alerts rows whose raised_at is older than the
+// retention window. Returns the number of rows deleted.
+func (r *AlertRepository) DeleteOlderThan(db *sqlx.DB, days int) (int64, error) {
+	res, err := db.Exec(
 		"DELETE FROM alerts WHERE raised_at < NOW() - make_interval(days => $1)",
 		days,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

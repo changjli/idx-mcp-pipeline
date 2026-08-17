@@ -44,6 +44,18 @@ func NewPipelineDailyHandler(log *logrus.Logger, client *asynq.Client) asynq.Han
 			log.Infof("pipeline:daily: enqueued rss task id=%s", info.ID)
 		}
 
+		// Retention cleanup runs after the ingestion wave: delayed so extraction
+		// (chained off anomalies → filter) has time to finish before eviction.
+		// Date-keyed TaskID dedups against a same-day re-run.
+		info, err = EnqueueCleanup(client, now, asynq.ProcessIn(cleanupDelay))
+		if err == asynq.ErrTaskIDConflict {
+			log.Infof("pipeline:daily: cleanup task for %s already enqueued", now.Format("2006-01-02"))
+		} else if err != nil {
+			log.Errorf("pipeline:daily: failed to enqueue cleanup: %v", err)
+		} else {
+			log.Infof("pipeline:daily: enqueued cleanup task id=%s (in %s)", info.ID, cleanupDelay)
+		}
+
 		return nil
 	}
 }
