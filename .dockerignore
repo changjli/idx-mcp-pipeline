@@ -1,0 +1,13 @@
+.git
+.scratch
+build/
+tmp/
+docs/
+.env
+.env.local
+.env.example
+*.log
+docker-compose.yml
+Makefile
+idx-pipeline-flow.html
+skills-lock.json

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -14,6 +15,8 @@ func NewViper() *viper.Viper {
 	config.AddConfigPath("./")
 	config.AddConfigPath("./../")
 
+	// Map env vars to nested config keys: DATABASE_HOST -> database.host.
+	config.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	config.AutomaticEnv()
 
 	err := config.ReadInConfig()
