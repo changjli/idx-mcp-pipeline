@@ -18,7 +18,8 @@
   "redis": {
     "address": "localhost:6379",
     "password": "",
-    "db": 0
+    "db": 0,
+    "tls": false
   },
   "r2": {
     "endpoint": "http://localhost:9000",

@@ -10,14 +10,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
     -o /out/mcp-server ./cmd/mcp-server
 
 # ─── runtime ────────────────────────────────────────────────────
+# No bundled Redis: SnapDeploy's service-dependency scanner blocks
+# redis-server in the app container. Redis is external (Redis Cloud)
+# via REDIS_* env vars.
 FROM alpine:3.20
-RUN apk add --no-cache redis ca-certificates tzdata && \
+RUN apk add --no-cache ca-certificates tzdata && \
     adduser -D -H app
 WORKDIR /app
 COPY --from=builder /out/mcp-server ./mcp-server
 COPY config.json ./config.json
-COPY docker/entrypoint.sh ./entrypoint.sh
-RUN chmod +x ./entrypoint.sh
 EXPOSE 8080
 USER app
-CMD ["./entrypoint.sh"]
+CMD ["./mcp-server"]

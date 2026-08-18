@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/tls"
+	"net"
+
 	"github.com/hibiken/asynq"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
@@ -8,6 +11,8 @@ import (
 
 // NewRedisConnOpt returns a RedisClientOpt from viper config.
 // Shared by asynq client, server, and scheduler.
+// redis.tls (env REDIS_TLS=true) opts into encryption-in-transit for
+// providers that require it (e.g. managed Redis with TLS-only ports).
 func NewRedisConnOpt(vip *viper.Viper) asynq.RedisClientOpt {
 	addr := vip.GetString("redis.address")
 	password := vip.GetString("redis.password")
@@ -17,11 +22,23 @@ func NewRedisConnOpt(vip *viper.Viper) asynq.RedisClientOpt {
 		addr = "localhost:6379"
 	}
 
-	return asynq.RedisClientOpt{
+	opt := asynq.RedisClientOpt{
 		Addr:     addr,
 		Password: password,
 		DB:       db,
 	}
+
+	if vip.GetBool("redis.tls") {
+		// go-redis does not derive ServerName from Addr — set it explicitly
+		// so SNI + hostname verification work against TLS-only providers.
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			host = addr
+		}
+		opt.TLSConfig = &tls.Config{ServerName: host}
+	}
+
+	return opt
 }
 
 // NewAsynqClient creates an asynq client for enqueuing tasks.
