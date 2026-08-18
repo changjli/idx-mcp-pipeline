@@ -11,10 +11,14 @@ import (
 
 // NewRedisConnOpt returns a RedisClientOpt from viper config.
 // Shared by asynq client, server, and scheduler.
+// redis.username (env REDIS_USERNAME) is required for Redis 6 ACL providers
+// such as Redis Cloud free, where a bare AUTH <password> returns WRONGPASS —
+// the connection must AUTH as the "default" user explicitly.
 // redis.tls (env REDIS_TLS=true) opts into encryption-in-transit for
 // providers that require it (e.g. managed Redis with TLS-only ports).
 func NewRedisConnOpt(vip *viper.Viper) asynq.RedisClientOpt {
 	addr := vip.GetString("redis.address")
+	username := vip.GetString("redis.username")
 	password := vip.GetString("redis.password")
 	db := vip.GetInt("redis.db")
 
@@ -24,6 +28,7 @@ func NewRedisConnOpt(vip *viper.Viper) asynq.RedisClientOpt {
 
 	opt := asynq.RedisClientOpt{
 		Addr:     addr,
+		Username: username,
 		Password: password,
 		DB:       db,
 	}
