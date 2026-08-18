@@ -191,7 +191,9 @@ func main() {
 	router.Use(chimw.Logger)
 	router.Use(chimw.Recoverer)
 
-	router.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	// HandleFunc (not Get) so HEAD/POST probes from UptimeRobot and
+	// SnapDeploy/Cloudflare health checks don't 405 — liveness is method-agnostic.
+	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
