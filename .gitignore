@@ -23,6 +23,10 @@
 /dist/
 /build/
 
+# Compiled binaries
+/mcp-server
+/enqueue-daily
+
 # Wire generated
 internal/config/wire_gen.go
 

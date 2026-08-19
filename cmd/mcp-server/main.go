@@ -4,7 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
+
+	_ "time/tzdata"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -234,7 +238,18 @@ func main() {
 	})
 	router.Mount("/mcp", authMW.Authenticate(mcpSrv.Handler()))
 
-	port := vip.GetInt("mcp.port")
+	// Heroku assigns a dynamic port via the PORT env var; honour it first so
+	// the dyno binds to the port the router expects. Fall back to viper
+	// mcp.port (env MCP_PORT) and finally the default 8080.
+	port := 0
+	if p := os.Getenv("PORT"); p != "" {
+		if v, err := strconv.Atoi(p); err == nil {
+			port = v
+		}
+	}
+	if port == 0 {
+		port = vip.GetInt("mcp.port")
+	}
 	if port == 0 {
 		port = 8080
 	}

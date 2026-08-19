@@ -19,9 +19,14 @@ func NewViper() *viper.Viper {
 	config.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	config.AutomaticEnv()
 
+	// Config file is optional: when absent (e.g. Heroku, which relies on env
+	// vars via AutomaticEnv), fall back to defaults + env instead of panicking.
+	// Any other read error (malformed file, permission denied) is still fatal.
 	err := config.ReadInConfig()
 	if err != nil {
-		panic(fmt.Errorf("fatal error config file: %w", err))
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			panic(fmt.Errorf("fatal error config file: %w", err))
+		}
 	}
 
 	return config
