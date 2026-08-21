@@ -36,3 +36,15 @@ func EnqueueNoop(client *asynq.Client, date time.Time) (*asynq.TaskInfo, error) 
 	task := asynq.NewTask(TypeNoop, payload)
 	return client.Enqueue(task, asynq.TaskID(taskKey), asynq.Queue("default"))
 }
+
+// EnqueuePipelineDaily enqueues the pipeline:daily fan-out task for the given
+// date with a date-keyed TaskID. The handler ignores the payload and derives
+// "today" from time.Now() server-side; the TaskID is for manual-trigger dedup
+// only. Returns ErrTaskIDConflict if already enqueued for this date.
+func EnqueuePipelineDaily(client *asynq.Client, date time.Time) (*asynq.TaskInfo, error) {
+	dateKey := date.Format("2006-01-02")
+	taskKey := TaskKey(TypePipelineDaily, dateKey)
+
+	task := asynq.NewTask(TypePipelineDaily, nil)
+	return client.Enqueue(task, asynq.TaskID(taskKey), asynq.Queue("default"))
+}

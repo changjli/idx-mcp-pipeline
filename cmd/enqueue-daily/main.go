@@ -26,6 +26,7 @@ func main() {
 	brokerSummaryTicker := flag.String("broker-summary", "", "enqueue idx:broker_stock_summary task for this ticker (e.g. RAJA)")
 	filterFlag := flag.Bool("filter", false, "enqueue filter:disclosures task instead of stock_summary")
 	extractID := flag.Int64("extract", 0, "enqueue extract:disclosure task for this disclosure id")
+	pipelineFlag := flag.Bool("pipeline", false, "enqueue the pipeline:daily fan-out task (stock_summary + announcements + rss + cleanup)")
 	flag.Parse()
 
 	vip := config.NewViper()
@@ -39,8 +40,8 @@ func main() {
 		if *dateStr != "" {
 			log.Fatalf("--date is mutually exclusive with --start-date/--end-date")
 		}
-		if *announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *filterFlag || *extractID != 0 {
-			log.Fatalf("--announcements/--rss/--broker-summary/--filter/--extract are mutually exclusive with --start-date/--end-date")
+		if *announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *filterFlag || *extractID != 0 || *pipelineFlag {
+			log.Fatalf("--announcements/--rss/--broker-summary/--filter/--extract/--pipeline are mutually exclusive with --start-date/--end-date")
 		}
 		runBulkBackfill(vip, log, *startDateStr, *endDateStr)
 		return
@@ -67,8 +68,11 @@ func main() {
 	if *filterFlag && (*announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *extractID != 0) {
 		log.Fatalf("--filter is mutually exclusive with --announcements/--rss/--broker-summary/--extract")
 	}
-	if *extractID != 0 && (*announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *filterFlag) {
-		log.Fatalf("--extract is mutually exclusive with --announcements/--rss/--broker-summary/--filter")
+	if *extractID != 0 && (*announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *filterFlag || *pipelineFlag) {
+		log.Fatalf("--extract is mutually exclusive with --announcements/--rss/--broker-summary/--filter/--pipeline")
+	}
+	if *pipelineFlag && (*announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *filterFlag || *extractID != 0) {
+		log.Fatalf("--pipeline is mutually exclusive with --announcements/--rss/--broker-summary/--filter/--extract")
 	}
 
 	dateKey := date.Format("2006-01-02")
@@ -77,7 +81,10 @@ func main() {
 	// broker-summary.
 	taskType := tasks.TypeStockSummary
 	enqueue := func() (*asynq.TaskInfo, error) { return tasks.EnqueueStockSummary(client, date) }
-	if *announcementsFlag {
+	if *pipelineFlag {
+		taskType = tasks.TypePipelineDaily
+		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueuePipelineDaily(client, date) }
+	} else if *announcementsFlag {
 		taskType = tasks.TypeAnnouncements
 		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueAnnouncements(client, date) }
 	} else if *rssFlag {
