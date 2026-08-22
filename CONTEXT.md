@@ -52,6 +52,24 @@ _Avoid_: outdated, expired
 The daily asynq job graph: Wave 1 ingestion (stock summary, announcements, broker summary, RSS, cleanup) → detect anomalies → filter disclosures → extract per disclosure. Owned by the asynq Scheduler inside `mcp-server`.
 _Avoid_: cron job, batch
 
+## Fetch transport
+
+**Fetch Mode**:
+The IDX client's transport selection: `direct` (plain Go HTTP, default) or `flaresolverr` (headless-browser fetch through a proxy pool). Mode is config-driven (`idx.fetch_mode`), so the pipeline can fall back to direct when Cloudflare is not challenging.
+_Avoid_: transport mode, proxy mode
+
+**Proxy Pool**:
+The configured list of egress proxies FlareSolverr rotates through. A proxy is tried until one works, then stuck with for the run; failures mark it dead and advance the rotation.
+_Avoid_: proxy list (use for the raw artifact)
+
+**Dead Proxy**:
+A proxy marked unusable after a failed fetch (challenge 403, FlareSolverr error, or timeout); skipped until `dead_retry_after` elapses. Distinct from a *burned* proxy, which is the specific case where idx's Cloudflare rejects the proxy's IP.
+_Avoid_: bad proxy, burned proxy (burned is the specific Cloudflare-IP case)
+
+**FlareSolverr Session**:
+A proxy-bound browser context inside FlareSolverr that retains the solved Cloudflare cookies. Reused for many requests through the same proxy (one challenge solve per proxy); never portable across proxies or outside FlareSolverr.
+_Avoid_: cookie, session cookie
+
 ## Relationships
 
 - **Ticker → Daily Price / Anomaly / Disclosure / News Item**: a ticker owns its price history, anomalies, disclosures, and tagged news (FK by `code`).

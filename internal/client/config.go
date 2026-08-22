@@ -17,6 +17,21 @@ type Config struct {
 	CacheTTL        time.Duration
 	CookieRefresh   time.Duration
 	UserAgent       string
+	// FetchMode selects the transport: "direct" (default) or "flaresolverr".
+	FetchMode    string
+	FlareSolverr FlareSolverrConfig
+}
+
+// FlareSolverrConfig holds the FlareSolverr fetch-mode knobs.
+type FlareSolverrConfig struct {
+	BaseURL           string        // root URL; the client appends /v1
+	AuthToken         string        // sent as Authorization: Bearer to the reverse proxy
+	Timeout           time.Duration // per-proxy request.get maxTimeout
+	Proxies           string        // HTTPS URL or file path to a JSON array of proxy URLs
+	ProxiesTTL        time.Duration // in-memory cache TTL for the proxy list
+	DeadRetryAfter    time.Duration // how long a dead proxy stays out of rotation
+	WakeTimeout       time.Duration // bound for the wake-on-demand health poll
+	SessionTTLMinutes int           // FlareSolverr session_ttl_minutes per request
 }
 
 // DefaultConfig returns sensible defaults.
@@ -31,6 +46,14 @@ func DefaultConfig() Config {
 		CacheTTL:        6 * time.Hour,
 		CookieRefresh:   10 * time.Minute,
 		UserAgent:       "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		FetchMode:       "direct",
+		FlareSolverr: FlareSolverrConfig{
+			Timeout:           15 * time.Second,
+			ProxiesTTL:        time.Hour,
+			DeadRetryAfter:    6 * time.Hour,
+			WakeTimeout:       2 * time.Minute,
+			SessionTTLMinutes: 30,
+		},
 	}
 }
 
@@ -64,6 +87,35 @@ func ConfigFromViper(vip *viper.Viper) Config {
 	}
 	if v := vip.GetString("idx.user_agent"); v != "" {
 		cfg.UserAgent = v
+	}
+	if v := vip.GetString("idx.fetch_mode"); v != "" {
+		cfg.FetchMode = v
+	}
+
+	fs := &cfg.FlareSolverr
+	if v := vip.GetString("flaresolverr.base_url"); v != "" {
+		fs.BaseURL = v
+	}
+	if v := vip.GetString("flaresolverr.auth_token"); v != "" {
+		fs.AuthToken = v
+	}
+	if v := vip.GetDuration("flaresolverr.timeout"); v > 0 {
+		fs.Timeout = v
+	}
+	if v := vip.GetString("flaresolverr.proxies"); v != "" {
+		fs.Proxies = v
+	}
+	if v := vip.GetDuration("flaresolverr.proxies_ttl"); v > 0 {
+		fs.ProxiesTTL = v
+	}
+	if v := vip.GetDuration("flaresolverr.dead_retry_after"); v > 0 {
+		fs.DeadRetryAfter = v
+	}
+	if v := vip.GetDuration("flaresolverr.wake_timeout"); v > 0 {
+		fs.WakeTimeout = v
+	}
+	if v := vip.GetInt("flaresolverr.session_ttl_minutes"); v > 0 {
+		fs.SessionTTLMinutes = v
 	}
 
 	return cfg
