@@ -21,7 +21,7 @@ type Client struct {
 	limiter *RateLimiter
 	cache   *StaleCache
 	cookies *CookieManager
-	flare   flareFetcher // non-nil only in flaresolverr fetch mode
+	browser browserFetcher // non-nil in flaresolverr/nodriver fetch modes
 	log     *logrus.Logger
 	stopCh  chan struct{}
 	wg      sync.WaitGroup
@@ -92,14 +92,21 @@ func NewClient(cfg Config, log *logrus.Logger) (*Client, error) {
 		},
 	}
 
-	// FlareSolverr fetch mode: route GetWithHeaders through a headless browser
-	// when idx.fetch_mode=flaresolverr.
-	if cfg.FetchMode == "flaresolverr" {
+	// Browser fetch modes: route GetWithHeaders through a headless browser when
+	// idx.fetch_mode=flaresolverr|nodriver.
+	switch cfg.FetchMode {
+	case "flaresolverr":
 		flare, err := NewFlareSolverrClient(cfg.FlareSolverr, log)
 		if err != nil {
 			return nil, fmt.Errorf("flaresolverr client: %w", err)
 		}
-		c.flare = flare
+		c.browser = flare
+	case "nodriver":
+		nd, err := NewNodriverClient(cfg.Nodriver, cfg.FlareSolverr.Proxies, cfg.FlareSolverr.ProxiesTTL, cfg.FlareSolverr.DeadRetryAfter, log)
+		if err != nil {
+			return nil, fmt.Errorf("nodriver client: %w", err)
+		}
+		c.browser = nd
 	}
 
 	// Initial Cloudflare cookie fetch.
@@ -120,10 +127,10 @@ func NewDefaultClient(vip *viper.Viper, log *logrus.Logger) (*Client, error) {
 	return NewClient(cfg, log)
 }
 
-// Close stops background goroutines and destroys the FlareSolverr session.
+// Close stops background goroutines and tears down the browser fetcher.
 func (c *Client) Close() {
-	if c.flare != nil {
-		c.flare.Close()
+	if c.browser != nil {
+		c.browser.Close()
 	}
 	close(c.stopCh)
 	c.wg.Wait()
@@ -158,9 +165,9 @@ func (c *Client) GetStream(path string, extraHeaders map[string]string) (*http.R
 // GetWithHeaders is like Get but allows setting additional request headers.
 // The headers map is merged on top of the default headers (User-Agent, Accept, etc.).
 func (c *Client) GetWithHeaders(path string, extraHeaders map[string]string) (*http.Response, error) {
-	// FlareSolverr mode: delegate to the headless-browser fetch path.
-	if c.flare != nil {
-		return c.getWithFlareSolverr(path, extraHeaders)
+	// Browser mode (flaresolverr/nodriver): delegate to the headless-browser fetch path.
+	if c.browser != nil {
+		return c.getViaBrowser(path, extraHeaders)
 	}
 
 	url := c.resolveURL(path)
@@ -206,14 +213,15 @@ func (c *Client) GetWithHeaders(path string, extraHeaders map[string]string) (*h
 	return resp, nil
 }
 
-// getWithFlareSolverr fetches through FlareSolverr and surfaces the extracted
-// JSON as a synthetic response, reusing the caller-side contract (status >= 400
-// -> error, json.Unmarshal in the task) unchanged.
-func (c *Client) getWithFlareSolverr(path string, extraHeaders map[string]string) (*http.Response, error) {
+// getViaBrowser fetches through the configured browser fetcher (FlareSolverr or
+// nodriver) and surfaces the extracted payload as a synthetic response, reusing
+// the caller-side contract (status >= 400 -> error, json.Unmarshal in the task)
+// unchanged.
+func (c *Client) getViaBrowser(path string, extraHeaders map[string]string) (*http.Response, error) {
 	url := c.resolveURL(path)
-	body, status, err := c.flare.Fetch(url, extraHeaders)
+	body, status, err := c.browser.Fetch(url, extraHeaders)
 	if err != nil {
-		return nil, fmt.Errorf("flaresolverr fetch: %w", err)
+		return nil, fmt.Errorf("browser fetch: %w", err)
 	}
 	return c.syntheticResponse(status, make(http.Header), body, url), nil
 }

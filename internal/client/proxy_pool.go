@@ -13,10 +13,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// proxyPool is a rotating pool of egress proxies for FlareSolverr. The list is
-// loaded from an HTTPS URL or a local file path (JSON array of proxy URL
-// strings), cached in-memory for ttl, and refreshed lazily. Dead proxies are
-// skipped until deadRetryAfter elapses.
+// proxyPool is a rotating pool of egress proxies shared by the browser fetch
+// modes (flaresolverr and nodriver). The list is loaded from an HTTPS URL or a
+// local file path (JSON array of proxy URL strings), cached in-memory for ttl,
+// and refreshed lazily. Dead proxies are skipped until deadRetryAfter elapses.
 type proxyPool struct {
 	mu             sync.Mutex
 	source         string

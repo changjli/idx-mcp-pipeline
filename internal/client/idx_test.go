@@ -1,6 +1,7 @@
 package client
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -15,8 +16,8 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// stubFlare is a hermetic flareFetcher for the IDX client's flaresolverr mode.
-type stubFlare struct {
+// stubBrowser is a hermetic browserFetcher for the IDX client's browser modes.
+type stubBrowser struct {
 	body       []byte
 	status     int
 	err        error
@@ -24,25 +25,25 @@ type stubFlare struct {
 	gotHeaders map[string]string
 }
 
-func (s *stubFlare) Fetch(url string, headers map[string]string) ([]byte, int, error) {
+func (s *stubBrowser) Fetch(url string, headers map[string]string) ([]byte, int, error) {
 	s.gotURL = url
 	s.gotHeaders = headers
 	return s.body, s.status, s.err
 }
 
-func (s *stubFlare) Close() {}
+func (s *stubBrowser) Close() {}
 
 // TestClient_GetWithHeaders_FlareSolverrMode verifies that in flaresolverr mode
-// GetWithHeaders delegates to the FlareSolverr path and surfaces the extracted
+// GetWithHeaders delegates to the browser path and surfaces the extracted
 // JSON as the response body with the expected status.
 func TestClient_GetWithHeaders_FlareSolverrMode(t *testing.T) {
-	stub := &stubFlare{
+	stub := &stubBrowser{
 		body:   []byte(`{"data":[{"StockCode":"BBCA"}]}`),
 		status: http.StatusOK,
 	}
 	c := &Client{
 		config: Config{BaseURL: "https://idx.example", FetchMode: "flaresolverr"},
-		flare:  stub,
+		browser: stub,
 		log:    logrus.New(),
 		stopCh: make(chan struct{}),
 	}
@@ -71,6 +72,63 @@ func TestClient_GetWithHeaders_FlareSolverrMode(t *testing.T) {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
 	}
 }
+
+// TestClient_GetWithHeaders_NodriverMode verifies that in nodriver mode
+// GetWithHeaders delegates to the browser path identically to flaresolverr mode
+// (the transport is swapped, the caller-side contract is unchanged).
+func TestClient_GetWithHeaders_NodriverMode(t *testing.T) {
+	stub := &stubBrowser{
+		body:   []byte(`{"data":[{"StockCode":"BBCA"}]}`),
+		status: http.StatusOK,
+	}
+	c := &Client{
+		config:  Config{BaseURL: "https://idx.example", FetchMode: "nodriver"},
+		browser: stub,
+		log:     logrus.New(),
+		stopCh:  make(chan struct{}),
+	}
+
+	headers := map[string]string{"Referer": "https://idx.example/en/market-data/"}
+	resp, err := c.GetWithHeaders("/primary/TradingSummary/GetStockSummary", headers)
+	if err != nil {
+		t.Fatalf("GetWithHeaders: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if stub.gotURL != "https://idx.example/primary/TradingSummary/GetStockSummary" {
+		t.Errorf("expected resolved URL, got %q", stub.gotURL)
+	}
+	if stub.gotHeaders["Referer"] != headers["Referer"] {
+		t.Errorf("expected Referer passthrough, got %v", stub.gotHeaders)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != string(stub.body) {
+		t.Errorf("expected body %q, got %q", stub.body, body)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+// TestClient_GetWithHeaders_BrowserModeError verifies that a browser fetcher
+// error surfaces wrapped and no synthetic response is returned.
+func TestClient_GetWithHeaders_BrowserModeError(t *testing.T) {
+	stub := &stubBrowser{err: errBrowserFetch}
+	c := &Client{
+		config:  Config{BaseURL: "https://idx.example", FetchMode: "nodriver"},
+		browser: stub,
+		log:     logrus.New(),
+		stopCh:  make(chan struct{}),
+	}
+	if _, err := c.GetWithHeaders("/x", nil); err == nil {
+		t.Fatal("expected error from browser fetcher")
+	}
+}
+
+var errBrowserFetch = fmt.Errorf("all proxies exhausted")
 
 // TestClient_GetStream_BypassesCache verifies GetStream skips the stale cache
 // (the same URL may hold a fresh JSON entry) and streams the live body rather

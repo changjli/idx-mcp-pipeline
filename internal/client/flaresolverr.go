@@ -13,9 +13,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// flareFetcher is the FlareSolverr fetch seam. Implemented by *FlareSolverrClient;
-// stubbed in tests to verify the IDX client's flaresolverr mode without a network.
-type flareFetcher interface {
+// browserFetcher is the headless-browser fetch seam shared by the flaresolverr
+// and nodriver fetch modes. Implemented by *FlareSolverrClient and
+// *NodriverClient; stubbed in tests to verify the IDX client's browser modes
+// without a network.
+type browserFetcher interface {
 	Fetch(url string, headers map[string]string) ([]byte, int, error)
 	Close()
 }

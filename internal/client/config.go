@@ -17,9 +17,10 @@ type Config struct {
 	CacheTTL        time.Duration
 	CookieRefresh   time.Duration
 	UserAgent       string
-	// FetchMode selects the transport: "direct" (default) or "flaresolverr".
+	// FetchMode selects the transport: "direct" (default), "flaresolverr", or "nodriver".
 	FetchMode    string
 	FlareSolverr FlareSolverrConfig
+	Nodriver     NodriverConfig
 }
 
 // FlareSolverrConfig holds the FlareSolverr fetch-mode knobs.
@@ -32,6 +33,16 @@ type FlareSolverrConfig struct {
 	DeadRetryAfter    time.Duration // how long a dead proxy stays out of rotation
 	WakeTimeout       time.Duration // bound for the wake-on-demand health poll
 	SessionTTLMinutes int           // FlareSolverr session_ttl_minutes per request
+}
+
+// NodriverConfig holds the nodriver sidecar fetch-mode knobs. The proxy pool is
+// shared with FlareSolverrConfig (same flaresolverr.proxies source) so one proxy
+// list serves both browser modes.
+type NodriverConfig struct {
+	BaseURL     string        // root URL of the nodriver sidecar (client appends /fetch)
+	AuthToken   string        // sent as Authorization: Bearer to the sidecar's reverse proxy
+	Timeout     time.Duration // per-fetch budget forwarded to the sidecar
+	WakeTimeout time.Duration // bound for the wake-on-demand health poll
 }
 
 // DefaultConfig returns sensible defaults.
@@ -51,8 +62,12 @@ func DefaultConfig() Config {
 			Timeout:           15 * time.Second,
 			ProxiesTTL:        time.Hour,
 			DeadRetryAfter:    6 * time.Hour,
-			WakeTimeout:       2 * time.Minute,
+			WakeTimeout:       3 * time.Minute,
 			SessionTTLMinutes: 30,
+		},
+		Nodriver: NodriverConfig{
+			Timeout:     20 * time.Second,
+			WakeTimeout: 60 * time.Second,
 		},
 	}
 }
@@ -116,6 +131,22 @@ func ConfigFromViper(vip *viper.Viper) Config {
 	}
 	if v := vip.GetInt("flaresolverr.session_ttl_minutes"); v > 0 {
 		fs.SessionTTLMinutes = v
+	}
+
+	// nodriver sidecar fetch mode. Proxy pool reuses the flaresolverr.proxies
+	// source (and TTL / dead_retry_after) so one proxy list serves both modes.
+	nd := &cfg.Nodriver
+	if v := vip.GetString("nodriver.base_url"); v != "" {
+		nd.BaseURL = v
+	}
+	if v := vip.GetString("nodriver.auth_token"); v != "" {
+		nd.AuthToken = v
+	}
+	if v := vip.GetDuration("nodriver.timeout"); v > 0 {
+		nd.Timeout = v
+	}
+	if v := vip.GetDuration("nodriver.wake_timeout"); v > 0 {
+		nd.WakeTimeout = v
 	}
 
 	return cfg
