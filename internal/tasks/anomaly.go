@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -157,7 +158,7 @@ func NewDetectAnomaliesHandler(
 		// proceed to extraction. Chained here (not from idx:announcements)
 		// because anomalies are detected after announcements in the pipeline —
 		// the anomaly-gate needs today's anomaly rows to exist.
-		if _, err := EnqueueFilterDisclosures(client, today); err != nil && err != asynq.ErrTaskIDConflict {
+		if _, err := EnqueueFilterDisclosures(client, today); err != nil && !errors.Is(err, asynq.ErrTaskIDConflict) {
 			log.Warnf("detect:anomalies: enqueue filter:disclosures: %v", err)
 		}
 		return nil
@@ -179,7 +180,7 @@ func enqueueBrokerSummariesForAnomalies(client *asynq.Client, db *sqlx.DB, anoma
 			continue
 		}
 		seen[a.Ticker] = true
-		if _, err := EnqueueBrokerStockSummary(client, a.Ticker, day); err != nil && err != asynq.ErrTaskIDConflict {
+		if _, err := EnqueueBrokerStockSummary(client, a.Ticker, day); err != nil && !errors.Is(err, asynq.ErrTaskIDConflict) {
 			log.Warnf("detect:anomalies: enqueue broker summary for %s: %v", a.Ticker, err)
 		}
 	}

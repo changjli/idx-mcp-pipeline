@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -150,7 +151,7 @@ func NewFilterDisclosuresHandler(
 		}
 
 		enqueue := func(id int64) {
-			if _, err := EnqueueExtractDisclosure(client, id); err != nil && err != asynq.ErrTaskIDConflict {
+			if _, err := EnqueueExtractDisclosure(client, id); err != nil && !errors.Is(err, asynq.ErrTaskIDConflict) {
 				log.Warnf("filter:disclosures: enqueue extract for disclosure %d: %v", id, err)
 			}
 		}

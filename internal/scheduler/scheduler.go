@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -81,7 +82,7 @@ func LogNextFireTime(sched *asynq.Scheduler, log *logrus.Logger) {
 func SelfHealMissedTick(client *asynq.Client, log *logrus.Logger) {
 	now := time.Now()
 	info, err := tasks.EnqueueNoop(client, now)
-	if err == asynq.ErrTaskIDConflict {
+	if errors.Is(err, asynq.ErrTaskIDConflict) {
 		log.Infof("self-heal: noop task for %s already enqueued, skipping", now.Format("2006-01-02"))
 	} else if err != nil {
 		log.Warnf("self-heal: failed to enqueue noop task: %v", err)
@@ -162,7 +163,7 @@ func selfHealArchived(
 
 		// Re-enqueue with delay so transient blocks can lift.
 		info, err := enqueue(date)
-		if err == asynq.ErrTaskIDConflict {
+		if errors.Is(err, asynq.ErrTaskIDConflict) {
 			log.Infof("self-heal: task %s already enqueued, skipping", t.ID)
 			continue
 		}

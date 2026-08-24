@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -17,7 +18,7 @@ func NewPipelineDailyHandler(log *logrus.Logger, client *asynq.Client) asynq.Han
 		now := time.Now()
 
 		info, err := EnqueueStockSummary(client, now)
-		if err == asynq.ErrTaskIDConflict {
+		if errors.Is(err, asynq.ErrTaskIDConflict) {
 			log.Infof("pipeline:daily: stock_summary task for %s already enqueued", now.Format("2006-01-02"))
 		} else if err != nil {
 			log.Errorf("pipeline:daily: failed to enqueue stock_summary: %v", err)
@@ -27,7 +28,7 @@ func NewPipelineDailyHandler(log *logrus.Logger, client *asynq.Client) asynq.Han
 		}
 
 		info, err = EnqueueAnnouncements(client, now)
-		if err == asynq.ErrTaskIDConflict {
+		if errors.Is(err, asynq.ErrTaskIDConflict) {
 			log.Infof("pipeline:daily: announcements task for %s already enqueued", now.Format("2006-01-02"))
 		} else if err != nil {
 			log.Errorf("pipeline:daily: failed to enqueue announcements: %v", err)
@@ -36,7 +37,7 @@ func NewPipelineDailyHandler(log *logrus.Logger, client *asynq.Client) asynq.Han
 		}
 
 		info, err = EnqueueRSS(client, now)
-		if err == asynq.ErrTaskIDConflict {
+		if errors.Is(err, asynq.ErrTaskIDConflict) {
 			log.Infof("pipeline:daily: rss task for %s already enqueued", now.Format("2006-01-02"))
 		} else if err != nil {
 			log.Errorf("pipeline:daily: failed to enqueue rss: %v", err)
@@ -48,7 +49,7 @@ func NewPipelineDailyHandler(log *logrus.Logger, client *asynq.Client) asynq.Han
 		// (chained off anomalies → filter) has time to finish before eviction.
 		// Date-keyed TaskID dedups against a same-day re-run.
 		info, err = EnqueueCleanup(client, now, asynq.ProcessIn(cleanupDelay))
-		if err == asynq.ErrTaskIDConflict {
+		if errors.Is(err, asynq.ErrTaskIDConflict) {
 			log.Infof("pipeline:daily: cleanup task for %s already enqueued", now.Format("2006-01-02"))
 		} else if err != nil {
 			log.Errorf("pipeline:daily: failed to enqueue cleanup: %v", err)
