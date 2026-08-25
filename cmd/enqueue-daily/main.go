@@ -27,6 +27,7 @@ func main() {
 	filterFlag := flag.Bool("filter", false, "enqueue filter:disclosures task instead of stock_summary")
 	extractID := flag.Int64("extract", 0, "enqueue extract:disclosure task for this disclosure id")
 	pipelineFlag := flag.Bool("pipeline", false, "enqueue the pipeline:daily fan-out task (stock_summary + announcements + rss + cleanup)")
+	detectFlag := flag.Bool("detect", false, "enqueue detect:anomalies task instead of stock_summary")
 	flag.Parse()
 
 	vip := config.NewViper()
@@ -40,8 +41,17 @@ func main() {
 		if *dateStr != "" {
 			log.Fatalf("--date is mutually exclusive with --start-date/--end-date")
 		}
-		if *announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *filterFlag || *extractID != 0 || *pipelineFlag {
-			log.Fatalf("--announcements/--rss/--broker-summary/--filter/--extract/--pipeline are mutually exclusive with --start-date/--end-date")
+		if *rssFlag || *brokerSummaryTicker != "" || *filterFlag || *extractID != 0 || *pipelineFlag || *detectFlag {
+			log.Fatalf("--rss/--broker-summary/--filter/--extract/--pipeline/--detect are mutually exclusive with --start-date/--end-date")
+		}
+		// --announcements in bulk mode: local direct fetch+upsert of disclosure
+		// metadata per date (mirrors runBulkBackfill, uses the local nodriver
+		// sidecar, no asynq). Default bulk mode is runBulkBackfill (daily_prices).
+		// --detect has no bulk mode: use single-date --detect to enqueue
+		// detect:anomalies to asynq per date (left to the prod worker).
+		if *announcementsFlag {
+			runBulkAnnouncements(vip, log, *startDateStr, *endDateStr)
+			return
 		}
 		runBulkBackfill(vip, log, *startDateStr, *endDateStr)
 		return
@@ -74,6 +84,9 @@ func main() {
 	if *pipelineFlag && (*announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *filterFlag || *extractID != 0) {
 		log.Fatalf("--pipeline is mutually exclusive with --announcements/--rss/--broker-summary/--filter/--extract")
 	}
+	if *detectFlag && (*announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *filterFlag || *extractID != 0 || *pipelineFlag) {
+		log.Fatalf("--detect is mutually exclusive with --announcements/--rss/--broker-summary/--filter/--extract/--pipeline")
+	}
 
 	dateKey := date.Format("2006-01-02")
 
@@ -101,6 +114,9 @@ func main() {
 	} else if *extractID != 0 {
 		taskType = tasks.TypeExtractDisclosure
 		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueExtractDisclosure(client, *extractID) }
+	} else if *detectFlag {
+		taskType = tasks.TypeDetectAnomalies
+		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueDetectAnomalies(client, date) }
 	}
 
 	target := dateKey
@@ -160,6 +176,48 @@ func runBulkBackfill(vip *viper.Viper, log *logrus.Logger, startStr, endStr stri
 
 	// A run where every date failed is indistinguishable from a no-op in
 	// automation — exit non-zero so callers can detect total failure.
+	if result.Total > 0 && result.Failed == result.Total {
+		os.Exit(1)
+	}
+}
+
+// runBulkAnnouncements connects to DB + local IDX client (nodriver) directly
+// and loops the date range, fetching disclosure metadata per date and upserting
+// into disclosures. Mirrors runBulkBackfill: synchronous, local egress, no asynq,
+// no worker. Run BEFORE enqueuing single-date --detect tasks so the
+// detect-chained filter:disclosures has rows to filter (filter:{date} TaskID
+// dedup otherwise blocks re-filter).
+func runBulkAnnouncements(vip *viper.Viper, log *logrus.Logger, startStr, endStr string) {
+	start, err := time.Parse("2006-01-02", startStr)
+	if err != nil {
+		log.Fatalf("invalid --start-date format: %s (use YYYY-MM-DD)", startStr)
+	}
+	end, err := time.Parse("2006-01-02", endStr)
+	if err != nil {
+		log.Fatalf("invalid --end-date format: %s (use YYYY-MM-DD)", endStr)
+	}
+	if start.After(end) {
+		log.Fatalf("--start-date (%s) must be on or before --end-date (%s)", startStr, endStr)
+	}
+
+	db := config.NewDatabase(vip, log)
+	defer db.Close()
+
+	idxClient, err := client.InitDefaultClient(vip, log)
+	if err != nil {
+		log.Fatalf("failed to init IDX client: %v", err)
+	}
+	defer idxClient.Close()
+
+	tickerRepo := repository.NewTickerRepository(log)
+	disclosureRepo := repository.NewDisclosureRepository(log)
+	sourceStatusRepo := repository.NewSourceStatusRepository(log)
+
+	log.Infof("bulk announcements: fetching %s to %s", startStr, endStr)
+	result := tasks.RunBulkAnnouncements(log, idxClient, db, tickerRepo, disclosureRepo, sourceStatusRepo, start, end)
+	log.Infof("bulk announcements complete: %d/%d dates succeeded, %d failed (%d empty/no-data)",
+		result.Succeeded, result.Total, result.Failed, result.Empty)
+
 	if result.Total > 0 && result.Failed == result.Total {
 		os.Exit(1)
 	}
