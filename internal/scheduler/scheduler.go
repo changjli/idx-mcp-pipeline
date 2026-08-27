@@ -14,8 +14,10 @@ import (
 )
 
 const (
-	// DailyCronSpec fires at 4:05 PM WIB (Asia/Jakarta, UTC+7) every day.
-	DailyCronSpec = "CRON_TZ=Asia/Jakarta 5 16 * * *"
+	// DailyCronSpec fires at 8:05 PM WIB (Asia/Jakarta, UTC+7) every day.
+	// IDX publishes the day's TradingSummary after market close (4 PM WIB);
+	// 8 PM gives a few hours for the data to land before the pipeline fetches it.
+	DailyCronSpec = "CRON_TZ=Asia/Jakarta 5 20 * * *"
 
 	// archivedRequeueDelay is how long a recovered archived task waits before
 	// firing — gives transient upstream blocks (e.g. Cloudflare 403) time to
@@ -69,8 +71,8 @@ func LogNextFireTime(sched *asynq.Scheduler, log *logrus.Logger) {
 	if loc == nil {
 		loc = time.UTC
 	}
-	// Approximate next fire: 4:05 PM WIB today, or tomorrow if past
-	next := time.Date(now.Year(), now.Month(), now.Day(), 16, 5, 0, 0, loc)
+	// Approximate next fire: 8:05 PM WIB today, or tomorrow if past
+	next := time.Date(now.Year(), now.Month(), now.Day(), 20, 5, 0, 0, loc)
 	if now.After(next) {
 		next = next.AddDate(0, 0, 1)
 	}

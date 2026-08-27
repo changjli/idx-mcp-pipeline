@@ -148,7 +148,7 @@ func main() {
 		}
 	}()
 
-	// asynq Scheduler: fires daily tasks at 4:05 PM WIB
+	// asynq Scheduler: fires daily tasks at 8:05 PM WIB
 	sched := scheduler.NewScheduler(vip, log)
 	scheduler.RegisterDailyTasks(sched, log)
 	scheduler.LogNextFireTime(sched, log)
