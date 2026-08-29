@@ -100,12 +100,12 @@ func (s *SQLNewsTickerStore) Insert(link *entity.NewsTicker) error {
 	return s.repo.Insert(s.db, link)
 }
 
-// NewsIngest persists one RSS feed's articles: unmatched items are discarded,
-// matched ones land in news_items and are linked to their tickers
+// NewsIngest persists one RSS feed's articles: unmatched items are discarded
+// (a content-level skip, per the package storage-error policy — see
+// policy.go), matched ones land in news_items and are linked to their tickers
 // (news_tickers) with the ticker auto-seeded on first sight. Batch error
 // policy: fail-fast — the first write failure aborts the run and returns the
-// error so asynq retries and source_status records the gap. Declared policy;
-// do not soften in place (follow-up 07 tracks the whole policy).
+// error so asynq retries and source_status records the gap.
 type NewsIngest struct {
 	news    NewsStore
 	tickers TickerSeeder

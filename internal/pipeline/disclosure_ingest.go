@@ -27,10 +27,8 @@ type DisclosureSink interface {
 }
 
 // DisclosureIngest persists flattened announcement rows. Batch error policy:
-// fail-fast — any ticker or disclosure upsert failure aborts the batch and
-// returns the error, so asynq retries and the announcements watermark stays
-// put (a row dropped mid-upsert would otherwise be skipped forever on the
-// next run). Declared policy; unchanged from the task-layer loop.
+// fail-fast per the package storage-error policy (see policy.go) — any ticker
+// or disclosure upsert failure aborts the batch and returns the error.
 type DisclosureIngest struct {
 	disclosures DisclosureSink
 	tickers     TickerRegistrar
@@ -83,8 +81,8 @@ func NewDisclosureIngest(disclosures DisclosureSink, tickers TickerRegistrar, lo
 
 // UpsertRows persists flattened announcement rows: each row's ticker is
 // ensured first, then the disclosure upserted (idempotent via pdf_url).
-// Returns rows upserted and the first error — fail-fast per the declared
-// batch policy.
+// Returns rows upserted and the first error — fail-fast per the package
+// storage-error policy (see policy.go).
 func (n *DisclosureIngest) UpsertRows(rows []*entity.Disclosure) (int, error) {
 	upserted := 0
 	for _, d := range rows {

@@ -184,33 +184,40 @@ func summaryRow(code string) StockSummaryItem {
 	}
 }
 
-func TestStockSummaryIngest_LogAndSkip(t *testing.T) {
+func TestStockSummaryIngest_UpsertAllRows(t *testing.T) {
 	prices := &fakeDailyPriceStore{}
 	registrar := &fakeTickerRegistrar{}
 	n := NewStockSummaryIngest(prices, registrar, newNoopLog())
 
-	got := n.UpsertRows([]StockSummaryItem{
+	got, err := n.UpsertRows([]StockSummaryItem{
 		summaryRow("AALI"),
 		summaryRow("BBCA"),
 	}, "2026-08-29")
+	if err != nil {
+		t.Fatalf("UpsertRows: %v", err)
+	}
 	if got != 2 || len(prices.tickers) != 2 || len(registrar.codes) != 2 {
 		t.Errorf("expected both rows upserted, got %d", got)
 	}
 }
 
-func TestStockSummaryIngest_FailedRowSkipped(t *testing.T) {
-	// A row whose daily_price upsert fails is logged and skipped; the loop
-	// continues and the healthy row still lands (declared policy).
+func TestStockSummaryIngest_FailFastPreservesCount(t *testing.T) {
+	// A row whose daily_price upsert fails aborts the batch and returns the
+	// error (package storage-error policy); the count reflects rows written
+	// before the failure.
 	prices := &rejectingPriceStore{reject: "AALI"}
 	registrar := &fakeTickerRegistrar{}
 	n := NewStockSummaryIngest(prices, registrar, newNoopLog())
 
-	got := n.UpsertRows([]StockSummaryItem{summaryRow("AALI"), summaryRow("BBCA")}, "2026-08-29")
-	if got != 1 {
-		t.Errorf("expected 1 upserted (failed row skipped), got %d", got)
+	got, err := n.UpsertRows([]StockSummaryItem{summaryRow("AALI"), summaryRow("BBCA")}, "2026-08-29")
+	if err == nil {
+		t.Fatal("expected failure to propagate")
 	}
-	if len(registrar.codes) != 2 {
-		t.Errorf("expected ticker registration attempted for both rows, got %v", registrar.codes)
+	if got != 0 {
+		t.Errorf("expected 0 upserted before the failure, got %d", got)
+	}
+	if len(registrar.codes) != 1 {
+		t.Errorf("expected ticker registration only for the first row, got %v", registrar.codes)
 	}
 }
 

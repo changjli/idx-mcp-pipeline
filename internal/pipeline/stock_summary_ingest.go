@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -35,10 +36,9 @@ type DailyPriceStore interface {
 
 // StockSummaryIngest upserts one day's stock summary rows into daily_prices,
 // auto-discovering new listings (ticker FK dependency). Batch error policy:
-// log-and-skip — an individual row's failure is logged and skipped so one bad
-// row can't drop a whole trading day from the DB; healthy rows still land
-// (the row itself is retried on the next run's upsert). Declared policy;
-// unchanged from the task-layer loop (follow-up 07 tracks the whole policy).
+// fail-fast per the package storage-error policy (see policy.go) — any ticker
+// or price upsert failure aborts the batch and returns the error so asynq
+// retries and the day's rows land together.
 type StockSummaryIngest struct {
 	prices  DailyPriceStore
 	tickers TickerRegistrar
@@ -51,24 +51,25 @@ func NewStockSummaryIngest(prices DailyPriceStore, tickers TickerRegistrar, log 
 	return &StockSummaryIngest{prices: prices, tickers: tickers, log: log}
 }
 
-// UpsertRows upserts all rows for one date into daily_prices, returning rows
-// upserted (failed rows logged and skipped, per the declared policy).
-func (n *StockSummaryIngest) UpsertRows(rows []StockSummaryItem, dateKey string) int {
+// UpsertRows persists all rows for one date into daily_prices. Returns rows
+// upserted and the first error — fail-fast per the package storage-error
+// policy (see policy.go).
+func (n *StockSummaryIngest) UpsertRows(rows []StockSummaryItem, dateKey string) (int, error) {
 	upserted := 0
 	for _, item := range rows {
 		if err := n.tickers.Upsert(tickerFromSummaryItem(item)); err != nil {
 			n.log.Warnf("stock_summary: ticker upsert failed for %s: %v", item.StockCode, err)
-			continue
+			return upserted, fmt.Errorf("ticker upsert %s: %w", item.StockCode, err)
 		}
 
 		price := itemToDailyPrice(item, dateKey)
 		if err := n.prices.Upsert(price); err != nil {
-			n.log.Warnf("stock_summary: upsert failed for %s: %v", item.StockCode, err)
-			continue
+			n.log.Warnf("stock_summary: daily_price upsert failed for %s: %v", item.StockCode, err)
+			return upserted, fmt.Errorf("daily_price upsert %s: %w", item.StockCode, err)
 		}
 		upserted++
 	}
-	return upserted
+	return upserted, nil
 }
 
 // tickerFromSummaryItem adapts a summary row to the tickers-table row; new

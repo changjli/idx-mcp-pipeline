@@ -81,7 +81,15 @@ func NewStockSummaryHandler(
 
 		// Upsert each row into daily_prices.
 		// Ticker must exist first (FK constraint) — auto-discover from response.
-		upserted := ingest.UpsertRows(rows, p.Date)
+		// Fail-fast on storage errors (pipeline storage-error policy): surface
+		// so asynq retries and the day's rows land together — a row dropped
+		// mid-upsert would otherwise be a silent hole in daily_prices.
+		upserted, upsertErr := ingest.UpsertRows(rows, p.Date)
+		if upsertErr != nil {
+			log.Errorf("stock_summary: upsert failed: %v", upsertErr)
+			recorder.Failure(TypeStockSummary, stockSummaryMaxAgeSeconds, p.Date, upsertErr)
+			return upsertErr
+		}
 		log.Infof("stock_summary: upserted %d/%d rows for date=%s", upserted, len(rows), p.Date)
 
 		// Update source_status on success.

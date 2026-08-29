@@ -60,7 +60,15 @@ func RunBulkBackfill(
 			continue
 		}
 
-		upserted := ingest.UpsertRows(rows, dateKey)
+		upserted, upsertErr := ingest.UpsertRows(rows, dateKey)
+		if upsertErr != nil {
+			// Bulk backfill isolates per date: a storage failure on one day is
+			// logged and the loop continues (the pipeline's fail-fast policy
+			// applies within a day's batch, not across the backfill range).
+			log.Errorf("bulk: upsert failed for %s: %v", dateKey, upsertErr)
+			result.Failed++
+			continue
+		}
 		log.Infof("bulk: upserted %d/%d rows for %s", upserted, len(rows), dateKey)
 		result.Succeeded++
 		if upserted > 0 {
