@@ -95,8 +95,15 @@ func TestRecorder_SuccessNilWatermarkCarriesForward(t *testing.T) {
 }
 
 func TestRecorder_FailureIncrementsAndMarksStale(t *testing.T) {
+	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
 	rec, store, alerts := newTestRecorder()
-	store.current = &entity.SourceStatus{Source: "s", ConsecutiveFailures: 2}
+	rec.now = fixedClock(now)
+	// Last success 3 days ago — beyond the 1-day window, so stale on failure
+	// regardless of the failure count.
+	old := now.Add(-72 * time.Hour)
+	store.current = &entity.SourceStatus{
+		Source: "s", ConsecutiveFailures: 2, LastSuccessAt: &old, MaxAgeSeconds: 86400,
+	}
 
 	rec.Failure("s", 86400, "2026-08-29", errors.New("boom"))
 
@@ -105,16 +112,59 @@ func TestRecorder_FailureIncrementsAndMarksStale(t *testing.T) {
 		t.Errorf("expected consecutive=3, got %d", got.ConsecutiveFailures)
 	}
 	if !got.Stale {
-		t.Error("expected stale at 3 consecutive failures")
+		t.Error("expected stale: last success older than max_age")
+	}
+	if got.LastSuccessAt == nil || !got.LastSuccessAt.Equal(old) {
+		t.Errorf("expected last_success_at carried forward %v, got %v", old, got.LastSuccessAt)
 	}
 	if len(alerts.alerts) != 1 || alerts.alerts[0].AlertType != "ingestion_error" {
 		t.Errorf("expected ingestion_error alert, got %+v", alerts.alerts)
 	}
 }
 
+func TestRecorder_FailureFreshSourceNotStale(t *testing.T) {
+	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
+	rec, store, _ := newTestRecorder()
+	rec.now = fixedClock(now)
+	recent := now.Add(-time.Hour)
+	store.current = &entity.SourceStatus{
+		Source: "s", ConsecutiveFailures: 0, LastSuccessAt: &recent, MaxAgeSeconds: 86400,
+	}
+
+	rec.Failure("s", 86400, "2026-08-29", errors.New("boom"))
+
+	got := store.upserted[len(store.upserted)-1]
+	if got.Stale {
+		t.Error("expected not stale: last success within max_age window")
+	}
+	if got.ConsecutiveFailures != 1 {
+		t.Errorf("expected consecutive=1, got %d", got.ConsecutiveFailures)
+	}
+}
+
+func TestRecorder_FailureNeverSucceededIsStale(t *testing.T) {
+	rec, store, _ := newTestRecorder()
+
+	// No prior row: never succeeded, so stale on the first failure.
+	rec.Failure("s", 86400, "2026-08-29", errors.New("boom"))
+
+	got := store.upserted[len(store.upserted)-1]
+	if !got.Stale {
+		t.Error("expected stale: no last_success_at ever recorded")
+	}
+	if got.ConsecutiveFailures != 1 {
+		t.Errorf("expected consecutive=1, got %d", got.ConsecutiveFailures)
+	}
+}
+
 func TestRecorder_FailureKeepsCountingOnceStale(t *testing.T) {
+	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
 	rec, store, alerts := newTestRecorder()
-	store.current = &entity.SourceStatus{Source: "s", ConsecutiveFailures: 3, Stale: true}
+	rec.now = fixedClock(now)
+	old := now.Add(-72 * time.Hour)
+	store.current = &entity.SourceStatus{
+		Source: "s", ConsecutiveFailures: 3, Stale: true, LastSuccessAt: &old, MaxAgeSeconds: 86400,
+	}
 
 	rec.Failure("s", 86400, "2026-08-29", errors.New("again"))
 	rec.Failure("s", 86400, "2026-08-29", errors.New("again"))
@@ -126,8 +176,45 @@ func TestRecorder_FailureKeepsCountingOnceStale(t *testing.T) {
 	if got.ConsecutiveFailures != 5 || !got.Stale {
 		t.Errorf("expected consecutive=5 stale, got %+v", got)
 	}
+	if got.LastSuccessAt == nil || !got.LastSuccessAt.Equal(old) {
+		t.Errorf("expected last_success_at carried forward %v, got %v", old, got.LastSuccessAt)
+	}
 	if len(alerts.alerts) != 2 {
 		t.Errorf("expected one ingestion_error alert per failure, got %d", len(alerts.alerts))
+	}
+}
+
+func TestRecorder_FailureCarriesWatermarkForward(t *testing.T) {
+	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
+	rec, store, _ := newTestRecorder()
+	rec.now = fixedClock(now)
+	hwm := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	store.current = &entity.SourceStatus{Source: "s", HighWaterMark: &hwm}
+
+	rec.Failure("s", 86400, "2026-08-29", errors.New("boom"))
+
+	got := store.upserted[len(store.upserted)-1]
+	if got.HighWaterMark == nil || !got.HighWaterMark.Equal(hwm) {
+		t.Errorf("expected high_water_mark carried forward %v, got %v", hwm, got.HighWaterMark)
+	}
+}
+
+func TestRecorder_FailureRaisesOnTransitionIntoStale(t *testing.T) {
+	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
+	rec, store, _ := newTestRecorder()
+	rec.now = fixedClock(now)
+	// Stored flag says healthy (old failure-count rows) but time says stale —
+	// the exact reconciliation case: the failure must flip the flag.
+	old := now.Add(-72 * time.Hour)
+	store.current = &entity.SourceStatus{
+		Source: "s", ConsecutiveFailures: 1, Stale: false, LastSuccessAt: &old, MaxAgeSeconds: 86400,
+	}
+
+	rec.Failure("s", 86400, "2026-08-29", errors.New("boom"))
+
+	got := store.upserted[len(store.upserted)-1]
+	if !got.Stale {
+		t.Error("expected stale: stored flag was false but last success is beyond max_age")
 	}
 }
 

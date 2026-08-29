@@ -60,8 +60,9 @@ type PipelineStatusData struct {
 }
 
 // GetPipelineStatus returns per-source health from source_status plus the most
-// recent alerts. The stale flag is the stored per-source value maintained by
-// the ingestion tasks.
+// recent alerts. Staleness is computed live, time-based (now - last_success_at
+// > max_age) rather than trusting the stored flag, which is only sampled at
+// the last write.
 func (uc *PipelineUseCase) GetPipelineStatus(ctx context.Context) (*PipelineStatusData, error) {
 	statuses, err := uc.SourceStatusRepo.FindAll(uc.DB)
 	if err != nil {
@@ -82,7 +83,7 @@ func (uc *PipelineUseCase) GetPipelineStatus(ctx context.Context) (*PipelineStat
 		resp.Sources = append(resp.Sources, SourceHealth{
 			Source:        s.Source,
 			LastSuccessAt: last,
-			Stale:         s.Stale,
+			Stale:         s.IsStale(time.Now()),
 			LastError:     s.LastError,
 		})
 	}

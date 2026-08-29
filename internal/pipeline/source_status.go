@@ -11,12 +11,6 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
-// staleConsecutiveFailures is the failure count at which the recorder marks a
-// source stale. Preserved wart: this is a failure-count definition, while
-// CONTEXT.md / get_pipeline_status read staleness time-based (see follow-up
-// 05-staleness-semantics.md).
-const staleConsecutiveFailures = 3
-
 // SourceStatusStore persists per-source freshness state. Consumer-side
 // interface (ADR-0006): satisfied by the sqlx-backed SourceStatusRepository
 // via NewSQLSourceStatusStore; tests provide the second adapter.
@@ -71,8 +65,9 @@ func (s *SQLAlertStore) Insert(alert *entity.Alert) error {
 // SourceStatusRecorder updates source_status after a source fetch succeeds or
 // fails, and raises the source_stale_raised alert on the transition into
 // staleness. One recorder is shared by every ingest stage; each call names
-// its source. Staleness: `stale = consecutive_failures >= 3` (preserved
-// behavior — see staleConsecutiveFailures).
+// its source. Staleness is time-based (CONTEXT.md): stale when
+// now - last_success_at > max_age, independent of the failure count — see
+// entity.SourceStatus.IsStale.
 type SourceStatusRecorder struct {
 	statuses SourceStatusStore
 	alerts   AlertStore
@@ -143,36 +138,47 @@ func (r *SourceStatusRecorder) SuccessMonotonic(source string, maxAgeSeconds int
 }
 
 // Failure records a failed fetch: the error, incremented consecutive_failures,
-// the staleness flag, and an ingestion_error alert row. source_stale_raised
-// fires only on the transition into staleness — later failures of an
-// already-stale source stay quiet; recovery is signalled by the next Success.
+// the time-based staleness flag, and an ingestion_error alert row. The prior
+// last_success_at and high_water_mark are carried forward — the upsert would
+// otherwise NULL them, losing the freshness anchor and the incremental cursor.
+// source_stale_raised fires only on the transition into staleness — later
+// failures of an already-stale source stay quiet; recovery is signalled by the
+// next Success.
 func (r *SourceStatusRecorder) Failure(source string, maxAgeSeconds int32, date string, fetchErr error) {
 	now := r.now()
 	errStr := fetchErr.Error()
 
-	// Get current status to increment consecutive_failures.
+	// Get current status to increment consecutive_failures and carry forward
+	// last_success_at / high_water_mark.
 	current, _ := r.statuses.FindBySource(source)
 	consecutive := int32(1)
+	var lastSuccessAt, highWaterMark *time.Time
 	if current != nil {
 		consecutive = current.ConsecutiveFailures + 1
+		lastSuccessAt = current.LastSuccessAt
+		highWaterMark = current.HighWaterMark
 	}
 
-	stale := consecutive >= staleConsecutiveFailures
+	// Time-based staleness: a source that never succeeded, or whose last
+	// success is older than max_age, is stale regardless of the failure count.
+	stale := current == nil || current.IsStale(now)
 	status := &entity.SourceStatus{
 		Source:              source,
+		LastSuccessAt:       lastSuccessAt,
 		LastAttemptAt:       &now,
 		LastError:           &errStr,
 		ConsecutiveFailures: consecutive,
 		Stale:               stale,
 		MaxAgeSeconds:       maxAgeSeconds,
+		HighWaterMark:       highWaterMark,
 	}
 	if err := r.statuses.Upsert(status); err != nil {
 		r.log.Errorf("%s: failed to update source_status (failure): %v", source, err)
 	}
 
-	if stale && current != nil && current.ConsecutiveFailures < staleConsecutiveFailures {
+	if stale && current != nil && !current.Stale {
 		r.log.WithFields(logrus.Fields{"event": "source_stale_raised", "source": source, "consecutive_failures": consecutive, "error": errStr}).
-			Warn("source marked stale after consecutive failures")
+			Warn("source marked stale after exceeding freshness window")
 	}
 
 	alert := &entity.Alert{

@@ -41,7 +41,7 @@ A claim-check pointer (in `raw_files`) to a binary blob on R2/volume — a discl
 _Avoid_: blob, attachment
 
 **Source Status**:
-Singleton-per-source state: last success, last attempt, consecutive failures, staleness flag, and the incremental high-water mark. The freshness signal is time-based: stale when `now - last_success_at > max_age`.
+Singleton-per-source state: last success, last attempt, consecutive failures, staleness flag, and the incremental high-water mark. The freshness signal is time-based: stale when `now - last_success_at > max_age`. `consecutive_failures` is tracked for alerting only — it never drives the staleness flag. The stored `stale` column is sampled at write time; read paths (`get_pipeline_status`, per-tool `data_stale`) recompute the time-based rule live.
 _Avoid_: health, status (too generic)
 
 **Stale**:
