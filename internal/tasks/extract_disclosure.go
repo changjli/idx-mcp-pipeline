@@ -27,9 +27,10 @@ const (
 	// extractMaxPDFBytes caps a disclosure PDF at 10MB — probed via a ranged
 	// GET before download and enforced again by the bounded read buffer.
 	extractMaxPDFBytes = 10 * 1024 * 1024
-	// extractMaxRetry is the asynq retry budget for extract:disclosure. The
-	// self-managed extractRetryDelays budget runs on top of this (follow-up 06).
-	extractMaxRetry = 2
+	// extractMaxRetry disables asynq's retry clock for extract:disclosure: the
+	// self-managed extractRetryDelays ladder is the single owner of the retry
+	// policy (issue 06). Two clocks on one task risked a retry storm.
+	extractMaxRetry = 0
 	// extractTimeout caps text extraction per disclosure (30s). OCR (ticket
 	// 16) will need its own budget — scans are slower than text layers.
 	extractTimeout = 30 * time.Second
@@ -51,9 +52,11 @@ type pdfFetcher interface {
 	GetStream(url string, extraHeaders map[string]string) (*http.Response, error)
 }
 
-// extractRetryDelays is the self-managed retry backoff for transient failures
-// (network, timeout, 5xx). Longer than asynq's default so a bad PDF or a
-// Cloudflare block doesn't hammer idx.co.id. Index = attempt number.
+// extractRetryDelays is the single retry budget for extract:disclosure
+// transient failures (network, timeout, 5xx). asynq retry is disabled
+// (extractMaxRetry = 0) so the ladder owns the policy alone. Delays are longer
+// than asynq's default so a bad PDF or a Cloudflare block doesn't hammer
+// idx.co.id. Index = attempt number.
 var extractRetryDelays = []time.Duration{30 * time.Second, 2 * time.Minute}
 
 // errPDFTooLarge is returned when a download exceeds the size cap.
