@@ -113,8 +113,12 @@ func main() {
 	// Disclosure filter + extraction (ticket 11): filter:disclosures is
 	// chained from detect:anomalies; extract:disclosure is chained per passing
 	// disclosure. Extraction needs R2 — a nil store leaves rows pending.
+	disclosureFilter := pipeline.NewDisclosureFilter(
+		pipeline.NewSQLDisclosureSource(disclosureRepo, db),
+		pipeline.NewSQLAnomalyGate(anomalyRepo, db),
+	)
 	mux.Handle(tasks.TypeFilterDisclosures, tasks.NewFilterDisclosuresHandler(
-		log, asynqClient, db, disclosureRepo, anomalyRepo,
+		log, asynqClient, db, disclosureRepo, disclosureFilter,
 	))
 	mux.Handle(tasks.TypeExtractDisclosure, tasks.NewExtractDisclosureHandler(
 		log, asynqClient,

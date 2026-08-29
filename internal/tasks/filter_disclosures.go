@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/hibiken/asynq"
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -26,29 +25,6 @@ const filterSelfRetryDelay = 30 * time.Second
 // NULL, any date) still need processing, and today's disclosures (if they
 // arrive late) are caught by the next day's run.
 const filterMaxSelfRetry = 10
-
-// Disclosure whitelist categories (ticket 11, layer 2): material-event titles
-// kept for extraction. Titles are matched case-insensitively as substrings —
-// real IDX titles are longer than the category names ("Pemanggilan RUPS
-// Tahunan" contains "Pemanggilan RUPS"). All matched categories are stored.
-var disclosureWhitelistKeywords = []string{
-	"Informasi dan Fakta Material",
-	"Pemanggilan RUPS",
-	"Pembelian/Penjualan Efek",
-	"Dividen",
-	"Right Issue",
-	"Stock Split",
-	"Bonus Share",
-	"Perubahan Papan Pencatatan",
-	"Suspensi/Penundaan Pencatatan",
-}
-
-// disclosureExclusionKeywords are routine filings excluded even when a
-// whitelist keyword also matches (exclusion wins). Laporan Keuangan covers
-// routine quarterly financials.
-var disclosureExclusionKeywords = []string{
-	"Laporan Keuangan",
-}
 
 // FilterDisclosuresPayload is the payload for a filter:disclosures task.
 type FilterDisclosuresPayload struct {
@@ -105,14 +81,16 @@ func reenqueueFilterDisclosures(client *asynq.Client, date string, attempt int) 
 }
 
 // NewFilterDisclosuresHandler returns an asynq handler for the
-// filter:disclosures task type. It applies the 3-layer filter to pending
-// disclosures and enqueues one extract:disclosure task per passing row.
+// filter:disclosures task type. The 3-layer filter itself lives in
+// pipeline.DisclosureFilter (ADR-0006); the handler synchronizes with
+// idx:announcements (self-retrying, then proceeding on catch-up rows), runs
+// the filter, and enqueues one extract:disclosure task per passing row.
 func NewFilterDisclosuresHandler(
 	log *logrus.Logger,
 	client *asynq.Client,
 	db *sqlx.DB,
 	disclosureRepo *repository.DisclosureRepository,
-	anomalyRepo *repository.AnomalyRepository,
+	filter *pipeline.DisclosureFilter,
 ) asynq.HandlerFunc {
 	return func(ctx context.Context, t *asynq.Task) error {
 		var p FilterDisclosuresPayload
@@ -137,8 +115,8 @@ func NewFilterDisclosuresHandler(
 		if !announcementsDone {
 			if p.Attempt >= filterMaxSelfRetry {
 				log.Warnf("filter:disclosures: no disclosures fetched on %s after %d attempts — proceeding on catch-up rows", p.Date, p.Attempt)
-				// Fall through to runFilter: catch-up rows (passed_filter IS
-				// NULL, any date) still need processing today. Today's
+				// Fall through to the filter run: catch-up rows (passed_filter
+				// IS NULL, any date) still need processing today. Today's
 				// disclosures, if they arrive after this point, are caught by
 				// the next day's run.
 			} else {
@@ -156,100 +134,20 @@ func NewFilterDisclosuresHandler(
 			}
 		}
 		taskID, _ := asynq.GetTaskID(ctx)
-		return runFilter(log, db, disclosureRepo, anomalyRepo, today, taskID, enqueue)
-	}
-}
-
-// runFilter applies the anomaly-gate and keyword whitelist to every pending
-// disclosure and marks the verdict. enqueue is called once per passing
-// disclosure (injected so tests can collect IDs without Redis).
-func runFilter(
-	log *logrus.Logger,
-	db *sqlx.DB,
-	disclosureRepo *repository.DisclosureRepository,
-	anomalyRepo *repository.AnomalyRepository,
-	today time.Time,
-	taskID string,
-	enqueue func(id int64),
-) error {
-	rows, err := disclosureRepo.FindPendingForFilter(db, today)
-	if err != nil {
-		return fmt.Errorf("query pending disclosures: %w", err)
-	}
-
-	passed := 0
-	rejected := 0
-	reExtracted := 0
-	for _, d := range rows {
-		// Sticky true: never re-evaluate the gate. Re-enqueue extract only
-		// while the row still awaits extraction (self-heal for missed or
-		// R2-less runs).
-		if d.PassedFilter != nil && *d.PassedFilter {
-			if d.ExtractionStatus == "pending" {
-				enqueue(d.ID)
-				reExtracted++
-			}
-			continue
-		}
-
-		gate, err := anomalyGate(db, anomalyRepo, d)
+		stats, err := filter.Filter(ctx, today, enqueue)
 		if err != nil {
-			return fmt.Errorf("anomaly gate for disclosure %d: %w", d.ID, err)
+			return err
 		}
-		ok, categories := evaluateDisclosure(d.Title, gate)
-		if err := disclosureRepo.MarkFiltered(db, d.ID, ok, categories); err != nil {
-			return fmt.Errorf("mark disclosure %d: %w", d.ID, err)
-		}
-		if ok {
-			enqueue(d.ID)
-			passed++
-		} else {
-			rejected++
-		}
+		logEvent(log, logrus.InfoLevel, "disclosure_filtered", "disclosure filter run complete",
+			logrus.Fields{
+				"task_id":      taskID,
+				"source":       TypeFilterDisclosures,
+				"date":         today.Format("2006-01-02"),
+				"total":        stats.Total,
+				"passed":       stats.Passed,
+				"rejected":     stats.Rejected,
+				"re_extracted": stats.ReExtracted,
+			})
+		return nil
 	}
-
-	logEvent(log, logrus.InfoLevel, "disclosure_filtered", "disclosure filter run complete",
-		logrus.Fields{
-			"task_id":      taskID,
-			"source":       TypeFilterDisclosures,
-			"date":         today.Format("2006-01-02"),
-			"total":        len(rows),
-			"passed":       passed,
-			"rejected":     rejected,
-			"re_extracted": reExtracted,
-		})
-	return nil
-}
-
-// anomalyGate reports whether the disclosure's ticker has an anomaly whose
-// trading_day falls within the lookback window after the announcement date.
-// A disclosure with no ticker can never match.
-func anomalyGate(db *sqlx.DB, anomalyRepo *repository.AnomalyRepository, d entity.Disclosure) (bool, error) {
-	if d.Ticker == nil {
-		return false, nil
-	}
-	return anomalyRepo.ExistsForTickerInWindow(db, *d.Ticker, d.AnnouncementDate, repository.DisclosureFilterLookbackDays)
-}
-
-// evaluateDisclosure applies the keyword whitelist (layer 2) to a title whose
-// anomaly-gate already passed. Exclusion keywords win: a title matching
-// "Laporan Keuangan" is rejected even if a whitelist keyword also matches.
-// Returns the verdict and every matched whitelist category.
-func evaluateDisclosure(title string, gatePasses bool) (bool, []string) {
-	if !gatePasses {
-		return false, nil
-	}
-	lower := strings.ToLower(title)
-	for _, kw := range disclosureExclusionKeywords {
-		if strings.Contains(lower, strings.ToLower(kw)) {
-			return false, nil
-		}
-	}
-	var categories []string
-	for _, kw := range disclosureWhitelistKeywords {
-		if strings.Contains(lower, strings.ToLower(kw)) {
-			categories = append(categories, kw)
-		}
-	}
-	return len(categories) > 0, categories
 }

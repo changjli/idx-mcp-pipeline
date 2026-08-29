@@ -10,12 +10,6 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 )
 
-// DisclosureFilterLookbackDays is the anomaly-gate lookback window: a
-// disclosure matches an anomaly when its announcement_date falls within this
-// many days before the anomaly's trading_day. Shared by the filter task and
-// the read-time join (ticket 10).
-const DisclosureFilterLookbackDays = 7
-
 type DisclosureRepository struct {
 	*Repository[entity.Disclosure]
 	Log *logrus.Logger
@@ -91,15 +85,18 @@ func (r *DisclosureRepository) FindByTickerWithDate(db *sqlx.DB, ticker string, 
 // should process on the given run date:
 //   - never-filtered rows (passed_filter IS NULL, any date — catch-up for
 //     days the filter didn't run);
-//   - rejected rows announced within the 7-day lookback (re-checked for
+//   - rejected rows announced within the lookback window (re-checked for
 //     delayed anomalies — a disclosure's market impact can lag its
 //     announcement by days);
 //   - passing rows still awaiting extraction (re-enqueue extract so a missed
 //     or R2-less run self-heals).
 //
-// Passing rows are sticky: once true, the gate is never re-evaluated.
-func (r *DisclosureRepository) FindPendingForFilter(db *sqlx.DB, today time.Time) ([]entity.Disclosure, error) {
-	lookback := today.AddDate(0, 0, -DisclosureFilterLookbackDays)
+// lookbackDays is the reject re-check window; the filter task passes its own
+// (pipeline.DisclosureFilterLookbackDays) so the gate window stays
+// single-owned there. Passing rows are sticky: once true, the gate is never
+// re-evaluated.
+func (r *DisclosureRepository) FindPendingForFilter(db *sqlx.DB, today time.Time, lookbackDays int) ([]entity.Disclosure, error) {
+	lookback := today.AddDate(0, 0, -lookbackDays)
 	var rows []entity.Disclosure
 	err := db.Select(&rows, `
 		SELECT * FROM disclosures

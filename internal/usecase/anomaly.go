@@ -11,6 +11,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -68,7 +69,7 @@ func (uc *AnomalyUseCase) GetMarketAnomalies(ctx context.Context, date *string, 
 		return nil, err
 	}
 
-	rows, err := uc.AnomalyRepo.FindByDateWithDisclosures(uc.DB, day, ticker)
+	rows, err := uc.AnomalyRepo.FindByDateWithDisclosures(uc.DB, day, ticker, pipeline.DisclosureFilterLookbackDays)
 	if err != nil {
 		return nil, fmt.Errorf("query anomalies: %w", err)
 	}

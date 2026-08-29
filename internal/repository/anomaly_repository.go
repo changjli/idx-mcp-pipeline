@@ -66,25 +66,27 @@ func (r *AnomalyRepository) ExistsForDate(db *sqlx.DB, tradingDay string) (bool,
 
 // AnomalyWithDisclosures is one anomaly row plus the disclosure IDs the
 // read-time JOIN (ticket 10) derived for it: disclosures for the same ticker
-// announced within the filter's lookback window before the anomaly's trading
-// day that passed the filter. Mirrors the filter task's anomaly-gate semantics
-// so an anomaly's disclosure_ids match what filter:disclosures actually passed.
+// announced within the anomaly-gate window before the anomaly's trading day
+// that passed the filter. The window is passed by the caller so it matches
+// whatever the filter's gate uses (pipeline.DisclosureFilterLookbackDays) —
+// the definition stays single-owned by the filter (ADR-0006).
 type AnomalyWithDisclosures struct {
 	entity.Anomaly
 	DisclosureIDs pq.Int64Array `db:"disclosure_ids"`
 }
 
 // FindByDateWithDisclosures returns the anomalies for a trading day (optionally
-// filtered to one ticker) with their derived disclosure_ids. The disclosure
-// match window is [trading_day - DisclosureFilterLookbackDays, trading_day] —
-// the same window the filter task uses — not just the same-day match, so a
+// filtered to one ticker) with their derived disclosure_ids. lookbackDays is
+// the disclosure match window before the trading day —
+// [trading_day - lookbackDays, trading_day], the same window the filter's gate
+// extends forward from the announcement — not just the same-day match, so a
 // disclosure announced days before the anomaly's trading day still links.
-func (r *AnomalyRepository) FindByDateWithDisclosures(db *sqlx.DB, tradingDay string, ticker *string) ([]AnomalyWithDisclosures, error) {
+func (r *AnomalyRepository) FindByDateWithDisclosures(db *sqlx.DB, tradingDay string, ticker *string, lookbackDays int) ([]AnomalyWithDisclosures, error) {
 	day, err := time.Parse("2006-01-02", tradingDay)
 	if err != nil {
 		return nil, err
 	}
-	lookbackStart := day.AddDate(0, 0, -DisclosureFilterLookbackDays)
+	lookbackStart := day.AddDate(0, 0, -lookbackDays)
 	var rows []AnomalyWithDisclosures
 	err = db.Select(&rows, `
 		SELECT a.*,
