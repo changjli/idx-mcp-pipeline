@@ -76,9 +76,18 @@ func main() {
 	mux := asynq.NewServeMux()
 	mux.Handle(tasks.TypeNoop, tasks.NewNoopHandler(log))
 	mux.Handle(tasks.TypePipelineDaily, tasks.NewPipelineDailyHandler(log, asynqClient))
+	stockSummaryIngest := pipeline.NewStockSummaryIngest(
+		pipeline.NewSQLDailyPriceStore(dailyPriceRepo, db),
+		pipeline.NewSQLTickerRegistrar(tickerRepo, db),
+		log,
+	)
+	disclosureIngest := pipeline.NewDisclosureIngest(
+		pipeline.NewSQLDisclosureSink(disclosureRepo, db),
+		pipeline.NewSQLTickerRegistrar(tickerRepo, db),
+		log,
+	)
 	mux.Handle(tasks.TypeStockSummary, tasks.NewStockSummaryHandler(
-		log, idxClient, db, asynqClient,
-		tickerRepo, dailyPriceRepo, recorder,
+		log, idxClient, db, asynqClient, recorder, stockSummaryIngest,
 	))
 	lookback := vip.GetInt("idx.disclosure_lookback_days")
 	if lookback <= 0 {
@@ -86,7 +95,7 @@ func main() {
 	}
 	mux.Handle(tasks.TypeAnnouncements, tasks.NewAnnouncementsHandler(
 		log, idxClient, db,
-		tickerRepo, disclosureRepo, recorder, lookback,
+		recorder, disclosureIngest, lookback,
 	))
 	minADTV := vip.GetInt64("anomaly.min_adtv_value") // <= 0 → DefaultADTVMinValue in the constructor
 	anomalyDetector := pipeline.NewAnomalyDetector(
@@ -109,13 +118,19 @@ func main() {
 	} else {
 		log.Warn("r2 not configured — rss raw-XML claim-check disabled")
 	}
+	newsIngest := pipeline.NewNewsIngest(
+		pipeline.NewSQLNewsStore(newsRepo, db),
+		pipeline.NewSQLTickerSeeder(tickerRepo, db),
+		pipeline.NewSQLNewsTickerStore(newsTickerRepo, db),
+		log,
+	)
 	mux.Handle(tasks.TypeRSS, tasks.NewRSSHandler(
 		log,
 		&http.Client{Timeout: tasks.RSSHTTPTimeout},
 		r2Store,
 		tasks.DefaultRSSFeeds,
 		db,
-		tickerRepo, newsRepo, newsTickerRepo, recorder, rawFileRepo,
+		tickerRepo, recorder, newsIngest, rawFileRepo,
 	))
 
 	// Disclosure filter + extraction (ticket 11): filter:disclosures is

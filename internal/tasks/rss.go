@@ -62,13 +62,9 @@ type RSSPayload struct {
 	Date string `json:"date"` // YYYY-MM-DD
 }
 
-// RSSArticle is one parsed feed item.
-type RSSArticle struct {
-	Title       string
-	URL         string
-	PublishedAt time.Time
-	Snippet     string
-}
+// RSSArticle is one parsed feed item (alias of the pipeline-level ingest
+// shape so the XML parser and the usecase share one field set).
+type RSSArticle = pipeline.NewsArticle
 
 // EnqueueRSS enqueues an rss:ingest task for the given date with a date-keyed
 // TaskID for dedup. Extra opts (e.g. asynq.ProcessIn) are appended.
@@ -97,9 +93,8 @@ func NewRSSHandler(
 	feeds []RSSFeed,
 	db *sqlx.DB,
 	tickerRepo *repository.TickerRepository,
-	newsRepo *repository.NewsRepository,
-	newsTickerRepo *repository.NewsTickerRepository,
 	recorder *pipeline.SourceStatusRecorder,
+	newsIngest *pipeline.NewsIngest,
 	rawFileRepo *repository.RawFileRepository,
 ) asynq.HandlerFunc {
 	stage := pipeline.NewIngestStage(TypeRSS, log, nil, 3)
@@ -147,7 +142,7 @@ func NewRSSHandler(
 			f.Ok("feed fetched",
 				logrus.Fields{"feed": feed.Name, "fetch_url": feed.URL, "rows": len(articles)})
 
-			n, err := storeArticles(db, matcher, tickerRepo, newsRepo, newsTickerRepo, feed, articles, log)
+			n, err := newsIngest.Store(matcher, feed.Name, articles)
 			if err != nil {
 				// Surface so asynq retries — a row dropped mid-upsert would
 				// otherwise be skipped forever on the next run.
@@ -209,7 +204,7 @@ func fetchFeed(hc *http.Client, feed RSSFeed) ([]byte, []RSSArticle, error) {
 		return nil, nil, fmt.Errorf("read body: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, nil, fmt.Errorf("feed http error: status=%d body=%s", resp.StatusCode, truncate(string(body), 200))
+		return nil, nil, fmt.Errorf("feed http error: status=%d body=%s", resp.StatusCode, pipeline.Truncate(string(body), 200))
 	}
 
 	articles, err := parseRSS(body)
@@ -408,23 +403,20 @@ func buildTickerMatcher(tickers []entity.Ticker) *tickerMatcher {
 	return m
 }
 
-// tickerMatch is one matched ticker for an article. name is the full company
-// name from the bundled map, used to seed the tickers row without clobbering
-// the real name with a bare code.
-type tickerMatch struct {
-	code   string
-	name   string
-	method string // "code" or "name"
-}
-
 // match returns the tickers matched in an article. Code matches win over name
 // matches for the same ticker (never two rows for one code). Case-insensitive
 // code matching is used except for stopword codes, which must appear uppercase.
-func (m *tickerMatcher) match(title, snippet string) []tickerMatch {
+// Match implements pipeline.TickerMatcher; lowercase internal alias for the
+// tickerMatcher's internal callers.
+func (m *tickerMatcher) Match(title, snippet string) []pipeline.MatchedTicker {
+	return m.match(title, snippet)
+}
+
+func (m *tickerMatcher) match(title, snippet string) []pipeline.MatchedTicker {
 	rawText := title + " " + snippet
 	normText := normalizeText(rawText)
 
-	var out []tickerMatch
+	var out []pipeline.MatchedTicker
 	matched := make(map[string]bool)
 
 	// Code matching first: a literal ticker code mention is the strongest
@@ -439,7 +431,7 @@ func (m *tickerMatcher) match(title, snippet string) []tickerMatch {
 		}
 		if !matched[m.entries[i].code] {
 			matched[m.entries[i].code] = true
-			out = append(out, tickerMatch{code: m.entries[i].code, name: m.entries[i].name, method: "code"})
+			out = append(out, pipeline.MatchedTicker{Code: m.entries[i].code, Name: m.entries[i].name, Method: "code"})
 		}
 	}
 
@@ -456,13 +448,13 @@ func (m *tickerMatcher) match(title, snippet string) []tickerMatch {
 		if e.single != "" {
 			if textWords[e.single] {
 				matched[e.code] = true
-				out = append(out, tickerMatch{code: e.code, name: e.name, method: "name"})
+				out = append(out, pipeline.MatchedTicker{Code: e.code, Name: e.name, Method: "name"})
 			}
 			continue
 		}
 		if len(e.sig) >= 2 && allWordsPresent(textWords, e.sig) {
 			matched[e.code] = true
-			out = append(out, tickerMatch{code: e.code, name: e.name, method: "name"})
+			out = append(out, pipeline.MatchedTicker{Code: e.code, Name: e.name, Method: "name"})
 		}
 	}
 	return out
@@ -497,55 +489,6 @@ func stripHTML(s string) string {
 // ticker with its match_method. Unmatched articles are discarded. Returns the
 // number of stored articles; a failed upsert fails the whole batch so the
 // caller retries rather than silently advancing past unpersisted rows.
-func storeArticles(
-	db *sqlx.DB,
-	m *tickerMatcher,
-	tickerRepo *repository.TickerRepository,
-	newsRepo *repository.NewsRepository,
-	newsTickerRepo *repository.NewsTickerRepository,
-	feed RSSFeed,
-	articles []RSSArticle,
-	log *logrus.Logger,
-) (int, error) {
-	stored := 0
-	for _, a := range articles {
-		matches := m.match(a.Title, a.Snippet)
-		if len(matches) == 0 {
-			log.Debugf("rss: discarding unmatched article %q", truncate(a.Title, 80))
-			continue
-		}
-
-		var snippet *string
-		if a.Snippet != "" {
-			snippet = &a.Snippet
-		}
-		id, err := newsRepo.Upsert(db, &entity.NewsItem{
-			Title:       a.Title,
-			URL:         a.URL,
-			Source:      feed.Name,
-			PublishedAt: a.PublishedAt,
-			Snippet:     snippet,
-		})
-		if err != nil {
-			return stored, fmt.Errorf("news upsert %q: %w", a.URL, err)
-		}
-
-		for _, mt := range matches {
-			if err := tickerRepo.InsertIfAbsent(db, mt.code, mt.name); err != nil {
-				return stored, fmt.Errorf("ticker seed %s: %w", mt.code, err)
-			}
-			if err := newsTickerRepo.Insert(db, &entity.NewsTicker{
-				NewsID:      id,
-				Ticker:      mt.code,
-				MatchMethod: mt.method,
-			}); err != nil {
-				return stored, fmt.Errorf("news_ticker insert %s: %w", mt.code, err)
-			}
-		}
-		stored++
-	}
-	return stored, nil
-}
 
 // claimCheckRSS uploads raw feed XML to R2 under a content-hash key and records
 // the pointer in raw_files. The content-addressed key makes re-runs idempotent:

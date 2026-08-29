@@ -9,6 +9,7 @@ import (
 	"github.com/hibiken/asynq"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 )
 
 func TestParseRSS_ValidFeed(t *testing.T) {
@@ -98,7 +99,7 @@ func TestSignificantTokens(t *testing.T) {
 	for _, c := range cases {
 		got := significantTokens(c.name)
 		if !equalStrings(got, c.want) {
-			t.Errorf("significantTokens(%q) = %v, want %v", c.name, got, c.want)
+			t.Errorf("significantTokens(%q) = %v, want %q", c.name, got, c.want)
 		}
 	}
 }
@@ -140,7 +141,7 @@ func buildMatcherForTest(t *testing.T) *tickerMatcher {
 	return buildTickerMatcher(testTickerUniverse())
 }
 
-func matchCodes(m *tickerMatcher, title, snippet string) []tickerMatch {
+func matchCodes(m *tickerMatcher, title, snippet string) []pipeline.MatchedTicker {
 	return m.match(title, snippet)
 }
 
@@ -148,13 +149,13 @@ func TestMatcher_CodeMatch(t *testing.T) {
 	m := buildMatcherForTest(t)
 
 	matches := matchCodes(m, "Saham BBCA Naik 5%", "")
-	if len(matches) != 1 || matches[0].code != "BBCA" || matches[0].method != "code" {
+	if len(matches) != 1 || matches[0].Code != "BBCA" || matches[0].Method != "code" {
 		t.Fatalf("expected one code match BBCA, got %+v", matches)
 	}
 
 	// Case-insensitive for non-stopword codes.
 	matches = matchCodes(m, "saham bbca", "")
-	if len(matches) != 1 || matches[0].code != "BBCA" {
+	if len(matches) != 1 || matches[0].Code != "BBCA" {
 		t.Fatalf("expected case-insensitive match, got %+v", matches)
 	}
 
@@ -172,7 +173,7 @@ func TestMatcher_CodeStopword(t *testing.T) {
 		t.Fatalf("expected no match for lowercase stopword, got %+v", got)
 	}
 	// Uppercase "BUMI" is the ticker mention.
-	if got := matchCodes(m, "Saham BUMI menguat", ""); len(got) != 1 || got[0].code != "BUMI" {
+	if got := matchCodes(m, "Saham BUMI menguat", ""); len(got) != 1 || got[0].Code != "BUMI" {
 		t.Fatalf("expected uppercase BUMI match, got %+v", got)
 	}
 }
@@ -182,7 +183,7 @@ func TestMatcher_NameMatch_MultiToken(t *testing.T) {
 
 	// Full legal name (minus Tbk.) matches all significant tokens.
 	matches := matchCodes(m, "Bank Central Asia Bukukan Laba Bersih", "")
-	if len(matches) != 1 || matches[0].code != "BBCA" || matches[0].method != "name" {
+	if len(matches) != 1 || matches[0].Code != "BBCA" || matches[0].Method != "name" {
 		t.Fatalf("expected BBCA name match, got %+v", matches)
 	}
 
@@ -197,12 +198,12 @@ func TestMatcher_NameMatch_SingleToken(t *testing.T) {
 
 	// Short forms: "Telkom" for TLKM, "Mandiri" for BMRI.
 	matches := matchCodes(m, "Telkom Siapkan Belanja Modal", "")
-	if len(matches) != 1 || matches[0].code != "TLKM" || matches[0].method != "name" {
+	if len(matches) != 1 || matches[0].Code != "TLKM" || matches[0].Method != "name" {
 		t.Fatalf("expected TLKM name match via Telkom, got %+v", matches)
 	}
 
 	matches = matchCodes(m, "Mandiri Garap Kredit Hijau", "")
-	if len(matches) != 1 || matches[0].code != "BMRI" {
+	if len(matches) != 1 || matches[0].Code != "BMRI" {
 		t.Fatalf("expected BMRI name match via Mandiri, got %+v", matches)
 	}
 }
@@ -223,7 +224,7 @@ func TestMatcher_AmbiguousSingleTokenBlocked(t *testing.T) {
 
 	// Full AALI name still matches its own ticker.
 	matches := matchCodes(m, "Astra Agro Lestari Raih Rekor", "")
-	if len(matches) != 1 || matches[0].code != "AALI" {
+	if len(matches) != 1 || matches[0].Code != "AALI" {
 		t.Fatalf("expected AALI match, got %+v", matches)
 	}
 }
@@ -234,7 +235,7 @@ func TestMatcher_MultipleTickers(t *testing.T) {
 	matches := matchCodes(m, "BBCA dan Telkom Bagi Dividen", "")
 	codes := map[string]bool{}
 	for _, mt := range matches {
-		codes[mt.code] = true
+		codes[mt.Code] = true
 	}
 	if !codes["BBCA"] || !codes["TLKM"] || len(matches) != 2 {
 		t.Fatalf("expected BBCA + TLKM, got %+v", matches)
@@ -242,10 +243,10 @@ func TestMatcher_MultipleTickers(t *testing.T) {
 	// Name and code matches coexist on different tickers.
 	var sawName, sawCode bool
 	for _, mt := range matches {
-		if mt.method == "name" {
+		if mt.Method == "name" {
 			sawName = true
 		}
-		if mt.method == "code" {
+		if mt.Method == "code" {
 			sawCode = true
 		}
 	}
@@ -259,7 +260,7 @@ func TestMatcher_CodeWinsOverName(t *testing.T) {
 
 	// Article mentions the code AND the company name — one row, method=code.
 	matches := matchCodes(m, "BBCA Bank Central Asia Cetak Laba", "")
-	if len(matches) != 1 || matches[0].code != "BBCA" || matches[0].method != "code" {
+	if len(matches) != 1 || matches[0].Code != "BBCA" || matches[0].Method != "code" {
 		t.Fatalf("expected single code match, got %+v", matches)
 	}
 }
@@ -283,13 +284,13 @@ func TestMatcher_RealWorldKOTA(t *testing.T) {
 	m := buildMatcherForTest(t)
 
 	matches := matchCodes(m, "Kenapa Saham KOTA Naik 17% dalam Sepekan?", "PT DMS Propertindo Tbk (KOTA) didorong oleh sentimen positif.")
-	if len(matches) != 1 || matches[0].code != "KOTA" {
+	if len(matches) != 1 || matches[0].Code != "KOTA" {
 		t.Fatalf("expected KOTA code match, got %+v", matches)
 	}
 	// Full name match also works, but a lone generic-ish token ("propertindo")
 	// without the code or the paired "dms" token must not tag KOTA.
 	matches = matchCodes(m, "PT DMS Propertindo Tbk Catat Kenaikan", "")
-	if len(matches) != 1 || matches[0].code != "KOTA" || matches[0].method != "name" {
+	if len(matches) != 1 || matches[0].Code != "KOTA" || matches[0].Method != "name" {
 		t.Fatalf("expected KOTA name match for full name, got %+v", matches)
 	}
 	matches = matchCodes(m, "Sektor propertindo menguat", "")

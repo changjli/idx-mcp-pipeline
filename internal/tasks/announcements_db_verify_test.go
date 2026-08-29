@@ -10,6 +10,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -65,7 +66,19 @@ func TestAnnouncementsUpsert_EndToEnd(t *testing.T) {
 		},
 	}
 
-	first, err := upsertDisclosureRows(db, tickerRepo, disclosureRepo, replies, log)
+	ingest := pipeline.NewDisclosureIngest(
+		pipeline.NewSQLDisclosureSink(disclosureRepo, db),
+		pipeline.NewSQLTickerRegistrar(tickerRepo, db),
+		log,
+	)
+	flatten := func(replies []AnnouncementReply) []*entity.Disclosure {
+		var rows []*entity.Disclosure
+		for _, reply := range replies {
+			rows = append(rows, replyToDisclosures(reply)...)
+		}
+		return rows
+	}
+	first, err := ingest.UpsertRows(flatten(replies))
 	if err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
@@ -74,7 +87,7 @@ func TestAnnouncementsUpsert_EndToEnd(t *testing.T) {
 	}
 
 	// Re-run is idempotent: same 3 rows, no duplicates.
-	second, err := upsertDisclosureRows(db, tickerRepo, disclosureRepo, replies, log)
+	second, err := ingest.UpsertRows(flatten(replies))
 	if err != nil {
 		t.Fatalf("re-run upsert: %v", err)
 	}

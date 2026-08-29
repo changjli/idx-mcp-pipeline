@@ -53,7 +53,7 @@ func TestStockSummary_FlareSolverr_EndToEnd(t *testing.T) {
 		Draw:            1,
 		RecordsTotal:    1,
 		RecordsFiltered: 1,
-		Data: []StockSummaryItem{
+		Data: []pipeline.StockSummaryItem{
 			{StockCode: ticker, StockName: "Flare Test Tbk.", OpenPrice: &open, High: &high, Low: &low, Close: &closeP, Volume: &vol, Value: &val, Frequency: &freq, ListedShares: &shares},
 		},
 	}
@@ -133,7 +133,12 @@ func TestStockSummary_FlareSolverr_EndToEnd(t *testing.T) {
 	recorder := pipeline.NewSourceStatusRecorder(
 		pipeline.NewSQLSourceStatusStore(sourceStatusRepo, db), pipeline.NewSQLAlertStore(alertRepo, db), log,
 	)
-	handler := NewStockSummaryHandler(log, idxClient, db, asynqClient, tickerRepo, dailyPriceRepo, recorder)
+	ingest := pipeline.NewStockSummaryIngest(
+		pipeline.NewSQLDailyPriceStore(dailyPriceRepo, db),
+		pipeline.NewSQLTickerRegistrar(tickerRepo, db),
+		log,
+	)
+	handler := NewStockSummaryHandler(log, idxClient, db, asynqClient, recorder, ingest)
 
 	payloadBytes, _ := json.Marshal(StockSummaryPayload{Date: date})
 	task := asynq.NewTask(TypeStockSummary, payloadBytes)

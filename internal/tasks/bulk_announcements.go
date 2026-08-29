@@ -7,8 +7,8 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
 // BulkAnnouncementsResult summarizes a bulk disclosure-metadata backfill run.
@@ -34,9 +34,8 @@ func RunBulkAnnouncements(
 	log *logrus.Logger,
 	idxClient *client.Client,
 	db *sqlx.DB,
-	tickerRepo *repository.TickerRepository,
-	disclosureRepo *repository.DisclosureRepository,
 	recorder *pipeline.SourceStatusRecorder,
+	ingest *pipeline.DisclosureIngest,
 	start, end time.Time,
 ) BulkAnnouncementsResult {
 	var result BulkAnnouncementsResult
@@ -65,7 +64,16 @@ func RunBulkAnnouncements(
 			continue
 		}
 
-		upserted, upsertErr := upsertDisclosureRows(db, tickerRepo, disclosureRepo, replies, log)
+		var rows []*entity.Disclosure
+		for _, reply := range replies {
+			rs := replyToDisclosures(reply)
+			if len(rs) == 0 {
+				log.Warnf("bulk announcements: skipping reply (unparseable date or no PDF attachments)")
+				continue
+			}
+			rows = append(rows, rs...)
+		}
+		upserted, upsertErr := ingest.UpsertRows(rows)
 		if upsertErr != nil {
 			log.Errorf("bulk announcements: upsert failed for %s: %v", dateKey, upsertErr)
 			result.Failed++

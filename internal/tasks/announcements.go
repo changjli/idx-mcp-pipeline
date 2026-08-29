@@ -15,7 +15,6 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
 const (
@@ -88,9 +87,8 @@ func NewAnnouncementsHandler(
 	log *logrus.Logger,
 	idxClient *client.Client,
 	db *sqlx.DB,
-	tickerRepo *repository.TickerRepository,
-	disclosureRepo *repository.DisclosureRepository,
 	recorder *pipeline.SourceStatusRecorder,
+	ingest *pipeline.DisclosureIngest,
 	lookbackDays int,
 ) asynq.HandlerFunc {
 	if lookbackDays <= 0 {
@@ -133,7 +131,16 @@ func NewAnnouncementsHandler(
 
 		f.Ok("announcement metadata fetched", logrus.Fields{"date": p.Date, "rows": len(replies)})
 
-		upserted, upsertErr := upsertDisclosureRows(db, tickerRepo, disclosureRepo, replies, log)
+		var rows []*entity.Disclosure
+		for _, reply := range replies {
+			rs := replyToDisclosures(reply)
+			if len(rs) == 0 {
+				log.Warnf("announcements: skipping reply %q (unparseable date or no PDF attachments)", reply.Pengumuman.ID2)
+				continue
+			}
+			rows = append(rows, rs...)
+		}
+		upserted, upsertErr := ingest.UpsertRows(rows)
 		if upsertErr != nil {
 			// Surface so asynq retries and the watermark stays put — otherwise
 			// a row dropped mid-upsert would be skipped forever on the next run.
@@ -181,12 +188,12 @@ func fetchAnnouncements(idxClient *client.Client, from, to time.Time, log *logru
 			return nil, fmt.Errorf("read response body: %w", err)
 		}
 		if resp.StatusCode >= 400 {
-			return nil, fmt.Errorf("idx api error: status=%d body=%s", resp.StatusCode, truncate(string(body), 200))
+			return nil, fmt.Errorf("idx api error: status=%d body=%s", resp.StatusCode, pipeline.Truncate(string(body), 200))
 		}
 
 		var pageResp AnnouncementsResponse
 		if err := json.Unmarshal(body, &pageResp); err != nil {
-			return nil, fmt.Errorf("parse response: %w (body=%s)", err, truncate(string(body), 200))
+			return nil, fmt.Errorf("parse response: %w (body=%s)", err, pipeline.Truncate(string(body), 200))
 		}
 		if total == 0 {
 			total = pageResp.ResultCount
@@ -271,46 +278,4 @@ func maxAnnouncementDate(replies []AnnouncementReply) *time.Time {
 		}
 	}
 	return max
-}
-
-// ensureTickerForDisclosure ensures the disclosure's ticker exists in the
-// tickers table (FK dependency). Announcements don't carry issuer names, so a
-// new ticker is seeded with name=code; the stock_summary upsert enriches it
-// (name, shares) once the issuer appears in a trading summary.
-func ensureTickerForDisclosure(db *sqlx.DB, repo *repository.TickerRepository, code string) error {
-	ticker := &entity.Ticker{
-		Code:   code,
-		Name:   code,
-		Active: true,
-	}
-	return repo.Upsert(db, ticker)
-}
-
-// upsertDisclosureRows flattens every reply into disclosure rows and upserts
-// them (idempotent via pdf_url UNIQUE). Tickers are auto-discovered. Returns
-// rows upserted and the first error; any failed row fails the whole batch so
-// the caller can retry rather than silently advancing past unpersisted rows.
-func upsertDisclosureRows(db *sqlx.DB, tickerRepo *repository.TickerRepository, disclosureRepo *repository.DisclosureRepository, replies []AnnouncementReply, log *logrus.Logger) (int, error) {
-	upserted := 0
-	for _, reply := range replies {
-		rows := replyToDisclosures(reply)
-		if len(rows) == 0 {
-			log.Warnf("announcements: skipping reply %q (unparseable date or no PDF attachments)", reply.Pengumuman.ID2)
-			continue
-		}
-		for _, d := range rows {
-			if d.Ticker != nil {
-				if err := ensureTickerForDisclosure(db, tickerRepo, *d.Ticker); err != nil {
-					log.Warnf("announcements: ticker upsert failed for %s: %v", *d.Ticker, err)
-					return upserted, fmt.Errorf("ticker upsert %s: %w", *d.Ticker, err)
-				}
-			}
-			if err := disclosureRepo.Upsert(db, d); err != nil {
-				log.Warnf("announcements: disclosure upsert failed for %s: %v", d.PdfURL, err)
-				return upserted, fmt.Errorf("disclosure upsert %s: %w", d.PdfURL, err)
-			}
-			upserted++
-		}
-	}
-	return upserted, nil
 }

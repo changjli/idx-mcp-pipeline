@@ -45,7 +45,7 @@ func TestRunBulkBackfill_EmptyRange(t *testing.T) {
 	// start after end: loop never runs, deps never touched.
 	start := time.Date(2026, 1, 9, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC)
-	result := RunBulkBackfill(nil, nil, nil, nil, nil, nil, start, end)
+	result := RunBulkBackfill(nil, nil, nil, nil, nil, start, end)
 
 	if result.Total != 0 || result.Succeeded != 0 || result.Failed != 0 || result.Empty != 0 {
 		t.Errorf("expected zero result, got %+v", result)

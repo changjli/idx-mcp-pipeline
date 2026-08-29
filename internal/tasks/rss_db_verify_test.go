@@ -126,13 +126,19 @@ func TestRSSIngest_EndToEnd(t *testing.T) {
 	recorder := pipeline.NewSourceStatusRecorder(
 		pipeline.NewSQLSourceStatusStore(sourceStatusRepo, db), pipeline.NewSQLAlertStore(alertRepo, db), log,
 	)
+	newsIngest := pipeline.NewNewsIngest(
+		pipeline.NewSQLNewsStore(newsRepo, db),
+		pipeline.NewSQLTickerSeeder(tickerRepo, db),
+		pipeline.NewSQLNewsTickerStore(newsTickerRepo, db),
+		log,
+	)
 	handler := NewRSSHandler(
 		log,
 		&http.Client{Timeout: RSSHTTPTimeout},
 		store,
 		feeds,
 		db,
-		tickerRepo, newsRepo, newsTickerRepo, recorder, rawFileRepo,
+		tickerRepo, recorder, newsIngest, rawFileRepo,
 	)
 
 	// Scoped cleanup: test-only news rows, the exact raw_files keys this test
@@ -288,13 +294,19 @@ func TestRSSIngest_AllFeedsFail(t *testing.T) {
 	recorder := pipeline.NewSourceStatusRecorder(
 		pipeline.NewSQLSourceStatusStore(sourceStatusRepo, db), pipeline.NewSQLAlertStore(alertRepo, db), log,
 	)
+	newsIngest2 := pipeline.NewNewsIngest(
+		pipeline.NewSQLNewsStore(newsRepo, db),
+		pipeline.NewSQLTickerSeeder(tickerRepo, db),
+		pipeline.NewSQLNewsTickerStore(newsTickerRepo, db),
+		log,
+	)
 	handler := NewRSSHandler(
 		log,
 		&http.Client{Timeout: RSSHTTPTimeout},
 		nil,
 		feeds,
 		db,
-		tickerRepo, newsRepo, newsTickerRepo, recorder, rawFileRepo,
+		tickerRepo, recorder, newsIngest2, rawFileRepo,
 	)
 
 	payload := RSSPayload{Date: "2026-08-10"}

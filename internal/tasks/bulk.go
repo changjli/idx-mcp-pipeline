@@ -8,7 +8,6 @@ import (
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
 // BulkBackfillResult summarizes a bulk historical backfill run.
@@ -30,9 +29,8 @@ func RunBulkBackfill(
 	log *logrus.Logger,
 	idxClient *client.Client,
 	db *sqlx.DB,
-	tickerRepo *repository.TickerRepository,
-	dailyPriceRepo *repository.DailyPriceRepository,
 	recorder *pipeline.SourceStatusRecorder,
+	ingest *pipeline.StockSummaryIngest,
 	start, end time.Time,
 ) BulkBackfillResult {
 	var result BulkBackfillResult
@@ -62,7 +60,7 @@ func RunBulkBackfill(
 			continue
 		}
 
-		upserted := upsertStockSummaryRows(db, tickerRepo, dailyPriceRepo, rows, dateKey, log)
+		upserted := ingest.UpsertRows(rows, dateKey)
 		log.Infof("bulk: upserted %d/%d rows for %s", upserted, len(rows), dateKey)
 		result.Succeeded++
 		if upserted > 0 {
