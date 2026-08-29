@@ -94,7 +94,7 @@ func (r *AnomalyRepository) FindByDateWithDisclosures(db *sqlx.DB, tradingDay st
 		FROM anomalies a
 		LEFT JOIN disclosures d
 		  ON d.ticker = a.ticker
-		 AND d.announcement_date >= $2
+		 AND d.announcement_date >= $2::date
 		 AND d.announcement_date <= a.trading_day
 		 AND d.passed_filter = true
 		WHERE a.trading_day = $1
@@ -109,7 +109,23 @@ func (r *AnomalyRepository) FindByDateWithDisclosures(db *sqlx.DB, tradingDay st
 // with trading_day within [announcementDate, announcementDate + lookbackDays].
 // The anomaly-gate (ticket 11): a disclosure's market impact can lag its
 // announcement by days, so the match window extends forward from the
-// announcement date, not just the same day.
+// announcement date, not just the same day. The bounds are explicitly cast to
+// DATE so both sides go through one timestamptz→date conversion; note that
+// conversion still applies the session TimeZone, so under a non-UTC session
+// the window boundaries shift day-wise (deployment runs UTC/Asia-Jakarta;
+// unchanged behavior, documented wart).
+func (r *AnomalyRepository) ExistsForTickerInWindow(db *sqlx.DB, ticker string, announcementDate time.Time, lookbackDays int) (bool, error) {
+	end := announcementDate.AddDate(0, 0, lookbackDays)
+	var exists bool
+	err := db.Get(&exists, `
+		SELECT EXISTS(
+			SELECT 1 FROM anomalies
+			WHERE ticker = $1 AND trading_day BETWEEN $2::date AND $3::date
+		)
+	`, ticker, announcementDate, end)
+	return exists, err
+}
+
 // DeleteOlderThan deletes anomalies rows whose trading_day is older than the
 // retention window. The anomaly-gate only needs a 7-day lookback, so old rows
 // are pure growth. Returns rows deleted.
@@ -122,16 +138,4 @@ func (r *AnomalyRepository) DeleteOlderThan(db *sqlx.DB, days int) (int64, error
 		return 0, err
 	}
 	return res.RowsAffected()
-}
-
-func (r *AnomalyRepository) ExistsForTickerInWindow(db *sqlx.DB, ticker string, announcementDate time.Time, lookbackDays int) (bool, error) {
-	end := announcementDate.AddDate(0, 0, lookbackDays)
-	var exists bool
-	err := db.Get(&exists, `
-		SELECT EXISTS(
-			SELECT 1 FROM anomalies
-			WHERE ticker = $1 AND trading_day BETWEEN $2 AND $3
-		)
-	`, ticker, announcementDate, end)
-	return exists, err
 }

@@ -27,28 +27,6 @@ func TestFilterDisclosuresPayload_Marshal(t *testing.T) {
 	}
 }
 
-func TestFilterDisclosuresTask_TypeAndPayload(t *testing.T) {
-	task, err := filterDisclosuresTask("2026-08-10", 7)
-	if err != nil {
-		t.Fatalf("filterDisclosuresTask: %v", err)
-	}
-
-	if task.Type() != TypeFilterDisclosures {
-		t.Errorf("expected type %s, got %s", TypeFilterDisclosures, task.Type())
-	}
-
-	var got FilterDisclosuresPayload
-	if err := json.Unmarshal(task.Payload(), &got); err != nil {
-		t.Fatalf("unmarshal task payload: %v", err)
-	}
-	if got.Date != "2026-08-10" {
-		t.Errorf("expected date 2026-08-10, got %s", got.Date)
-	}
-	if got.Attempt != 7 {
-		t.Errorf("expected attempt 7, got %d", got.Attempt)
-	}
-}
-
 func TestTaskKeyFilterDisclosures(t *testing.T) {
 	key := TaskKey(TypeFilterDisclosures, "2026-08-10")
 	expected := "filter:disclosures:2026-08-10"

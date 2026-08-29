@@ -46,6 +46,26 @@ var disclosureExclusionKeywords = []string{
 	"Laporan Keuangan",
 }
 
+// Keyword pairs precomputed once at init — titles are compared
+// case-insensitively, and recomputing strings.ToLower per keyword per
+// disclosure would redo the same work on every row of every run. Each keyword
+// keeps its lowercase form in one value so matching and canonical-category
+// storage cannot drift out of lockstep.
+type keywordPair struct{ original, lower string }
+
+var (
+	disclosureWhitelistPairs = lowerAll(disclosureWhitelistKeywords)
+	disclosureExclusionPairs = lowerAll(disclosureExclusionKeywords)
+)
+
+func lowerAll(keywords []string) []keywordPair {
+	pairs := make([]keywordPair, len(keywords))
+	for i, kw := range keywords {
+		pairs[i] = keywordPair{original: kw, lower: strings.ToLower(kw)}
+	}
+	return pairs
+}
+
 // DisclosureSource supplies the pending rows the filter evaluates and records
 // each verdict. Consumer-side interface (ADR-0006): satisfied by the
 // sqlx-backed DisclosureRepository via NewSQLDisclosureSource; tests provide
@@ -190,15 +210,15 @@ func evaluateDisclosure(title string, gatePasses bool) (bool, []string) {
 		return false, nil
 	}
 	lower := strings.ToLower(title)
-	for _, kw := range disclosureExclusionKeywords {
-		if strings.Contains(lower, strings.ToLower(kw)) {
+	for _, kw := range disclosureExclusionPairs {
+		if strings.Contains(lower, kw.lower) {
 			return false, nil
 		}
 	}
 	var categories []string
-	for _, kw := range disclosureWhitelistKeywords {
-		if strings.Contains(lower, strings.ToLower(kw)) {
-			categories = append(categories, kw)
+	for _, kw := range disclosureWhitelistPairs {
+		if strings.Contains(lower, kw.lower) {
+			categories = append(categories, kw.original)
 		}
 	}
 	return len(categories) > 0, categories

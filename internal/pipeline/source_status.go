@@ -180,7 +180,11 @@ func (r *SourceStatusRecorder) Failure(source string, maxAgeSeconds int32, date 
 		AlertType: "ingestion_error",
 		Message:   fmt.Sprintf("%s fetch failed for %s (attempt %d): %s", source, date, consecutive, errStr),
 	}
-	if err := r.alerts.Insert(alert); err != nil {
-		r.log.Errorf("%s: failed to insert alert: %v", source, err)
+	// The bulk CLI wires a nil AlertStore (alerts are a worker concern there);
+	// nil is tolerated explicitly instead of panicking if Failure ever joins it.
+	if r.alerts != nil {
+		if err := r.alerts.Insert(alert); err != nil {
+			r.log.Errorf("%s: failed to insert alert: %v", source, err)
+		}
 	}
 }

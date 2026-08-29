@@ -26,14 +26,29 @@ func mustParseDate(t *testing.T, s string) time.Time {
 // TestDisclosureFilter_EndToEnd verifies the 3-layer filter against a real
 // Postgres: anomaly-gate, keyword whitelist, exclusion, sticky-true,
 // delayed-reaction re-check, and extract enqueue per passing disclosure.
-// Skipped unless IDX_MCP_DB_DSN is set.
+//
+// WARNING: this test mutates rows beyond its fixtures. Filter's work set is
+// every never-filtered disclosure in the DB (passed_filter IS NULL, any date),
+// and each verdict written to a real row is sticky (never gate-re-evaluated);
+// the test's enqueue never enqueues extract, so affected real rows would also
+// await extraction until the next real run. It is therefore double-gated: it
+// runs only when IDX_MCP_DB_DSN is set AND
+// IDX_MCP_FILTER_E2E_MUTATES_PENDING=1 is set, opting in to that side effect.
 func TestDisclosureFilter_EndToEnd(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
 		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
 	}
+	if os.Getenv("IDX_MCP_FILTER_E2E_MUTATES_PENDING") != "1" {
+		t.Skip("IDX_MCP_FILTER_E2E_MUTATES_PENDING != 1; Filter writes verdicts to every pending disclosure in the target DB, so this test mutates real rows — set the var to opt in")
+	}
 
 	db := sqlx.MustConnect("pgx", dsn)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("close db: %v", err)
+		}
+	}()
 	log := logrus.New()
 	disclosureRepo := repository.NewDisclosureRepository(log)
 	anomalyRepo := repository.NewAnomalyRepository(log)
@@ -42,15 +57,21 @@ func TestDisclosureFilter_EndToEnd(t *testing.T) {
 		NewSQLAnomalyGate(anomalyRepo, db),
 	)
 
-	// Clean slate.
-	db.MustExec("DELETE FROM disclosures WHERE pdf_url LIKE '%filter-test-%'")
-	db.MustExec("DELETE FROM anomalies WHERE ticker LIKE 'FILT%'")
-	db.MustExec("DELETE FROM tickers WHERE code LIKE 'FILT%'")
-	t.Cleanup(func() {
-		db.MustExec("DELETE FROM disclosures WHERE pdf_url LIKE '%filter-test-%'")
-		db.MustExec("DELETE FROM anomalies WHERE ticker LIKE 'FILT%'")
-		db.MustExec("DELETE FROM tickers WHERE code LIKE 'FILT%'")
-	})
+	// Clean slate. Exec (not MustExec) so a transient failure during cleanup
+	// logs instead of panicking and masking the test result.
+	cleanup := func() {
+		if _, err := db.Exec("DELETE FROM disclosures WHERE pdf_url LIKE '%filter-test-%'"); err != nil {
+			t.Logf("cleanup disclosures: %v", err)
+		}
+		if _, err := db.Exec("DELETE FROM anomalies WHERE ticker LIKE 'FILT%'"); err != nil {
+			t.Logf("cleanup anomalies: %v", err)
+		}
+		if _, err := db.Exec("DELETE FROM tickers WHERE code LIKE 'FILT%'"); err != nil {
+			t.Logf("cleanup tickers: %v", err)
+		}
+	}
+	cleanup()
+	t.Cleanup(cleanup)
 
 	for _, code := range []string{"FILTA", "FILTB", "FILTC", "FILTD", "FILTE", "FILTF"} {
 		db.MustExec("INSERT INTO tickers (code, name, active) VALUES ($1, $1, true)", code)

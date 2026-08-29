@@ -10,6 +10,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/storage"
 )
@@ -43,24 +44,10 @@ type CleanupPayload struct {
 // EnqueueCleanup enqueues a cleanup task for the given date with a date-keyed
 // TaskID for dedup (one run per day). Extra opts (e.g. asynq.ProcessIn) are
 // appended to the defaults.
-func EnqueueCleanup(client *asynq.Client, date time.Time, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+func EnqueueCleanup(enq pipeline.Enqueuer, date time.Time, opts ...asynq.Option) (*asynq.TaskInfo, error) {
 	dateKey := date.Format("2006-01-02")
-	taskKey := TaskKey(TypeCleanup, dateKey)
-	payload := CleanupPayload{Date: dateKey}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal cleanup payload: %w", err)
-	}
-
-	task := asynq.NewTask(TypeCleanup, raw)
-	options := []asynq.Option{
-		asynq.TaskID(taskKey),
-		asynq.Queue("ingest"),
-		asynq.MaxRetry(3),
-		asynq.Retention(24 * time.Hour),
-	}
-	options = append(options, opts...)
-	return client.Enqueue(task, options...)
+	stage := pipeline.NewIngestStage(TypeCleanup, nil, enq, 3)
+	return stage.EnqueueWithOpts(TaskKey(TypeCleanup, dateKey), CleanupPayload{Date: dateKey}, opts...)
 }
 
 // NewCleanupHandler returns an asynq handler for the cleanup task type. It

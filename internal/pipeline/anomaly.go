@@ -134,9 +134,11 @@ func (d *AnomalyDetector) Detect(_ context.Context, day time.Time) ([]*entity.An
 		if a := volumeAnomaly(c, day); a != nil {
 			if err := d.anomalies.Insert(a); err != nil {
 				d.log.Warnf("detect:anomalies: volume insert failed for %s: %v", c.Ticker, err)
-			} else {
-				detected = append(detected, a)
+				// Original semantics preserved verbatim: a failed volume insert
+				// also skips this candidate's price anomaly (fail-fast per row).
+				continue
 			}
+			detected = append(detected, a)
 		} else if c.TodayVolume != nil && c.BaselineDays < anomalyBaselineDays {
 			skippedVolume++
 		}
@@ -162,7 +164,10 @@ func (d *AnomalyDetector) Detect(_ context.Context, day time.Time) ([]*entity.An
 // passesADTV reports whether a ticker's today trade value meets the minimum
 // ADTV (average daily trading value) liquidity threshold. Filters out
 // illiquid gorengan stocks where a Rp 2M trade can spike volume 500%. A nil
-// value (missing data) does not trigger the filter; minADTV <= 0 disables it.
+// value (missing data) does not trigger the filter. minADTV <= 0 passes every
+// non-nil value here, but it is not a configuration escape hatch:
+// NewAnomalyDetector rewrites a <= 0 threshold to DefaultADTVMinValue, so the
+// filter cannot be disabled via config ("anomaly.min_adtv_value").
 func passesADTV(c repository.AnomalyCandidate, minADTV int64) bool {
 	if c.TodayValue == nil || minADTV <= 0 {
 		return true

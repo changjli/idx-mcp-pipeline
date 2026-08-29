@@ -121,7 +121,7 @@ func (s *Stage) Reenqueue(payload any, delay time.Duration) error {
 // tracker stamping latency onto the matching success/failure event.
 func (s *Stage) StartFetch(taskID, msg string, fields logrus.Fields) *Fetch {
 	f := &Fetch{stage: s, taskID: taskID, start: s.now()}
-	f.emit(logrus.InfoLevel, "fetch_start", msg, fields)
+	f.emit(logrus.InfoLevel, "fetch_start", msg, f.withIdentity(fields))
 	return f
 }
 
@@ -135,29 +135,35 @@ type Fetch struct {
 // Ok emits fetch_success with the caller's event-specific fields (rows, ...)
 // plus the measured latency.
 func (f *Fetch) Ok(msg string, fields logrus.Fields) {
-	f.emit(logrus.InfoLevel, "fetch_success", msg, f.withLatency(fields))
+	f.emit(logrus.InfoLevel, "fetch_success", msg, f.withIdentity(f.withLatency(fields)))
 }
 
 // Fail emits fetch_failure with the error and measured latency.
 func (f *Fetch) Fail(msg string, fetchErr error, fields logrus.Fields) {
 	fields["error"] = fetchErr.Error()
-	f.emit(logrus.ErrorLevel, "fetch_failure", msg, f.withLatency(fields))
+	f.emit(logrus.ErrorLevel, "fetch_failure", msg, f.withIdentity(f.withLatency(fields)))
 }
 
-func (f *Fetch) withLatency(fields logrus.Fields) logrus.Fields {
-	out := make(logrus.Fields, len(fields)+3)
+// withIdentity stamps the correlation keys every fetch event carries:
+// task_id + source. Bulk backfill runs outside asynq — no task id exists, and
+// the original triplet omitted the field rather than logging an empty value.
+func (f *Fetch) withIdentity(fields logrus.Fields) logrus.Fields {
+	out := make(logrus.Fields, len(fields)+2)
 	for k, v := range fields {
 		out[k] = v
 	}
-	out["task_id"] = f.taskID
-	out["source"] = f.stage.Type
-	out["latency_ms"] = time.Since(f.start).Milliseconds()
-	if f.taskID == "" {
-		// Bulk backfill runs outside asynq: no task id exists. The original
-		// triplet omitted the field rather than logging an empty value.
-		delete(out, "task_id")
+	if f.taskID != "" {
+		out["task_id"] = f.taskID
 	}
+	out["source"] = f.stage.Type
 	return out
+}
+
+func (f *Fetch) withLatency(fields logrus.Fields) logrus.Fields {
+	// Latency is measured against the stage's own clock so an injected clock
+	// (tests, benchmarking) keeps the measurement deterministic.
+	fields["latency_ms"] = f.stage.now().Sub(f.start).Milliseconds()
+	return fields
 }
 
 func (f *Fetch) emit(level logrus.Level, event, msg string, fields logrus.Fields) {

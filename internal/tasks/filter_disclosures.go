@@ -2,7 +2,6 @@ package tasks
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -43,16 +42,6 @@ func EnqueueFilterDisclosures(enq pipeline.Enqueuer, date time.Time) (*asynq.Tas
 	return stage.Enqueue(TaskKey(TypeFilterDisclosures, dateKey), FilterDisclosuresPayload{Date: dateKey})
 }
 
-// filterDisclosuresTask builds the asynq task for a filter:disclosures payload.
-func filterDisclosuresTask(date string, attempt int) (*asynq.Task, error) {
-	payload := FilterDisclosuresPayload{Date: date, Attempt: attempt}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal filter:disclosures payload: %w", err)
-	}
-	return asynq.NewTask(TypeFilterDisclosures, raw), nil
-}
-
 // reenqueueFilterDisclosures re-enqueues a filter:disclosures task with a delay
 // while self-syncing on idx:announcements. Uses a unique TaskID (no dedup key)
 // because the current task still holds the date-keyed ID while active — mirrors
@@ -75,13 +64,13 @@ func NewFilterDisclosuresHandler(
 	filter *pipeline.DisclosureFilter,
 ) asynq.HandlerFunc {
 	return func(ctx context.Context, t *asynq.Task) error {
-		var p FilterDisclosuresPayload
-		if err := json.Unmarshal(t.Payload(), &p); err != nil {
-			return fmt.Errorf("unmarshal payload: %w", err)
-		}
-		today, err := time.Parse("2006-01-02", p.Date)
+		p, err := pipeline.DecodeTask[FilterDisclosuresPayload](t)
 		if err != nil {
-			return fmt.Errorf("invalid date %q: %w", p.Date, err)
+			return err
+		}
+		today, err := pipeline.ParseTaskDay(p.Date)
+		if err != nil {
+			return err
 		}
 
 		// Self-synchronizing: wait for idx:announcements to have written
@@ -115,7 +104,7 @@ func NewFilterDisclosuresHandler(
 				log.Warnf("filter:disclosures: enqueue extract for disclosure %d: %v", id, err)
 			}
 		}
-		taskID, _ := asynq.GetTaskID(ctx)
+		taskID := pipeline.TaskID(ctx)
 		stats, err := filter.Filter(ctx, today, enqueue)
 		if err != nil {
 			return err

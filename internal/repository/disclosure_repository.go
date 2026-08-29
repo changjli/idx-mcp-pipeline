@@ -101,7 +101,7 @@ func (r *DisclosureRepository) FindPendingForFilter(db *sqlx.DB, today time.Time
 	err := db.Select(&rows, `
 		SELECT * FROM disclosures
 		WHERE passed_filter IS NULL
-		   OR (passed_filter = false AND announcement_date >= $1)
+		   OR (passed_filter = false AND announcement_date >= $1::date)
 		   OR (passed_filter = true AND extraction_status = 'pending')
 		ORDER BY announcement_date, id
 	`, lookback)

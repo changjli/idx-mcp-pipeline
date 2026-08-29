@@ -2,7 +2,6 @@ package tasks
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -46,16 +45,6 @@ func reenqueueDetectAnomalies(enq pipeline.Enqueuer, date string, attempt int) e
 	return stage.Reenqueue(DetectAnomaliesPayload{Date: date, Attempt: attempt}, anomalySelfRetryDelay)
 }
 
-// detectAnomaliesTask builds the asynq task for a detect:anomalies payload.
-func detectAnomaliesTask(date string, attempt int) (*asynq.Task, error) {
-	payload := DetectAnomaliesPayload{Date: date, Attempt: attempt}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal detect:anomalies payload: %w", err)
-	}
-	return asynq.NewTask(TypeDetectAnomalies, raw), nil
-}
-
 // NewDetectAnomaliesHandler returns an asynq handler for the detect:anomalies
 // task type. Detection itself lives in the pipeline.AnomalyDetector stage
 // (ADR-0006); the handler synchronizes with stock_summary (self-retrying until
@@ -70,9 +59,9 @@ func NewDetectAnomaliesHandler(
 	detector *pipeline.AnomalyDetector,
 ) asynq.HandlerFunc {
 	return func(ctx context.Context, t *asynq.Task) error {
-		var p DetectAnomaliesPayload
-		if err := json.Unmarshal(t.Payload(), &p); err != nil {
-			return fmt.Errorf("unmarshal payload: %w", err)
+		p, err := pipeline.DecodeTask[DetectAnomaliesPayload](t)
+		if err != nil {
+			return err
 		}
 
 		// Self-synchronizing: wait for today's daily_prices rows.
@@ -98,9 +87,9 @@ func NewDetectAnomaliesHandler(
 		// calendar dependency. Using the chained date (not MAX(trading_day))
 		// keeps a self-healed past-date stock_summary's anomalies on its own
 		// date instead of silently re-computing a newer day.
-		today, err := time.Parse("2006-01-02", p.Date)
+		today, err := pipeline.ParseTaskDay(p.Date)
 		if err != nil {
-			return fmt.Errorf("invalid date %q: %w", p.Date, err)
+			return err
 		}
 
 		taskID := pipeline.TaskID(ctx)
