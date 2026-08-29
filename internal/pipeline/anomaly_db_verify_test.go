@@ -1,6 +1,7 @@
-package tasks
+package pipeline
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
@@ -25,6 +26,11 @@ func TestDetectAnomalies_EndToEnd(t *testing.T) {
 	log := logrus.New()
 	dailyRepo := repository.NewDailyPriceRepository(log)
 	anomalyRepo := repository.NewAnomalyRepository(log)
+	detector := NewAnomalyDetector(
+		NewSQLDailyPriceSource(dailyRepo, db),
+		NewSQLAnomalySink(anomalyRepo, db),
+		log, DefaultADTVMinValue,
+	)
 
 	// Clean slate.
 	for _, tk := range []string{"TESTA", "TESTB"} {
@@ -52,13 +58,13 @@ func TestDetectAnomalies_EndToEnd(t *testing.T) {
 	db.MustExec("INSERT INTO daily_prices (ticker, trading_day, open, high, low, close, volume, value, frequency, source) VALUES ($1,$2,100,111,99,110,2800000,2000000,2000,'idx')",
 		"TESTB", today)
 
-	written, err := detectAnomalies(db, dailyRepo, anomalyRepo, today, DefaultADTVMinValue, "test", log)
+	detected, err := detector.Detect(context.Background(), today)
 	if err != nil {
-		t.Fatalf("detectAnomalies: %v", err)
+		t.Fatalf("Detect: %v", err)
 	}
-	// Written includes real ingested tickers' anomalies too, so only assert
+	// Detected includes real ingested tickers' anomalies too, so only assert
 	// the synthetic ones are covered below per-ticker.
-	_ = written
+	_ = detected
 
 	rows, err := anomalyRepo.FindByTickerAndDate(db, "TESTA", "2026-08-07")
 	if err != nil {

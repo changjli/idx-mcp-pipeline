@@ -21,6 +21,7 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/mcpserver"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/middleware"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/scheduler"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/storage"
@@ -79,12 +80,14 @@ func main() {
 		log, idxClient, db,
 		tickerRepo, disclosureRepo, sourceStatusRepo, alertRepo, lookback,
 	))
-	minADTV := vip.GetInt64("anomaly.min_adtv_value")
-	if minADTV <= 0 {
-		minADTV = tasks.DefaultADTVMinValue
-	}
+	minADTV := vip.GetInt64("anomaly.min_adtv_value") // <= 0 → DefaultADTVMinValue in the constructor
+	anomalyDetector := pipeline.NewAnomalyDetector(
+		pipeline.NewSQLDailyPriceSource(dailyPriceRepo, db),
+		pipeline.NewSQLAnomalySink(anomalyRepo, db),
+		log, minADTV,
+	)
 	mux.Handle(tasks.TypeDetectAnomalies, tasks.NewDetectAnomaliesHandler(
-		log, asynqClient, db, dailyPriceRepo, anomalyRepo, minADTV,
+		log, asynqClient, db, dailyPriceRepo, anomalyRepo, anomalyDetector,
 	))
 	// R2 claim-check is optional: without r2.* credentials the handler skips
 	// the raw-XML upload (nil store) instead of hammering a default endpoint.
