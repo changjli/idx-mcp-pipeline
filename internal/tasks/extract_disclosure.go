@@ -3,7 +3,7 @@ package tasks
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -12,13 +12,13 @@ import (
 	"strings"
 	"time"
 
-	"database/sql"
 	"github.com/hibiken/asynq"
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/extract"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/storage"
 )
@@ -27,6 +27,9 @@ const (
 	// extractMaxPDFBytes caps a disclosure PDF at 10MB — probed via a ranged
 	// GET before download and enforced again by the bounded read buffer.
 	extractMaxPDFBytes = 10 * 1024 * 1024
+	// extractMaxRetry is the asynq retry budget for extract:disclosure. The
+	// self-managed extractRetryDelays budget runs on top of this (follow-up 06).
+	extractMaxRetry = 2
 	// extractTimeout caps text extraction per disclosure (30s). OCR (ticket
 	// 16) will need its own budget — scans are slower than text layers.
 	extractTimeout = 30 * time.Second
@@ -65,39 +68,17 @@ type ExtractDisclosurePayload struct {
 // EnqueueExtractDisclosure enqueues an extract:disclosure task for one
 // disclosure. Uses a per-disclosure TaskID for dedup. Returns
 // ErrTaskIDConflict if already enqueued. Chained from filter:disclosures.
-func EnqueueExtractDisclosure(client *asynq.Client, id int64) (*asynq.TaskInfo, error) {
-	taskKey := fmt.Sprintf("%s:%d", TypeExtractDisclosure, id)
-	payload := ExtractDisclosurePayload{DisclosureID: id}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal extract:disclosure payload: %w", err)
-	}
-	task := asynq.NewTask(TypeExtractDisclosure, raw)
-	return client.Enqueue(task,
-		asynq.TaskID(taskKey),
-		asynq.Queue("ingest"),
-		asynq.MaxRetry(2),
-		asynq.Retention(24*time.Hour),
-	)
+func EnqueueExtractDisclosure(enq pipeline.Enqueuer, id int64) (*asynq.TaskInfo, error) {
+	stage := pipeline.NewIngestStage(TypeExtractDisclosure, nil, enq, extractMaxRetry)
+	return stage.Enqueue(fmt.Sprintf("%s:%d", TypeExtractDisclosure, id), ExtractDisclosurePayload{DisclosureID: id})
 }
 
 // reenqueueExtractDisclosure re-enqueues an extract:disclosure task with a
 // delay. Uses a unique TaskID (no dedup key) because the current task still
 // holds the per-disclosure ID while active.
-func reenqueueExtractDisclosure(client *asynq.Client, id int64, attempt int, delay time.Duration) error {
-	payload := ExtractDisclosurePayload{DisclosureID: id, Attempt: attempt}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	task := asynq.NewTask(TypeExtractDisclosure, raw)
-	_, err = client.Enqueue(task,
-		asynq.Queue("ingest"),
-		asynq.ProcessIn(delay),
-		asynq.MaxRetry(2),
-		asynq.Retention(24*time.Hour),
-	)
-	return err
+func reenqueueExtractDisclosure(enq pipeline.Enqueuer, id int64, attempt int, delay time.Duration) error {
+	stage := pipeline.NewIngestStage(TypeExtractDisclosure, nil, enq, extractMaxRetry)
+	return stage.Reenqueue(ExtractDisclosurePayload{DisclosureID: id, Attempt: attempt}, delay)
 }
 
 // NewExtractDisclosureHandler returns an asynq handler for the
@@ -107,7 +88,7 @@ func reenqueueExtractDisclosure(client *asynq.Client, id int64, attempt int, del
 // so one malformed PDF fails alone. Concurrency is capped by a semaphore.
 func NewExtractDisclosureHandler(
 	log *logrus.Logger,
-	client *asynq.Client,
+	enq pipeline.Enqueuer,
 	fetcher pdfFetcher,
 	r2Store storage.ObjectStore,
 	db *sqlx.DB,
@@ -124,9 +105,9 @@ func NewExtractDisclosureHandler(
 			return ctx.Err()
 		}
 
-		var p ExtractDisclosurePayload
-		if err := json.Unmarshal(t.Payload(), &p); err != nil {
-			return fmt.Errorf("unmarshal payload: %w", err)
+		p, err := pipeline.DecodeTask[ExtractDisclosurePayload](t)
+		if err != nil {
+			return err
 		}
 
 		d, err := disclosureRepo.FindByID(db, p.DisclosureID)
@@ -146,7 +127,7 @@ func NewExtractDisclosureHandler(
 			return nil
 		}
 
-		taskID, _ := asynq.GetTaskID(ctx)
+		taskID := pipeline.TaskID(ctx)
 		h := &extractDisclosureRunner{
 			log:            log,
 			taskID:         taskID,
@@ -157,7 +138,7 @@ func NewExtractDisclosureHandler(
 			rawFileRepo:    rawFileRepo,
 			extractor:      extractor,
 			reenqueue: func(attempt int, delay time.Duration) error {
-				return reenqueueExtractDisclosure(client, d.ID, attempt, delay)
+				return reenqueueExtractDisclosure(enq, d.ID, attempt, delay)
 			},
 		}
 		return h.run(ctx, d, p.Attempt)

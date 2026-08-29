@@ -51,6 +51,14 @@ func main() {
 	rawFileRepo := repository.NewRawFileRepository(log)
 	brokerStockSummaryRepo := repository.NewBrokerStockSummaryRepository(log)
 
+	// source_status + alerts recorder: one shared instance every ingest stage
+	// reports its success/failure through (ADR-0006).
+	recorder := pipeline.NewSourceStatusRecorder(
+		pipeline.NewSQLSourceStatusStore(sourceStatusRepo, db),
+		pipeline.NewSQLAlertStore(alertRepo, db),
+		log,
+	)
+
 	// ─── asynq task infrastructure ──────────────────────────────
 
 	redisOpt := config.NewRedisConnOpt(vip)
@@ -70,7 +78,7 @@ func main() {
 	mux.Handle(tasks.TypePipelineDaily, tasks.NewPipelineDailyHandler(log, asynqClient))
 	mux.Handle(tasks.TypeStockSummary, tasks.NewStockSummaryHandler(
 		log, idxClient, db, asynqClient,
-		tickerRepo, dailyPriceRepo, sourceStatusRepo, alertRepo,
+		tickerRepo, dailyPriceRepo, recorder,
 	))
 	lookback := vip.GetInt("idx.disclosure_lookback_days")
 	if lookback <= 0 {
@@ -78,7 +86,7 @@ func main() {
 	}
 	mux.Handle(tasks.TypeAnnouncements, tasks.NewAnnouncementsHandler(
 		log, idxClient, db,
-		tickerRepo, disclosureRepo, sourceStatusRepo, alertRepo, lookback,
+		tickerRepo, disclosureRepo, recorder, lookback,
 	))
 	minADTV := vip.GetInt64("anomaly.min_adtv_value") // <= 0 → DefaultADTVMinValue in the constructor
 	anomalyDetector := pipeline.NewAnomalyDetector(
@@ -107,7 +115,7 @@ func main() {
 		r2Store,
 		tasks.DefaultRSSFeeds,
 		db,
-		tickerRepo, newsRepo, newsTickerRepo, sourceStatusRepo, alertRepo, rawFileRepo,
+		tickerRepo, newsRepo, newsTickerRepo, recorder, rawFileRepo,
 	))
 
 	// Disclosure filter + extraction (ticket 11): filter:disclosures is
@@ -144,7 +152,7 @@ func main() {
 		db, log, validate, ipotClient, brokerStockSummaryRepo, dailyPriceRepo,
 	)
 	mux.Handle(tasks.TypeBrokerStockSummary, tasks.NewBrokerStockSummaryHandler(
-		log, db, brokerStockSummaryUC, sourceStatusRepo, alertRepo,
+		log, brokerStockSummaryUC, recorder,
 	))
 
 	// Start asynq server in background goroutine

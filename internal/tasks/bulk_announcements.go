@@ -7,6 +7,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -35,30 +36,27 @@ func RunBulkAnnouncements(
 	db *sqlx.DB,
 	tickerRepo *repository.TickerRepository,
 	disclosureRepo *repository.DisclosureRepository,
-	sourceStatusRepo *repository.SourceStatusRepository,
+	recorder *pipeline.SourceStatusRecorder,
 	start, end time.Time,
 ) BulkAnnouncementsResult {
 	var result BulkAnnouncementsResult
 	var lastSuccess *time.Time
+	stage := pipeline.NewIngestStage(TypeAnnouncements, log, nil, 3)
 
 	for _, d := range datesInRange(start, end) {
 		dateKey := d.Format("2006-01-02")
 		result.Total++
 
 		path := announcementsPath(d, d, 0)
-		startTime := time.Now()
-		logEvent(log, logrus.InfoLevel, "fetch_start", "bulk announcements fetch",
-			logrus.Fields{"source": TypeAnnouncements, "date": dateKey, "fetch_url": path})
+		f := stage.StartFetch("", "bulk announcements fetch",
+			logrus.Fields{"date": dateKey, "fetch_url": path})
 		replies, err := fetchAnnouncements(idxClient, d, d, log)
-		latency := time.Since(startTime).Milliseconds()
 		if err != nil {
-			logEvent(log, logrus.ErrorLevel, "fetch_failure", "bulk announcements fetch failed",
-				logrus.Fields{"source": TypeAnnouncements, "date": dateKey, "error": err.Error(), "latency_ms": latency})
+			f.Fail("bulk announcements fetch failed", err, logrus.Fields{"date": dateKey})
 			result.Failed++
 			continue
 		}
-		logEvent(log, logrus.InfoLevel, "fetch_success", "bulk announcements fetched",
-			logrus.Fields{"source": TypeAnnouncements, "date": dateKey, "rows": len(replies), "latency_ms": latency})
+		f.Ok("bulk announcements fetched", logrus.Fields{"date": dateKey, "rows": len(replies)})
 
 		if len(replies) == 0 {
 			log.Infof("bulk announcements: no data for %s (weekend/holiday)", dateKey)
@@ -83,7 +81,7 @@ func RunBulkAnnouncements(
 
 	if lastSuccess != nil {
 		result.LastSuccessDate = lastSuccess.Format("2006-01-02")
-		recordSourceSuccess(db, sourceStatusRepo, TypeAnnouncements, announcementsMaxAgeSeconds, lastSuccess, log)
+		recorder.Success(TypeAnnouncements, announcementsMaxAgeSeconds, lastSuccess)
 	}
 
 	return result

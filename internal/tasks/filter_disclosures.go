@@ -37,19 +37,10 @@ type FilterDisclosuresPayload struct {
 // already enqueued. Chained from detect:anomalies success (unconditionally,
 // even when zero anomalies were flagged — non-anomaly disclosures still need
 // marking passed_filter=false).
-func EnqueueFilterDisclosures(client *asynq.Client, date time.Time) (*asynq.TaskInfo, error) {
+func EnqueueFilterDisclosures(enq pipeline.Enqueuer, date time.Time) (*asynq.TaskInfo, error) {
 	dateKey := date.Format("2006-01-02")
-	taskKey := TaskKey(TypeFilterDisclosures, dateKey)
-	task, err := filterDisclosuresTask(dateKey, 0)
-	if err != nil {
-		return nil, err
-	}
-	return client.Enqueue(task,
-		asynq.TaskID(taskKey),
-		asynq.Queue("ingest"),
-		asynq.MaxRetry(3),
-		asynq.Retention(24*time.Hour),
-	)
+	stage := pipeline.NewIngestStage(TypeFilterDisclosures, nil, enq, 3)
+	return stage.Enqueue(TaskKey(TypeFilterDisclosures, dateKey), FilterDisclosuresPayload{Date: dateKey})
 }
 
 // filterDisclosuresTask builds the asynq task for a filter:disclosures payload.
@@ -66,18 +57,9 @@ func filterDisclosuresTask(date string, attempt int) (*asynq.Task, error) {
 // while self-syncing on idx:announcements. Uses a unique TaskID (no dedup key)
 // because the current task still holds the date-keyed ID while active — mirrors
 // reenqueueDetectAnomalies.
-func reenqueueFilterDisclosures(client *asynq.Client, date string, attempt int) error {
-	task, err := filterDisclosuresTask(date, attempt)
-	if err != nil {
-		return err
-	}
-	_, err = client.Enqueue(task,
-		asynq.Queue("ingest"),
-		asynq.ProcessIn(filterSelfRetryDelay),
-		asynq.MaxRetry(3),
-		asynq.Retention(24*time.Hour),
-	)
-	return err
+func reenqueueFilterDisclosures(enq pipeline.Enqueuer, date string, attempt int) error {
+	stage := pipeline.NewIngestStage(TypeFilterDisclosures, nil, enq, 3)
+	return stage.Reenqueue(FilterDisclosuresPayload{Date: date, Attempt: attempt}, filterSelfRetryDelay)
 }
 
 // NewFilterDisclosuresHandler returns an asynq handler for the
@@ -87,7 +69,7 @@ func reenqueueFilterDisclosures(client *asynq.Client, date string, attempt int) 
 // the filter, and enqueues one extract:disclosure task per passing row.
 func NewFilterDisclosuresHandler(
 	log *logrus.Logger,
-	client *asynq.Client,
+	enq pipeline.Enqueuer,
 	db *sqlx.DB,
 	disclosureRepo *repository.DisclosureRepository,
 	filter *pipeline.DisclosureFilter,
@@ -121,7 +103,7 @@ func NewFilterDisclosuresHandler(
 				// the next day's run.
 			} else {
 				log.Infof("filter:disclosures: announcements for %s not present (attempt %d), retrying in %s", p.Date, p.Attempt, filterSelfRetryDelay)
-				if err := reenqueueFilterDisclosures(client, p.Date, p.Attempt+1); err != nil {
+				if err := reenqueueFilterDisclosures(enq, p.Date, p.Attempt+1); err != nil {
 					return fmt.Errorf("re-enqueue filter:disclosures: %w", err)
 				}
 				return nil // release current task; re-enqueued copy carries Attempt+1
@@ -129,7 +111,7 @@ func NewFilterDisclosuresHandler(
 		}
 
 		enqueue := func(id int64) {
-			if _, err := EnqueueExtractDisclosure(client, id); err != nil && !errors.Is(err, asynq.ErrTaskIDConflict) {
+			if _, err := EnqueueExtractDisclosure(enq, id); err != nil && !errors.Is(err, asynq.ErrTaskIDConflict) {
 				log.Warnf("filter:disclosures: enqueue extract for disclosure %d: %v", id, err)
 			}
 		}

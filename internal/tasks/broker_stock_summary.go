@@ -2,15 +2,12 @@ package tasks
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/hibiken/asynq"
-	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/usecase"
 )
 
@@ -29,61 +26,47 @@ type BrokerStockSummaryPayload struct {
 // that already has a pending/active task is deduped (ErrTaskIDConflict) — at
 // most one outstanding fetch per (ticker, trading_day). The IPOT client's 1h
 // cache additionally makes a re-run after completion a no-op upstream.
-func EnqueueBrokerStockSummary(client *asynq.Client, ticker string, date time.Time) (*asynq.TaskInfo, error) {
+func EnqueueBrokerStockSummary(enq pipeline.Enqueuer, ticker string, date time.Time) (*asynq.TaskInfo, error) {
 	dateKey := date.Format("2006-01-02")
 	taskKey := TaskKey(TypeBrokerStockSummary, ticker+":"+dateKey)
-	payload := BrokerStockSummaryPayload{Ticker: ticker, Date: dateKey}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal broker_stock_summary payload: %w", err)
-	}
-
-	task := asynq.NewTask(TypeBrokerStockSummary, raw)
-	return client.Enqueue(task,
-		asynq.TaskID(taskKey),
-		asynq.Queue("ingest"),
-		asynq.MaxRetry(3),
-		asynq.Retention(24*time.Hour),
-	)
+	stage := pipeline.NewIngestStage(TypeBrokerStockSummary, nil, enq, 3)
+	return stage.Enqueue(taskKey, BrokerStockSummaryPayload{Ticker: ticker, Date: dateKey})
 }
 
 // NewBrokerStockSummaryHandler returns an asynq handler for the
 // idx:broker_stock_summary task type. It delegates to the shared
 // fetch+parse+persist usecase (the same core the MCP tool uses) and updates
-// source_status / alerts on success or failure.
+// source_status / alerts on success or failure via the shared recorder.
 func NewBrokerStockSummaryHandler(
 	log *logrus.Logger,
-	db *sqlx.DB,
 	uc *usecase.BrokerStockSummaryUseCase,
-	sourceStatusRepo *repository.SourceStatusRepository,
-	alertRepo *repository.AlertRepository,
+	recorder *pipeline.SourceStatusRecorder,
 ) asynq.HandlerFunc {
+	stage := pipeline.NewIngestStage(TypeBrokerStockSummary, log, nil, 3)
 	return func(ctx context.Context, t *asynq.Task) error {
-		var p BrokerStockSummaryPayload
-		if err := json.Unmarshal(t.Payload(), &p); err != nil {
-			return fmt.Errorf("unmarshal payload: %w", err)
-		}
-
-		date, err := time.Parse("2006-01-02", p.Date)
+		p, err := pipeline.DecodeTask[BrokerStockSummaryPayload](t)
 		if err != nil {
-			return fmt.Errorf("invalid date %q: %w", p.Date, err)
+			return err
 		}
-
-		taskID, _ := asynq.GetTaskID(ctx)
-		start := time.Now()
-		logEvent(log, logrus.InfoLevel, "fetch_start", "fetching broker stock summary",
-			logrus.Fields{"task_id": taskID, "source": TypeBrokerStockSummary, "ticker": p.Ticker, "date": p.Date})
-
-		if _, err := uc.GetStockBrokerSummary(ctx, p.Ticker, &date); err != nil {
-			logEvent(log, logrus.ErrorLevel, "fetch_failure", "broker stock summary fetch failed",
-				logrus.Fields{"task_id": taskID, "source": TypeBrokerStockSummary, "ticker": p.Ticker, "date": p.Date, "error": err.Error(), "latency_ms": time.Since(start).Milliseconds()})
-			recordSourceFailure(db, sourceStatusRepo, alertRepo, TypeBrokerStockSummary, brokerStockSummaryMaxAgeSeconds, p.Date, err, log)
+		date, err := pipeline.ParseTaskDay(p.Date)
+		if err != nil {
 			return err
 		}
 
-		recordSourceSuccess(db, sourceStatusRepo, TypeBrokerStockSummary, brokerStockSummaryMaxAgeSeconds, nil, log)
-		logEvent(log, logrus.InfoLevel, "fetch_success", "broker stock summary stored",
-			logrus.Fields{"task_id": taskID, "source": TypeBrokerStockSummary, "ticker": p.Ticker, "date": p.Date, "latency_ms": time.Since(start).Milliseconds()})
+		taskID := pipeline.TaskID(ctx)
+		f := stage.StartFetch(taskID, "fetching broker stock summary",
+			logrus.Fields{"ticker": p.Ticker, "date": p.Date})
+
+		if _, err := uc.GetStockBrokerSummary(ctx, p.Ticker, &date); err != nil {
+			f.Fail("broker stock summary fetch failed", err,
+				logrus.Fields{"ticker": p.Ticker, "date": p.Date})
+			recorder.Failure(TypeBrokerStockSummary, brokerStockSummaryMaxAgeSeconds, p.Date, err)
+			return err
+		}
+
+		recorder.Success(TypeBrokerStockSummary, brokerStockSummaryMaxAgeSeconds, nil)
+		f.Ok("broker stock summary stored",
+			logrus.Fields{"ticker": p.Ticker, "date": p.Date})
 		return nil
 	}
 }

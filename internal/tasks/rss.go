@@ -3,7 +3,6 @@ package tasks
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -19,6 +18,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/storage"
 )
@@ -72,24 +72,10 @@ type RSSArticle struct {
 
 // EnqueueRSS enqueues an rss:ingest task for the given date with a date-keyed
 // TaskID for dedup. Extra opts (e.g. asynq.ProcessIn) are appended.
-func EnqueueRSS(client *asynq.Client, date time.Time, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+func EnqueueRSS(enq pipeline.Enqueuer, date time.Time, opts ...asynq.Option) (*asynq.TaskInfo, error) {
 	dateKey := date.Format("2006-01-02")
-	taskKey := TaskKey(TypeRSS, dateKey)
-	payload := RSSPayload{Date: dateKey}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal rss payload: %w", err)
-	}
-
-	task := asynq.NewTask(TypeRSS, raw)
-	options := []asynq.Option{
-		asynq.TaskID(taskKey),
-		asynq.Queue("ingest"),
-		asynq.MaxRetry(3), // exp-backoff + jitter are asynq defaults
-		asynq.Retention(24 * time.Hour),
-	}
-	options = append(options, opts...)
-	return client.Enqueue(task, options...)
+	stage := pipeline.NewIngestStage(TypeRSS, nil, enq, 3) // exp-backoff + jitter are asynq defaults
+	return stage.EnqueueWithOpts(TaskKey(TypeRSS, dateKey), RSSPayload{Date: dateKey}, opts...)
 }
 
 // NewRSSHandler returns an asynq handler for the rss:ingest task type. It pulls
@@ -113,18 +99,18 @@ func NewRSSHandler(
 	tickerRepo *repository.TickerRepository,
 	newsRepo *repository.NewsRepository,
 	newsTickerRepo *repository.NewsTickerRepository,
-	sourceStatusRepo *repository.SourceStatusRepository,
-	alertRepo *repository.AlertRepository,
+	recorder *pipeline.SourceStatusRecorder,
 	rawFileRepo *repository.RawFileRepository,
 ) asynq.HandlerFunc {
+	stage := pipeline.NewIngestStage(TypeRSS, log, nil, 3)
 	return func(ctx context.Context, t *asynq.Task) error {
-		var p RSSPayload
-		if err := json.Unmarshal(t.Payload(), &p); err != nil {
-			return fmt.Errorf("unmarshal payload: %w", err)
-		}
-		runDate, err := time.Parse("2006-01-02", p.Date)
+		p, err := pipeline.DecodeTask[RSSPayload](t)
 		if err != nil {
-			return fmt.Errorf("invalid date %q: %w", p.Date, err)
+			return err
+		}
+		runDate, err := pipeline.ParseTaskDay(p.Date)
+		if err != nil {
+			return err
 		}
 
 		// The matching universe is the DB tickers table (full IDX listing,
@@ -133,7 +119,7 @@ func NewRSSHandler(
 		tickers, err := tickerRepo.FindAll(db)
 		if err != nil {
 			log.Errorf("rss: failed to load tickers: %v", err)
-			recordSourceFailure(db, sourceStatusRepo, alertRepo, rssSourceName, rssMaxAgeSeconds, p.Date, err, log)
+			recorder.Failure(rssSourceName, rssMaxAgeSeconds, p.Date, err)
 			return fmt.Errorf("load tickers: %w", err)
 		}
 		matcher := buildTickerMatcher(tickers)
@@ -141,34 +127,32 @@ func NewRSSHandler(
 		log.Infof("rss: ingesting feeds, run date=%s (%d tickers in universe)",
 			runDate.Format("2006-01-02"), len(tickers))
 
-		taskID, _ := asynq.GetTaskID(ctx)
+		taskID := pipeline.TaskID(ctx)
 		matchedTotal := 0
 		fetchedFeeds := 0
 		var firstErr error
 		for _, feed := range feeds {
-			start := time.Now()
-			logEvent(log, logrus.InfoLevel, "fetch_start", "fetching feed",
-				logrus.Fields{"task_id": taskID, "source": TypeRSS, "feed": feed.Name, "fetch_url": feed.URL})
+			f := stage.StartFetch(taskID, "fetching feed",
+				logrus.Fields{"feed": feed.Name, "fetch_url": feed.URL})
 			_, articles, err := fetchFeed(httpClient, feed)
-			latency := time.Since(start).Milliseconds()
 			if err != nil {
-				logEvent(log, logrus.ErrorLevel, "fetch_failure", "feed fetch failed",
-					logrus.Fields{"task_id": taskID, "source": TypeRSS, "feed": feed.Name, "fetch_url": feed.URL, "error": err.Error(), "latency_ms": latency})
+				f.Fail("feed fetch failed", err,
+					logrus.Fields{"feed": feed.Name, "fetch_url": feed.URL})
 				if firstErr == nil {
 					firstErr = err
 				}
 				continue
 			}
 			fetchedFeeds++
-			logEvent(log, logrus.InfoLevel, "fetch_success", "feed fetched",
-				logrus.Fields{"task_id": taskID, "source": TypeRSS, "feed": feed.Name, "fetch_url": feed.URL, "rows": len(articles), "latency_ms": latency})
+			f.Ok("feed fetched",
+				logrus.Fields{"feed": feed.Name, "fetch_url": feed.URL, "rows": len(articles)})
 
 			n, err := storeArticles(db, matcher, tickerRepo, newsRepo, newsTickerRepo, feed, articles, log)
 			if err != nil {
 				// Surface so asynq retries — a row dropped mid-upsert would
 				// otherwise be skipped forever on the next run.
 				log.Errorf("rss: store failed for %s: %v", feed.Name, err)
-				recordSourceFailure(db, sourceStatusRepo, alertRepo, rssSourceName, rssMaxAgeSeconds, p.Date, err, log)
+				recorder.Failure(rssSourceName, rssMaxAgeSeconds, p.Date, err)
 				return err
 			}
 			matchedTotal += n
@@ -191,7 +175,7 @@ func NewRSSHandler(
 		if firstErr != nil {
 			log.Errorf("rss: %d/%d feed(s) failed, first error: %v",
 				len(feeds)-fetchedFeeds, len(feeds), firstErr)
-			recordSourceFailure(db, sourceStatusRepo, alertRepo, rssSourceName, rssMaxAgeSeconds, p.Date, firstErr, log)
+			recorder.Failure(rssSourceName, rssMaxAgeSeconds, p.Date, firstErr)
 			return firstErr
 		}
 
@@ -199,7 +183,7 @@ func NewRSSHandler(
 
 		// Feeds are bounded windows with url-UNIQUE dedup — there is no
 		// incremental cursor to advance. nil preserves any existing watermark.
-		recordSourceSuccess(db, sourceStatusRepo, rssSourceName, rssMaxAgeSeconds, nil, log)
+		recorder.Success(rssSourceName, rssMaxAgeSeconds, nil)
 		return nil
 	}
 }

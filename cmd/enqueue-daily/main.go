@@ -13,6 +13,7 @@ import (
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/config"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/tasks"
 )
@@ -167,10 +168,12 @@ func runBulkBackfill(vip *viper.Viper, log *logrus.Logger, startStr, endStr stri
 
 	tickerRepo := repository.NewTickerRepository(log)
 	dailyPriceRepo := repository.NewDailyPriceRepository(log)
-	sourceStatusRepo := repository.NewSourceStatusRepository(log)
+	recorder := pipeline.NewSourceStatusRecorder(
+		pipeline.NewSQLSourceStatusStore(repository.NewSourceStatusRepository(log), db), nil, log,
+	)
 
 	log.Infof("bulk backfill: fetching %s to %s", startStr, endStr)
-	result := tasks.RunBulkBackfill(log, idxClient, db, tickerRepo, dailyPriceRepo, sourceStatusRepo, start, end)
+	result := tasks.RunBulkBackfill(log, idxClient, db, tickerRepo, dailyPriceRepo, recorder, start, end)
 	log.Infof("bulk backfill complete: %d/%d dates succeeded, %d failed (%d empty/no-data)",
 		result.Succeeded, result.Total, result.Failed, result.Empty)
 
@@ -211,10 +214,12 @@ func runBulkAnnouncements(vip *viper.Viper, log *logrus.Logger, startStr, endStr
 
 	tickerRepo := repository.NewTickerRepository(log)
 	disclosureRepo := repository.NewDisclosureRepository(log)
-	sourceStatusRepo := repository.NewSourceStatusRepository(log)
+	recorder := pipeline.NewSourceStatusRecorder(
+		pipeline.NewSQLSourceStatusStore(repository.NewSourceStatusRepository(log), db), nil, log,
+	)
 
 	log.Infof("bulk announcements: fetching %s to %s", startStr, endStr)
-	result := tasks.RunBulkAnnouncements(log, idxClient, db, tickerRepo, disclosureRepo, sourceStatusRepo, start, end)
+	result := tasks.RunBulkAnnouncements(log, idxClient, db, tickerRepo, disclosureRepo, recorder, start, end)
 	log.Infof("bulk announcements complete: %d/%d dates succeeded, %d failed (%d empty/no-data)",
 		result.Succeeded, result.Total, result.Failed, result.Empty)
 

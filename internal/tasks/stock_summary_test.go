@@ -203,8 +203,8 @@ func TestStockSummaryResponse_Unmarshal(t *testing.T) {
 
 func TestTruncate(t *testing.T) {
 	tests := []struct {
-		input   string
-		maxLen  int
+		input  string
+		maxLen int
 		expect string
 	}{
 		{"hello", 10, "hello"},

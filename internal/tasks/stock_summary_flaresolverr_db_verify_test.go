@@ -17,6 +17,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -129,7 +130,10 @@ func TestStockSummary_FlareSolverr_EndToEnd(t *testing.T) {
 	asynqClient := asynq.NewClient(asynq.RedisClientOpt{Addr: "127.0.0.1:1"})
 	defer asynqClient.Close()
 
-	handler := NewStockSummaryHandler(log, idxClient, db, asynqClient, tickerRepo, dailyPriceRepo, sourceStatusRepo, alertRepo)
+	recorder := pipeline.NewSourceStatusRecorder(
+		pipeline.NewSQLSourceStatusStore(sourceStatusRepo, db), pipeline.NewSQLAlertStore(alertRepo, db), log,
+	)
+	handler := NewStockSummaryHandler(log, idxClient, db, asynqClient, tickerRepo, dailyPriceRepo, recorder)
 
 	payloadBytes, _ := json.Marshal(StockSummaryPayload{Date: date})
 	task := asynq.NewTask(TypeStockSummary, payloadBytes)

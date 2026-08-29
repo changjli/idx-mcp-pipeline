@@ -15,6 +15,7 @@ import (
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/usecase"
 )
@@ -50,9 +51,12 @@ func TestBrokerStockSummaryHandler_EndToEnd(t *testing.T) {
 		repository.NewDailyPriceRepository(log),
 	)
 	handler := NewBrokerStockSummaryHandler(
-		log, db, uc,
-		repository.NewSourceStatusRepository(log),
-		repository.NewAlertRepository(log),
+		log, uc,
+		pipeline.NewSourceStatusRecorder(
+			pipeline.NewSQLSourceStatusStore(repository.NewSourceStatusRepository(log), db),
+			pipeline.NewSQLAlertStore(repository.NewAlertRepository(log), db),
+			log,
+		),
 	)
 
 	ticker := "TESTQ"

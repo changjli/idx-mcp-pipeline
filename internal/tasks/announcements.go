@@ -14,6 +14,7 @@ import (
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -72,24 +73,10 @@ type AnnouncementAttachment struct {
 // EnqueueAnnouncements enqueues an idx:announcements task for the given date.
 // Uses a date-keyed TaskID for dedup. Returns ErrTaskIDConflict if already
 // enqueued. Extra opts (e.g. asynq.ProcessIn) are appended to the defaults.
-func EnqueueAnnouncements(client *asynq.Client, date time.Time, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+func EnqueueAnnouncements(enq pipeline.Enqueuer, date time.Time, opts ...asynq.Option) (*asynq.TaskInfo, error) {
 	dateKey := date.Format("2006-01-02")
-	taskKey := TaskKey(TypeAnnouncements, dateKey)
-	payload := AnnouncementsPayload{Date: dateKey}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal announcements payload: %w", err)
-	}
-
-	task := asynq.NewTask(TypeAnnouncements, raw)
-	options := []asynq.Option{
-		asynq.TaskID(taskKey),
-		asynq.Queue("ingest"),
-		asynq.MaxRetry(3),
-		asynq.Retention(24 * time.Hour),
-	}
-	options = append(options, opts...)
-	return client.Enqueue(task, options...)
+	stage := pipeline.NewIngestStage(TypeAnnouncements, nil, enq, 3)
+	return stage.EnqueueWithOpts(TaskKey(TypeAnnouncements, dateKey), AnnouncementsPayload{Date: dateKey}, opts...)
 }
 
 // NewAnnouncementsHandler returns an asynq handler for the idx:announcements
@@ -103,22 +90,22 @@ func NewAnnouncementsHandler(
 	db *sqlx.DB,
 	tickerRepo *repository.TickerRepository,
 	disclosureRepo *repository.DisclosureRepository,
-	sourceStatusRepo *repository.SourceStatusRepository,
-	alertRepo *repository.AlertRepository,
+	recorder *pipeline.SourceStatusRecorder,
 	lookbackDays int,
 ) asynq.HandlerFunc {
 	if lookbackDays <= 0 {
 		lookbackDays = DefaultAnnouncementLookbackDays
 	}
+	stage := pipeline.NewIngestStage(TypeAnnouncements, log, nil, 3)
 	return func(ctx context.Context, t *asynq.Task) error {
-		var p AnnouncementsPayload
-		if err := json.Unmarshal(t.Payload(), &p); err != nil {
-			return fmt.Errorf("unmarshal payload: %w", err)
+		p, err := pipeline.DecodeTask[AnnouncementsPayload](t)
+		if err != nil {
+			return err
 		}
 
-		runDate, err := time.Parse("2006-01-02", p.Date)
+		runDate, err := pipeline.ParseTaskDay(p.Date)
 		if err != nil {
-			return fmt.Errorf("invalid date %q: %w", p.Date, err)
+			return err
 		}
 
 		log.Infof("announcements: fetching metadata, run date=%s", p.Date)
@@ -127,50 +114,38 @@ func NewAnnouncementsHandler(
 		// exists, else a recent lookback window on first run. The window end is
 		// the run date. Overlap is safe — upserts are idempotent via pdf_url.
 		from := runDate.AddDate(0, 0, -lookbackDays)
-		if status, err := sourceStatusRepo.FindBySource(db, TypeAnnouncements); err == nil && status.HighWaterMark != nil {
-			from = status.HighWaterMark.Truncate(24 * time.Hour)
+		if wm, err := recorder.CurrentWatermark(TypeAnnouncements); err == nil && wm != nil {
+			from = wm.Truncate(24 * time.Hour)
 		}
 		if from.After(runDate) {
 			from = runDate
 		}
 
-		taskID, _ := asynq.GetTaskID(ctx)
-		start := time.Now()
-		logEvent(log, logrus.InfoLevel, "fetch_start", "fetching announcement metadata",
-			logrus.Fields{"task_id": taskID, "source": TypeAnnouncements, "date": p.Date, "fetch_url": announcementsPath(from, runDate, 0)})
+		taskID := pipeline.TaskID(ctx)
+		f := stage.StartFetch(taskID, "fetching announcement metadata",
+			logrus.Fields{"date": p.Date, "fetch_url": announcementsPath(from, runDate, 0)})
 		replies, fetchErr := fetchAnnouncements(idxClient, from, runDate, log)
-		latency := time.Since(start).Milliseconds()
 		if fetchErr != nil {
-			logEvent(log, logrus.ErrorLevel, "fetch_failure", "announcements fetch failed",
-				logrus.Fields{"task_id": taskID, "source": TypeAnnouncements, "date": p.Date, "error": fetchErr.Error(), "latency_ms": latency})
-			recordSourceFailure(db, sourceStatusRepo, alertRepo, TypeAnnouncements, announcementsMaxAgeSeconds, p.Date, fetchErr, log)
+			f.Fail("announcements fetch failed", fetchErr, logrus.Fields{"date": p.Date})
+			recorder.Failure(TypeAnnouncements, announcementsMaxAgeSeconds, p.Date, fetchErr)
 			return fetchErr
 		}
 
-		logEvent(log, logrus.InfoLevel, "fetch_success", "announcement metadata fetched",
-			logrus.Fields{"task_id": taskID, "source": TypeAnnouncements, "date": p.Date, "rows": len(replies), "latency_ms": latency})
+		f.Ok("announcement metadata fetched", logrus.Fields{"date": p.Date, "rows": len(replies)})
 
 		upserted, upsertErr := upsertDisclosureRows(db, tickerRepo, disclosureRepo, replies, log)
 		if upsertErr != nil {
 			// Surface so asynq retries and the watermark stays put — otherwise
 			// a row dropped mid-upsert would be skipped forever on the next run.
 			log.Errorf("announcements: upsert failed: %v", upsertErr)
-			recordSourceFailure(db, sourceStatusRepo, alertRepo, TypeAnnouncements, announcementsMaxAgeSeconds, p.Date, upsertErr, log)
+			recorder.Failure(TypeAnnouncements, announcementsMaxAgeSeconds, p.Date, upsertErr)
 			return upsertErr
 		}
 		log.Infof("announcements: upserted %d disclosure row(s)", upserted)
 
-		// Advance high_water_mark to the most recent announcement date seen.
-		// Monotonic: the endpoint's result ordering is unstable (server-side
-		// index lag), so a run may return older items — never regress the
-		// watermark below its current value or we'd re-scan the same backlog.
-		watermark := maxAnnouncementDate(replies)
-		if current, err := sourceStatusRepo.FindBySource(db, TypeAnnouncements); err == nil && current.HighWaterMark != nil {
-			if watermark == nil || current.HighWaterMark.After(*watermark) {
-				watermark = current.HighWaterMark
-			}
-		}
-		recordSourceSuccess(db, sourceStatusRepo, TypeAnnouncements, announcementsMaxAgeSeconds, watermark, log)
+		// Advance high_water_mark to the most recent announcement date seen,
+		// never regressing below the current value (SuccessMonotonic).
+		recorder.SuccessMonotonic(TypeAnnouncements, announcementsMaxAgeSeconds, maxAnnouncementDate(replies))
 
 		return nil
 	}

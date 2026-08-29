@@ -7,6 +7,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -31,30 +32,27 @@ func RunBulkBackfill(
 	db *sqlx.DB,
 	tickerRepo *repository.TickerRepository,
 	dailyPriceRepo *repository.DailyPriceRepository,
-	sourceStatusRepo *repository.SourceStatusRepository,
+	recorder *pipeline.SourceStatusRecorder,
 	start, end time.Time,
 ) BulkBackfillResult {
 	var result BulkBackfillResult
 	var lastSuccess *time.Time
+	stage := pipeline.NewIngestStage(TypeStockSummary, log, nil, 3)
 
 	for _, d := range datesInRange(start, end) {
 		dateKey := d.Format("2006-01-02")
 		result.Total++
 
 		path := stockSummaryPath(d)
-		startTime := time.Now()
-		logEvent(log, logrus.InfoLevel, "fetch_start", "bulk backfill fetch",
-			logrus.Fields{"source": TypeStockSummary, "date": dateKey, "fetch_url": path})
+		f := stage.StartFetch("", "bulk backfill fetch",
+			logrus.Fields{"date": dateKey, "fetch_url": path})
 		resp, err := fetchStockSummary(idxClient, path, log)
-		latency := time.Since(startTime).Milliseconds()
 		if err != nil {
-			logEvent(log, logrus.ErrorLevel, "fetch_failure", "bulk backfill fetch failed",
-				logrus.Fields{"source": TypeStockSummary, "date": dateKey, "error": err.Error(), "latency_ms": latency})
+			f.Fail("bulk backfill fetch failed", err, logrus.Fields{"date": dateKey})
 			result.Failed++
 			continue
 		}
-		logEvent(log, logrus.InfoLevel, "fetch_success", "bulk backfill fetched",
-			logrus.Fields{"source": TypeStockSummary, "date": dateKey, "rows": len(resp.Data), "latency_ms": latency})
+		f.Ok("bulk backfill fetched", logrus.Fields{"date": dateKey, "rows": len(resp.Data)})
 
 		rows := resp.Data
 		if len(rows) == 0 {
@@ -75,7 +73,7 @@ func RunBulkBackfill(
 
 	if lastSuccess != nil {
 		result.LastSuccessDate = lastSuccess.Format("2006-01-02")
-		recordSourceSuccess(db, sourceStatusRepo, TypeStockSummary, stockSummaryMaxAgeSeconds, lastSuccess, log)
+		recorder.Success(TypeStockSummary, stockSummaryMaxAgeSeconds, lastSuccess)
 	}
 
 	return result

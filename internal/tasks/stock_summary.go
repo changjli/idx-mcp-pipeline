@@ -14,6 +14,7 @@ import (
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -27,15 +28,15 @@ type StockSummaryPayload struct {
 
 // StockSummaryItem is a single row from the IDX GetStockSummary API.
 type StockSummaryItem struct {
-	StockCode   string   `json:"StockCode"`
-	StockName   string   `json:"StockName"`
-	OpenPrice   *float64 `json:"OpenPrice"`
-	High        *float64 `json:"High"`
-	Low         *float64 `json:"Low"`
-	Close       *float64 `json:"Close"`
-	Volume      *float64 `json:"Volume"`
-	Value       *float64 `json:"Value"`
-	Frequency   *float64 `json:"Frequency"`
+	StockCode    string   `json:"StockCode"`
+	StockName    string   `json:"StockName"`
+	OpenPrice    *float64 `json:"OpenPrice"`
+	High         *float64 `json:"High"`
+	Low          *float64 `json:"Low"`
+	Close        *float64 `json:"Close"`
+	Volume       *float64 `json:"Volume"`
+	Value        *float64 `json:"Value"`
+	Frequency    *float64 `json:"Frequency"`
 	ListedShares *float64 `json:"ListedShares"`
 }
 
@@ -50,24 +51,10 @@ type StockSummaryResponse struct {
 // EnqueueStockSummary enqueues an idx:stock_summary task for the given date.
 // Uses a date-keyed TaskID for dedup. Returns ErrTaskIDConflict if already enqueued.
 // Extra opts (e.g. asynq.ProcessIn) are appended to the default options.
-func EnqueueStockSummary(client *asynq.Client, date time.Time, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+func EnqueueStockSummary(enq pipeline.Enqueuer, date time.Time, opts ...asynq.Option) (*asynq.TaskInfo, error) {
 	dateKey := date.Format("2006-01-02")
-	taskKey := TaskKey(TypeStockSummary, dateKey)
-	payload := StockSummaryPayload{Date: dateKey}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal stock_summary payload: %w", err)
-	}
-
-	task := asynq.NewTask(TypeStockSummary, raw)
-	options := []asynq.Option{
-		asynq.TaskID(taskKey),
-		asynq.Queue("ingest"),
-		asynq.MaxRetry(3),
-		asynq.Retention(24 * time.Hour),
-	}
-	options = append(options, opts...)
-	return client.Enqueue(task, options...)
+	stage := pipeline.NewIngestStage(TypeStockSummary, nil, enq, 3)
+	return stage.EnqueueWithOpts(TaskKey(TypeStockSummary, dateKey), StockSummaryPayload{Date: dateKey}, opts...)
 }
 
 // NewStockSummaryHandler returns an asynq handler for the idx:stock_summary task type.
@@ -77,42 +64,37 @@ func NewStockSummaryHandler(
 	log *logrus.Logger,
 	idxClient *client.Client,
 	db *sqlx.DB,
-	asynqClient *asynq.Client,
+	enq pipeline.Enqueuer,
 	tickerRepo *repository.TickerRepository,
 	dailyPriceRepo *repository.DailyPriceRepository,
-	sourceStatusRepo *repository.SourceStatusRepository,
-	alertRepo *repository.AlertRepository,
+	recorder *pipeline.SourceStatusRecorder,
 ) asynq.HandlerFunc {
+	stage := pipeline.NewIngestStage(TypeStockSummary, log, nil, 3)
 	return func(ctx context.Context, t *asynq.Task) error {
-		var p StockSummaryPayload
-		if err := json.Unmarshal(t.Payload(), &p); err != nil {
-			return fmt.Errorf("unmarshal payload: %w", err)
-		}
-
-		date, err := time.Parse("2006-01-02", p.Date)
+		p, err := pipeline.DecodeTask[StockSummaryPayload](t)
 		if err != nil {
-			return fmt.Errorf("invalid date %q: %w", p.Date, err)
+			return err
+		}
+		date, err := pipeline.ParseTaskDay(p.Date)
+		if err != nil {
+			return err
 		}
 
-		taskID, _ := asynq.GetTaskID(ctx)
+		taskID := pipeline.TaskID(ctx)
 		path := stockSummaryPath(date)
-		start := time.Now()
-		logEvent(log, logrus.InfoLevel, "fetch_start", "fetching stock summary",
-			logrus.Fields{"task_id": taskID, "source": TypeStockSummary, "date": p.Date, "fetch_url": path})
+		f := stage.StartFetch(taskID, "fetching stock summary",
+			logrus.Fields{"date": p.Date, "fetch_url": path})
 
 		// Fetch from IDX API.
 		resp, fetchErr := fetchStockSummary(idxClient, path, log)
-		latency := time.Since(start).Milliseconds()
 		if fetchErr != nil {
-			logEvent(log, logrus.ErrorLevel, "fetch_failure", "stock summary fetch failed",
-				logrus.Fields{"task_id": taskID, "source": TypeStockSummary, "date": p.Date, "error": fetchErr.Error(), "latency_ms": latency})
-			recordSourceFailure(db, sourceStatusRepo, alertRepo, TypeStockSummary, stockSummaryMaxAgeSeconds, p.Date, fetchErr, log)
+			f.Fail("stock summary fetch failed", fetchErr, logrus.Fields{"date": p.Date})
+			recorder.Failure(TypeStockSummary, stockSummaryMaxAgeSeconds, p.Date, fetchErr)
 			return fetchErr
 		}
 
 		rows := resp.Data
-		logEvent(log, logrus.InfoLevel, "fetch_success", "stock summary fetched",
-			logrus.Fields{"task_id": taskID, "source": TypeStockSummary, "date": p.Date, "rows": len(rows), "latency_ms": latency})
+		f.Ok("stock summary fetched", logrus.Fields{"date": p.Date, "rows": len(rows)})
 
 		// Upsert each row into daily_prices.
 		// Ticker must exist first (FK constraint) — auto-discover from response.
@@ -120,11 +102,11 @@ func NewStockSummaryHandler(
 		log.Infof("stock_summary: upserted %d/%d rows for date=%s", upserted, len(rows), p.Date)
 
 		// Update source_status on success.
-		recordSourceSuccess(db, sourceStatusRepo, TypeStockSummary, stockSummaryMaxAgeSeconds, nil, log)
+		recorder.Success(TypeStockSummary, stockSummaryMaxAgeSeconds, nil)
 
 		// Chain detect:anomalies on success so anomaly detection runs after
 		// ingestion. Date-keyed TaskID dedups against concurrent chains.
-		if _, err := EnqueueDetectAnomalies(asynqClient, date); err != nil && !errors.Is(err, asynq.ErrTaskIDConflict) {
+		if _, err := EnqueueDetectAnomalies(enq, date); err != nil && !errors.Is(err, asynq.ErrTaskIDConflict) {
 			log.Warnf("stock_summary: failed to enqueue detect:anomalies: %v", err)
 		} else {
 			log.Infof("stock_summary: chained detect:anomalies for %s", p.Date)

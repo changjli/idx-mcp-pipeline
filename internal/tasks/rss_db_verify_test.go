@@ -17,6 +17,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -122,13 +123,16 @@ func TestRSSIngest_EndToEnd(t *testing.T) {
 	}
 
 	store := &fakeObjectStore{}
+	recorder := pipeline.NewSourceStatusRecorder(
+		pipeline.NewSQLSourceStatusStore(sourceStatusRepo, db), pipeline.NewSQLAlertStore(alertRepo, db), log,
+	)
 	handler := NewRSSHandler(
 		log,
 		&http.Client{Timeout: RSSHTTPTimeout},
 		store,
 		feeds,
 		db,
-		tickerRepo, newsRepo, newsTickerRepo, sourceStatusRepo, alertRepo, rawFileRepo,
+		tickerRepo, newsRepo, newsTickerRepo, recorder, rawFileRepo,
 	)
 
 	// Scoped cleanup: test-only news rows, the exact raw_files keys this test
@@ -281,13 +285,16 @@ func TestRSSIngest_AllFeedsFail(t *testing.T) {
 		{Name: "bisnis", URL: srv.URL},
 	}
 
+	recorder := pipeline.NewSourceStatusRecorder(
+		pipeline.NewSQLSourceStatusStore(sourceStatusRepo, db), pipeline.NewSQLAlertStore(alertRepo, db), log,
+	)
 	handler := NewRSSHandler(
 		log,
 		&http.Client{Timeout: RSSHTTPTimeout},
 		nil,
 		feeds,
 		db,
-		tickerRepo, newsRepo, newsTickerRepo, sourceStatusRepo, alertRepo, rawFileRepo,
+		tickerRepo, newsRepo, newsTickerRepo, recorder, rawFileRepo,
 	)
 
 	payload := RSSPayload{Date: "2026-08-10"}
