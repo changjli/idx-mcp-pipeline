@@ -1,6 +1,8 @@
 package client
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -68,6 +70,13 @@ func (s *nodriverStub) handler() http.Handler {
 		s.mu.Unlock()
 		if status == 0 {
 			status = http.StatusOK
+		}
+		if req.Binary {
+			// Mirror the sidecar: a binary fetch returns the body base64-encoded
+			// with an explicit encoding marker.
+			enc := base64.StdEncoding.EncodeToString([]byte(body))
+			json.NewEncoder(w).Encode(nodriverResponse{Status: status, Body: enc, Error: errMsg, Encoding: "base64"})
+			return
 		}
 		json.NewEncoder(w).Encode(nodriverResponse{Status: status, Body: body, Error: errMsg})
 	})
@@ -220,5 +229,60 @@ func TestNodriver_Fetch_EmptyBodyExhausts(t *testing.T) {
 
 	if _, status, err := nc.Fetch("https://idx.example/api", nil); err != nil || status != http.StatusOK {
 		t.Fatalf("expected 200 after rotating off empty-body proxy, got status=%d err=%v", status, err)
+	}
+}
+func TestNodriver_FetchBinary_DecodesBase64(t *testing.T) {
+	stub := newNodriverStub()
+	pdf := []byte("%PDF-1.6 fake disclosure \xff\xfe binary bytes")
+	stub.proxyBody["http://a:1"] = string(pdf)
+	nc := newTestNodriver(t, stub, []string{"http://a:1"})
+
+	body, status, err := nc.FetchBinary(
+		"https://idx.example/StaticData/x.pdf",
+		map[string]string{"Referer": "https://idx.example/", "Range": "bytes=0-0"},
+	)
+	if err != nil {
+		t.Fatalf("FetchBinary: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Errorf("expected status 200, got %d", status)
+	}
+	if !bytes.Equal(body, pdf) {
+		t.Errorf("expected decoded PDF bytes %q, got %q", pdf, body)
+	}
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.requests) != 1 {
+		t.Fatalf("expected 1 sidecar request, got %d", len(stub.requests))
+	}
+	if !stub.requests[0].Binary {
+		t.Error("expected binary flag forwarded to sidecar")
+	}
+	if stub.requests[0].Referer != "https://idx.example/" {
+		t.Errorf("expected referer forwarded, got %q", stub.requests[0].Referer)
+	}
+	if stub.requests[0].Headers["Range"] != "bytes=0-0" {
+		t.Errorf("expected Range header forwarded, got %q", stub.requests[0].Headers["Range"])
+	}
+}
+
+func TestNodriver_FetchBinary_AcceptsPartialContent(t *testing.T) {
+	// A ranged size probe returns 206; that is a success for binary fetches,
+	// unlike the text path which requires exactly 200.
+	stub := newNodriverStub()
+	stub.proxyStatus["http://a:1"] = http.StatusPartialContent
+	stub.proxyBody["http://a:1"] = "\x25"
+	nc := newTestNodriver(t, stub, []string{"http://a:1"})
+
+	body, status, err := nc.FetchBinary("https://idx.example/StaticData/x.pdf", nil)
+	if err != nil {
+		t.Fatalf("FetchBinary: %v", err)
+	}
+	if status != http.StatusPartialContent {
+		t.Errorf("expected status 206, got %d", status)
+	}
+	if !bytes.Equal(body, []byte("\x25")) {
+		t.Errorf("expected partial body, got %q", body)
 	}
 }

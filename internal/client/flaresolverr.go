@@ -19,6 +19,7 @@ import (
 // without a network.
 type browserFetcher interface {
 	Fetch(url string, headers map[string]string) ([]byte, int, error)
+	FetchBinary(url string, headers map[string]string) ([]byte, int, error)
 	Close()
 }
 
@@ -124,6 +125,14 @@ func (f *FlareSolverrClient) Fetch(url string, headers map[string]string) ([]byt
 		}
 		return body, status, nil
 	}
+}
+
+// FetchBinary satisfies browserFetcher. FlareSolverr cannot carry binary (its
+// body transport is text-only), so this is Fetch — disclosure PDFs through
+// flaresolverr mode would arrive corrupted. Legacy mode is not deployed; the
+// nodriver path carries PDFs via the sidecar's base64 transport instead.
+func (f *FlareSolverrClient) FetchBinary(url string, headers map[string]string) ([]byte, int, error) {
+	return f.Fetch(url, headers)
 }
 
 // fetchViaProxy runs one request.get through a session bound to proxy. If the

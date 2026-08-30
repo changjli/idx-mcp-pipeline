@@ -142,13 +142,20 @@ func (c *Client) Get(path string) (*http.Response, error) {
 	return c.GetWithHeaders(path, nil)
 }
 
-// GetStream performs a session-aware GET (rate-limited, Cloudflare-cookie'd,
-// retried, TLS-fallback) WITHOUT caching or buffering the body. The caller owns
-// the response and must close Body. Unlike Get/GetWithHeaders, the body is
-// never read into memory nor stored in the stale cache — disclosure PDFs run
-// up to 10MB and must not be held there. resolveURL passes absolute URLs
-// through untouched, so StaticData PDF links work without a double base-URL.
+// GetStream performs a session-aware GET for disclosure PDFs. In browser fetch
+// modes it routes through the browser fetcher (the sidecar's base64 transport):
+// direct GETs on the StaticData host now 403 on the Cloudflare JS-execution
+// gate (issue 01), while the browser session carries clearance + Referer. The
+// caller owns the response and must close Body. Direct mode is unchanged
+// (cookies, TLS fallback, retry, no buffering/caching). resolveURL passes
+// absolute URLs through untouched, so StaticData PDF links work without a
+// double base-URL.
 func (c *Client) GetStream(path string, extraHeaders map[string]string) (*http.Response, error) {
+	if c.browser != nil {
+		c.log.Debugf("GetStream via browser: %s", path)
+		return c.getStreamViaBrowser(path, extraHeaders)
+	}
+
 	url := c.resolveURL(path)
 
 	// Rate limit.
@@ -220,6 +227,30 @@ func (c *Client) GetWithHeaders(path string, extraHeaders map[string]string) (*h
 func (c *Client) getViaBrowser(path string, extraHeaders map[string]string) (*http.Response, error) {
 	url := c.resolveURL(path)
 	body, status, err := c.browser.Fetch(url, extraHeaders)
+	if err != nil {
+		return nil, fmt.Errorf("browser fetch: %w", err)
+	}
+	return c.syntheticResponse(status, make(http.Header), body, url), nil
+}
+
+// getStreamViaBrowser fetches a binary body (disclosure PDF) through the
+// browser fetcher's binary transport. A default Referer of the configured IDX
+// base URL is injected when the caller sends none: the sidecar loads it first
+// to clear Cloudflare on the domain, then in-page fetches the PDF carrying
+// clearance cookies + a legit referrer (the hotlink gate, when present, is
+// satisfied the same way a real browser would).
+func (c *Client) getStreamViaBrowser(path string, extraHeaders map[string]string) (*http.Response, error) {
+	url := c.resolveURL(path)
+
+	hdrs := make(map[string]string, len(extraHeaders)+1)
+	for k, v := range extraHeaders {
+		hdrs[k] = v
+	}
+	if hdrs["Referer"] == "" {
+		hdrs["Referer"] = c.config.BaseURL
+	}
+
+	body, status, err := c.browser.FetchBinary(url, hdrs)
 	if err != nil {
 		return nil, fmt.Errorf("browser fetch: %w", err)
 	}

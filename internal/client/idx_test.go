@@ -31,6 +31,12 @@ func (s *stubBrowser) Fetch(url string, headers map[string]string) ([]byte, int,
 	return s.body, s.status, s.err
 }
 
+func (s *stubBrowser) FetchBinary(url string, headers map[string]string) ([]byte, int, error) {
+	s.gotURL = url
+	s.gotHeaders = headers
+	return s.body, s.status, s.err
+}
+
 func (s *stubBrowser) Close() {}
 
 // TestClient_GetWithHeaders_FlareSolverrMode verifies that in flaresolverr mode
@@ -129,6 +135,67 @@ func TestClient_GetWithHeaders_BrowserModeError(t *testing.T) {
 }
 
 var errBrowserFetch = fmt.Errorf("all proxies exhausted")
+
+// TestClient_GetStream_RoutesBrowserInBrowserMode verifies that in browser
+// fetch modes GetStream delegates to the browser's binary transport
+// (FetchBinary), defaulting the Referer to the IDX base URL when the caller
+// sends none (the sidecar loads it first to clear Cloudflare) and forwarding
+// any extra headers (e.g. the Range size probe) unchanged.
+func TestClient_GetStream_RoutesBrowserInBrowserMode(t *testing.T) {
+	pdf := []byte("%PDF-1.6 fake disclosure bytes")
+	stub := &stubBrowser{body: pdf, status: http.StatusOK}
+	c := &Client{
+		config:  Config{BaseURL: "https://idx.example", FetchMode: "nodriver"},
+		browser: stub,
+		log:     logrus.New(),
+		stopCh:  make(chan struct{}),
+	}
+
+	resp, err := c.GetStream("/StaticData/x.pdf", map[string]string{"Range": "bytes=0-0"})
+	if err != nil {
+		t.Fatalf("GetStream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if stub.gotURL != "https://idx.example/StaticData/x.pdf" {
+		t.Errorf("expected resolved PDF URL, got %q", stub.gotURL)
+	}
+	if stub.gotHeaders["Referer"] != "https://idx.example" {
+		t.Errorf("expected defaulted Referer, got %q", stub.gotHeaders["Referer"])
+	}
+	if stub.gotHeaders["Range"] != "bytes=0-0" {
+		t.Errorf("expected Range probe forwarded, got %q", stub.gotHeaders["Range"])
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != string(pdf) {
+		t.Errorf("expected decoded PDF bytes %q, got %q", pdf, body)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+// TestClient_GetStream_KeepsCallerReferer verifies a caller-supplied Referer is
+// not clobbered by the default injection.
+func TestClient_GetStream_KeepsCallerReferer(t *testing.T) {
+	stub := &stubBrowser{body: []byte("%PDF-1.6"), status: http.StatusOK}
+	c := &Client{
+		config:  Config{BaseURL: "https://idx.example", FetchMode: "nodriver"},
+		browser: stub,
+		log:     logrus.New(),
+		stopCh:  make(chan struct{}),
+	}
+
+	if _, err := c.GetStream("/x.pdf", map[string]string{"Referer": "https://idx.example/en/market-data/"}); err != nil {
+		t.Fatalf("GetStream: %v", err)
+	}
+	if stub.gotHeaders["Referer"] != "https://idx.example/en/market-data/" {
+		t.Errorf("expected caller Referer preserved, got %q", stub.gotHeaders["Referer"])
+	}
+}
 
 // TestClient_GetStream_BypassesCache verifies GetStream skips the stale cache
 // (the same URL may hold a fresh JSON entry) and streams the live body rather

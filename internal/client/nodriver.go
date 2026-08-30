@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// streamFetchTimeout is the per-request budget for binary stream fetches
+// (disclosure PDFs up to 10MB over a rotating proxy) — substantially longer
+// than n.timeout, which suits small JSON pages.
+const streamFetchTimeout = 2 * time.Minute
+
 // nodriverRequest is the body POSTed to the nodriver sidecar /fetch endpoint.
 type nodriverRequest struct {
 	URL     string            `json:"url"`
@@ -20,13 +26,16 @@ type nodriverRequest struct {
 	Referer string            `json:"referer,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Timeout int               `json:"timeout_ms,omitempty"`
+	Binary  bool              `json:"binary,omitempty"`
 }
 
-// nodriverResponse is the sidecar's reply.
+// nodriverResponse is the sidecar's reply. For binary fetches the sidecar sets
+// Encoding to "base64" and Body holds the base64-encoded payload.
 type nodriverResponse struct {
-	Status int    `json:"status"`
-	Body   string `json:"body"`
-	Error  string `json:"error,omitempty"`
+	Status   int    `json:"status"`
+	Body     string `json:"body"`
+	Error    string `json:"error,omitempty"`
+	Encoding string `json:"encoding,omitempty"`
 }
 
 // NodriverClient wraps the nodriver sidecar HTTP API. It solves Cloudflare
@@ -76,6 +85,19 @@ func NewNodriverClient(cfg NodriverConfig, proxySource string, proxyTTL, deadRet
 // Fetch retrieves url through the nodriver sidecar, rotating proxies until one
 // succeeds or the pool is exhausted. Returns the page bytes and HTTP status.
 func (n *NodriverClient) Fetch(url string, headers map[string]string) ([]byte, int, error) {
+	return n.fetch(url, headers, false, n.timeout)
+}
+
+// FetchBinary retrieves binary content (disclosure PDFs) through the sidecar's
+// base64 transport. Unlike Fetch it accepts any sub-400 status — a 206 partial
+// response from a ranged size probe is a success. Uses streamFetchTimeout as
+// the per-request budget; PDFs run up to 10MB over a rotating proxy.
+func (n *NodriverClient) FetchBinary(url string, headers map[string]string) ([]byte, int, error) {
+	return n.fetch(url, headers, true, streamFetchTimeout)
+}
+
+// fetch is the shared rotation loop for Fetch/FetchBinary.
+func (n *NodriverClient) fetch(url string, headers map[string]string, binary bool, fetchTimeout time.Duration) ([]byte, int, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -98,7 +120,7 @@ func (n *NodriverClient) Fetch(url string, headers map[string]string) ([]byte, i
 			return nil, 0, err
 		}
 
-		body, status, err := n.fetchViaProxy(url, referer, headers, proxy)
+		body, status, err := n.fetchViaProxy(url, referer, headers, proxy, binary, fetchTimeout)
 		if err != nil {
 			n.pool.markDead(proxy)
 			lastErr = err
@@ -109,13 +131,14 @@ func (n *NodriverClient) Fetch(url string, headers map[string]string) ([]byte, i
 }
 
 // fetchViaProxy runs one /fetch call through a proxy.
-func (n *NodriverClient) fetchViaProxy(url, referer string, headers map[string]string, proxy string) ([]byte, int, error) {
+func (n *NodriverClient) fetchViaProxy(url, referer string, headers map[string]string, proxy string, binary bool, fetchTimeout time.Duration) ([]byte, int, error) {
 	req := nodriverRequest{
 		URL:     url,
 		Proxy:   proxy,
 		Referer: referer,
 		Headers: headers,
-		Timeout: int(n.timeout / time.Millisecond),
+		Timeout: int(fetchTimeout / time.Millisecond),
+		Binary:  binary,
 	}
 	raw, err := n.post(req)
 	if err != nil {
@@ -126,11 +149,21 @@ func (n *NodriverClient) fetchViaProxy(url, referer string, headers map[string]s
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil, 0, fmt.Errorf("parse nodriver response: %w", err)
 	}
-	if resp.Status != http.StatusOK {
+	if !binary && resp.Status != http.StatusOK {
+		return nil, resp.Status, fmt.Errorf("nodriver fetch failed via %s: %s (status %d)", proxy, resp.Error, resp.Status)
+	}
+	if binary && resp.Status >= 400 {
 		return nil, resp.Status, fmt.Errorf("nodriver fetch failed via %s: %s (status %d)", proxy, resp.Error, resp.Status)
 	}
 	if resp.Body == "" {
 		return nil, resp.Status, fmt.Errorf("nodriver fetch returned empty body via %s", proxy)
+	}
+	if binary && resp.Encoding == "base64" {
+		decoded, err := base64.StdEncoding.DecodeString(resp.Body)
+		if err != nil {
+			return nil, resp.Status, fmt.Errorf("decode nodriver base64 body via %s: %w", proxy, err)
+		}
+		return decoded, resp.Status, nil
 	}
 	return []byte(resp.Body), resp.Status, nil
 }
