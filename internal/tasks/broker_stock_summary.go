@@ -27,10 +27,7 @@ type BrokerStockSummaryPayload struct {
 // most one outstanding fetch per (ticker, trading_day). The IPOT client's 1h
 // cache additionally makes a re-run after completion a no-op upstream.
 func EnqueueBrokerStockSummary(enq pipeline.Enqueuer, ticker string, date time.Time) (*asynq.TaskInfo, error) {
-	dateKey := date.Format("2006-01-02")
-	taskKey := TaskKey(TypeBrokerStockSummary, ticker+":"+dateKey)
-	stage := pipeline.NewIngestStage(TypeBrokerStockSummary, nil, enq, 3)
-	return stage.Enqueue(taskKey, BrokerStockSummaryPayload{Ticker: ticker, Date: dateKey})
+	return Graph.Node(TypeBrokerStockSummary).Enqueue(enq, date, []string{"ticker=" + ticker})
 }
 
 // NewBrokerStockSummaryHandler returns an asynq handler for the

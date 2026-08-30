@@ -3,7 +3,6 @@ package tasks
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -97,8 +96,8 @@ func NewStockSummaryHandler(
 
 		// Chain detect:anomalies on success so anomaly detection runs after
 		// ingestion. Date-keyed TaskID dedups against concurrent chains.
-		if _, err := EnqueueDetectAnomalies(enq, date); err != nil && !errors.Is(err, asynq.ErrTaskIDConflict) {
-			log.Warnf("stock_summary: failed to enqueue detect:anomalies: %v", err)
+		if err := Graph.Chain(ctx, enq, TypeStockSummary, date); err != nil {
+			log.Warnf("stock_summary: failed to chain detect:anomalies: %v", err)
 		} else {
 			log.Infof("stock_summary: chained detect:anomalies for %s", p.Date)
 		}

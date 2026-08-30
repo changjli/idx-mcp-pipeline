@@ -69,9 +69,7 @@ type RSSArticle = pipeline.NewsArticle
 // EnqueueRSS enqueues an rss:ingest task for the given date with a date-keyed
 // TaskID for dedup. Extra opts (e.g. asynq.ProcessIn) are appended.
 func EnqueueRSS(enq pipeline.Enqueuer, date time.Time, opts ...asynq.Option) (*asynq.TaskInfo, error) {
-	dateKey := date.Format("2006-01-02")
-	stage := pipeline.NewIngestStage(TypeRSS, nil, enq, 3) // exp-backoff + jitter are asynq defaults
-	return stage.EnqueueWithOpts(TaskKey(TypeRSS, dateKey), RSSPayload{Date: dateKey}, opts...)
+	return Graph.Node(TypeRSS).Enqueue(enq, date, nil, opts...)
 }
 
 // NewRSSHandler returns an asynq handler for the rss:ingest task type. It pulls

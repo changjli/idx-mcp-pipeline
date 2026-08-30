@@ -72,8 +72,7 @@ type ExtractDisclosurePayload struct {
 // disclosure. Uses a per-disclosure TaskID for dedup. Returns
 // ErrTaskIDConflict if already enqueued. Chained from filter:disclosures.
 func EnqueueExtractDisclosure(enq pipeline.Enqueuer, id int64) (*asynq.TaskInfo, error) {
-	stage := pipeline.NewIngestStage(TypeExtractDisclosure, nil, enq, extractMaxRetry)
-	return stage.Enqueue(fmt.Sprintf("%s:%d", TypeExtractDisclosure, id), ExtractDisclosurePayload{DisclosureID: id})
+	return Graph.Node(TypeExtractDisclosure).Enqueue(enq, time.Time{}, []string{"id=" + strconv.FormatInt(id, 10)})
 }
 
 // reenqueueExtractDisclosure re-enqueues an extract:disclosure task with a

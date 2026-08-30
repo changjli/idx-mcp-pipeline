@@ -42,9 +42,5 @@ func EnqueueNoop(client *asynq.Client, date time.Time) (*asynq.TaskInfo, error) 
 // "today" from time.Now() server-side; the TaskID is for manual-trigger dedup
 // only. Returns ErrTaskIDConflict if already enqueued for this date.
 func EnqueuePipelineDaily(client *asynq.Client, date time.Time) (*asynq.TaskInfo, error) {
-	dateKey := date.Format("2006-01-02")
-	taskKey := TaskKey(TypePipelineDaily, dateKey)
-
-	task := asynq.NewTask(TypePipelineDaily, nil)
-	return client.Enqueue(task, asynq.TaskID(taskKey), asynq.Queue("default"))
+	return Graph.Node(TypePipelineDaily).Enqueue(client, date, nil)
 }

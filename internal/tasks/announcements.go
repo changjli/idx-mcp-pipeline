@@ -73,9 +73,7 @@ type AnnouncementAttachment struct {
 // Uses a date-keyed TaskID for dedup. Returns ErrTaskIDConflict if already
 // enqueued. Extra opts (e.g. asynq.ProcessIn) are appended to the defaults.
 func EnqueueAnnouncements(enq pipeline.Enqueuer, date time.Time, opts ...asynq.Option) (*asynq.TaskInfo, error) {
-	dateKey := date.Format("2006-01-02")
-	stage := pipeline.NewIngestStage(TypeAnnouncements, nil, enq, 3)
-	return stage.EnqueueWithOpts(TaskKey(TypeAnnouncements, dateKey), AnnouncementsPayload{Date: dateKey}, opts...)
+	return Graph.Node(TypeAnnouncements).Enqueue(enq, date, nil, opts...)
 }
 
 // NewAnnouncementsHandler returns an asynq handler for the idx:announcements

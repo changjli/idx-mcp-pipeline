@@ -32,9 +32,7 @@ type DetectAnomaliesPayload struct {
 // Uses a date-keyed TaskID for dedup. Returns ErrTaskIDConflict if already
 // enqueued. Chained from idx:stock_summary success.
 func EnqueueDetectAnomalies(enq pipeline.Enqueuer, date time.Time) (*asynq.TaskInfo, error) {
-	dateKey := date.Format("2006-01-02")
-	stage := pipeline.NewIngestStage(TypeDetectAnomalies, nil, enq, 3)
-	return stage.Enqueue(TaskKey(TypeDetectAnomalies, dateKey), DetectAnomaliesPayload{Date: dateKey})
+	return Graph.Node(TypeDetectAnomalies).Enqueue(enq, date, nil)
 }
 
 // reenqueueDetectAnomalies re-enqueues a detect:anomalies task with a delay.
@@ -118,8 +116,8 @@ func NewDetectAnomaliesHandler(
 		// proceed to extraction. Chained here (not from idx:announcements)
 		// because anomalies are detected after announcements in the pipeline —
 		// the anomaly-gate needs today's anomaly rows to exist.
-		if _, err := EnqueueFilterDisclosures(enq, today); err != nil && !errors.Is(err, asynq.ErrTaskIDConflict) {
-			log.Warnf("detect:anomalies: enqueue filter:disclosures: %v", err)
+		if err := Graph.Chain(ctx, enq, TypeDetectAnomalies, today); err != nil {
+			log.Warnf("detect:anomalies: chain filter:disclosures: %v", err)
 		}
 		return nil
 	}

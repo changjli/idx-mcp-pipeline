@@ -37,9 +37,7 @@ type FilterDisclosuresPayload struct {
 // even when zero anomalies were flagged — non-anomaly disclosures still need
 // marking passed_filter=false).
 func EnqueueFilterDisclosures(enq pipeline.Enqueuer, date time.Time) (*asynq.TaskInfo, error) {
-	dateKey := date.Format("2006-01-02")
-	stage := pipeline.NewIngestStage(TypeFilterDisclosures, nil, enq, 3)
-	return stage.Enqueue(TaskKey(TypeFilterDisclosures, dateKey), FilterDisclosuresPayload{Date: dateKey})
+	return Graph.Node(TypeFilterDisclosures).Enqueue(enq, date, nil)
 }
 
 // reenqueueFilterDisclosures re-enqueues a filter:disclosures task with a delay

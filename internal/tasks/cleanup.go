@@ -45,9 +45,7 @@ type CleanupPayload struct {
 // TaskID for dedup (one run per day). Extra opts (e.g. asynq.ProcessIn) are
 // appended to the defaults.
 func EnqueueCleanup(enq pipeline.Enqueuer, date time.Time, opts ...asynq.Option) (*asynq.TaskInfo, error) {
-	dateKey := date.Format("2006-01-02")
-	stage := pipeline.NewIngestStage(TypeCleanup, nil, enq, 3)
-	return stage.EnqueueWithOpts(TaskKey(TypeCleanup, dateKey), CleanupPayload{Date: dateKey}, opts...)
+	return Graph.Node(TypeCleanup).Enqueue(enq, date, nil, opts...)
 }
 
 // NewCleanupHandler returns an asynq handler for the cleanup task type. It
