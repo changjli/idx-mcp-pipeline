@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -18,23 +19,30 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/tasks"
 )
 
+// argList collects repeatable --arg key=value flags.
+type argList []string
+
+func (a *argList) String() string { return strings.Join(*a, ",") }
+func (a *argList) Set(v string) error {
+	*a = append(*a, v)
+	return nil
+}
+
 func main() {
+	taskName := flag.String("task", "stock-summary", "task to enqueue (registry node name): stock-summary, announcements, rss, cleanup, detect, filter, extract, broker-summary, pipeline (default: stock-summary)")
 	dateStr := flag.String("date", "", "trading date in YYYY-MM-DD format (default: today)")
 	startDateStr := flag.String("start-date", "", "bulk backfill start date in YYYY-MM-DD format")
 	endDateStr := flag.String("end-date", "", "bulk backfill end date in YYYY-MM-DD format")
-	announcementsFlag := flag.Bool("announcements", false, "enqueue idx:announcements task instead of stock_summary")
-	rssFlag := flag.Bool("rss", false, "enqueue rss:ingest task instead of stock_summary")
-	brokerSummaryTicker := flag.String("broker-summary", "", "enqueue idx:broker_stock_summary task for this ticker (e.g. RAJA)")
-	filterFlag := flag.Bool("filter", false, "enqueue filter:disclosures task instead of stock_summary")
-	extractID := flag.Int64("extract", 0, "enqueue extract:disclosure task for this disclosure id")
-	pipelineFlag := flag.Bool("pipeline", false, "enqueue the pipeline:daily fan-out task (stock_summary + announcements + rss + cleanup)")
-	detectFlag := flag.Bool("detect", false, "enqueue detect:anomalies task instead of stock_summary")
+	var args argList
+	flag.Var(&args, "arg", "per-task argument, repeatable: broker-summary requires ticker=<code>; extract requires id=<disclosure id>")
 	flag.Parse()
 
 	vip := config.NewViper()
 	log := config.NewLogger(vip)
 
-	// Bulk backfill mode: --start-date and --end-date together.
+	// Bulk backfill mode: --start-date and --end-date together. Only
+	// stock-summary (daily_prices backfill) and announcements (disclosure
+	// metadata) have bulk paths — direct DB+client loops, no asynq.
 	if *startDateStr != "" || *endDateStr != "" {
 		if *startDateStr == "" || *endDateStr == "" {
 			log.Fatalf("--start-date and --end-date must be provided together")
@@ -42,19 +50,14 @@ func main() {
 		if *dateStr != "" {
 			log.Fatalf("--date is mutually exclusive with --start-date/--end-date")
 		}
-		if *rssFlag || *brokerSummaryTicker != "" || *filterFlag || *extractID != 0 || *pipelineFlag || *detectFlag {
-			log.Fatalf("--rss/--broker-summary/--filter/--extract/--pipeline/--detect are mutually exclusive with --start-date/--end-date")
-		}
-		// --announcements in bulk mode: local direct fetch+upsert of disclosure
-		// metadata per date (mirrors runBulkBackfill, uses the local nodriver
-		// sidecar, no asynq). Default bulk mode is runBulkBackfill (daily_prices).
-		// --detect has no bulk mode: use single-date --detect to enqueue
-		// detect:anomalies to asynq per date (left to the prod worker).
-		if *announcementsFlag {
+		switch *taskName {
+		case "announcements":
 			runBulkAnnouncements(vip, log, *startDateStr, *endDateStr)
-			return
+		case "stock-summary":
+			runBulkBackfill(vip, log, *startDateStr, *endDateStr)
+		default:
+			log.Fatalf("--task %s has no bulk mode; bulk backfill supports stock-summary and announcements", *taskName)
 		}
-		runBulkBackfill(vip, log, *startDateStr, *endDateStr)
 		return
 	}
 
@@ -70,71 +73,22 @@ func main() {
 		}
 	}
 
-	if *announcementsFlag && *rssFlag {
-		log.Fatalf("--announcements and --rss are mutually exclusive")
-	}
-	if *brokerSummaryTicker != "" && (*announcementsFlag || *rssFlag) {
-		log.Fatalf("--broker-summary is mutually exclusive with --announcements/--rss")
-	}
-	if *filterFlag && (*announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *extractID != 0) {
-		log.Fatalf("--filter is mutually exclusive with --announcements/--rss/--broker-summary/--extract")
-	}
-	if *extractID != 0 && (*announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *filterFlag || *pipelineFlag) {
-		log.Fatalf("--extract is mutually exclusive with --announcements/--rss/--broker-summary/--filter/--pipeline")
-	}
-	if *pipelineFlag && (*announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *filterFlag || *extractID != 0) {
-		log.Fatalf("--pipeline is mutually exclusive with --announcements/--rss/--broker-summary/--filter/--extract")
-	}
-	if *detectFlag && (*announcementsFlag || *rssFlag || *brokerSummaryTicker != "" || *filterFlag || *extractID != 0 || *pipelineFlag) {
-		log.Fatalf("--detect is mutually exclusive with --announcements/--rss/--broker-summary/--filter/--extract/--pipeline")
+	node, err := tasks.Graph.NodeByName(*taskName)
+	if err != nil {
+		log.Fatalf("unknown --task %q: %v", *taskName, err)
 	}
 
-	dateKey := date.Format("2006-01-02")
-
-	// Task-mode selection: stock_summary by default, or announcements/rss/
-	// broker-summary.
-	taskType := tasks.TypeStockSummary
-	enqueue := func() (*asynq.TaskInfo, error) { return tasks.EnqueueStockSummary(client, date) }
-	if *pipelineFlag {
-		taskType = tasks.TypePipelineDaily
-		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueuePipelineDaily(client, date) }
-	} else if *announcementsFlag {
-		taskType = tasks.TypeAnnouncements
-		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueAnnouncements(client, date) }
-	} else if *rssFlag {
-		taskType = tasks.TypeRSS
-		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueRSS(client, date) }
-	} else if *brokerSummaryTicker != "" {
-		taskType = tasks.TypeBrokerStockSummary
-		enqueue = func() (*asynq.TaskInfo, error) {
-			return tasks.EnqueueBrokerStockSummary(client, *brokerSummaryTicker, date)
-		}
-	} else if *filterFlag {
-		taskType = tasks.TypeFilterDisclosures
-		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueFilterDisclosures(client, date) }
-	} else if *extractID != 0 {
-		taskType = tasks.TypeExtractDisclosure
-		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueExtractDisclosure(client, *extractID) }
-	} else if *detectFlag {
-		taskType = tasks.TypeDetectAnomalies
-		enqueue = func() (*asynq.TaskInfo, error) { return tasks.EnqueueDetectAnomalies(client, date) }
-	}
-
-	target := dateKey
-	if *extractID != 0 {
-		target = fmt.Sprintf("disclosure %d", *extractID)
-	}
-	log.Infof("enqueuing %s task for %s", taskType, target)
-	info, err := enqueue()
+	log.Infof("enqueuing %s task for %s", node.Type, date.Format("2006-01-02"))
+	info, err := node.Enqueue(client, date, args)
 	if err != nil {
 		if errors.Is(err, asynq.ErrTaskIDConflict) {
-			log.Infof("task %s:%s already enqueued, skipping", taskType, target)
+			log.Infof("task %s already enqueued, skipping", node.Type)
 		} else {
-			log.Errorf("failed to enqueue %s:%s: %v", taskType, dateKey, err)
+			log.Errorf("failed to enqueue %s: %v", node.Type, err)
 			os.Exit(1)
 		}
 	} else {
-		log.Infof("enqueued %s:%s: id=%s queue=%s", taskType, dateKey, info.ID, info.Queue)
+		log.Infof("enqueued %s: id=%s queue=%s", node.Type, info.ID, info.Queue)
 	}
 
 	fmt.Println("done")

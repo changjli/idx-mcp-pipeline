@@ -49,7 +49,7 @@ A source whose data is older than its freshness window (`now - last_success_at >
 _Avoid_: outdated, expired
 
 **Pipeline**:
-The daily asynq job graph: Wave 1 ingestion (stock summary, announcements, broker summary, RSS, cleanup) → detect anomalies → filter disclosures → extract per disclosure. Owned by the asynq Scheduler inside `mcp-server`.
+The daily asynq job graph: Wave 1 ingestion (stock summary, announcements, broker summary, RSS, cleanup) → detect anomalies → filter disclosures → extract per disclosure. Owned by the asynq Scheduler inside `mcp-server`. The graph is declarative data in `internal/tasks/graph.go`, consumed by the scheduler, enqueue-daily, and self-heal — not emergent from handler chains.
 _Avoid_: cron job, batch
 
 ## Fetch transport
