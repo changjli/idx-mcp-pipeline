@@ -40,15 +40,13 @@
   },
   "idx": {
     "base_url": "https://www.idx.co.id",
-    "timeout": "30s",
-    "rate_limit_per_sec": 1,
-    "max_retries": 3,
-    "base_delay": "1s",
-    "max_delay": "30s",
-    "cache_ttl": "6h",
-    "cookie_refresh": "10m",
-    "disclosure_lookback_days": 7,
-    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "disclosure_lookback_days": 7
+  },
+  "nodriver": {
+    "timeout": "20s",
+    "wake_timeout": "60s",
+    "proxies_ttl": "1h",
+    "dead_retry_after": "6h"
   },
   "yahoo": {
     "concurrency": 4,

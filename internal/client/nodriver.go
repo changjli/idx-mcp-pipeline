@@ -56,15 +56,11 @@ type NodriverClient struct {
 }
 
 // NewNodriverClient builds a nodriver client. base_url is required; the proxy
-// list (source/ttl/deadRetryAfter) is shared with the FlareSolverr config so one
-// pool config serves both browser modes. The proxy list loads lazily on first
-// fetch.
-func NewNodriverClient(cfg NodriverConfig, proxySource string, proxyTTL, deadRetryAfter time.Duration, log *logrus.Logger) (*NodriverClient, error) {
+// pool is injected (built once in NewClient from the nodriver.proxies config).
+// The proxy list loads lazily on first fetch.
+func NewNodriverClient(cfg NodriverConfig, pool *proxyPool, log *logrus.Logger) (*NodriverClient, error) {
 	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("nodriver.base_url is required in nodriver fetch mode")
-	}
-	if proxySource == "" {
-		return nil, fmt.Errorf("flaresolverr.proxies is required in nodriver fetch mode (shared proxy pool)")
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -76,7 +72,7 @@ func NewNodriverClient(cfg NodriverConfig, proxySource string, proxyTTL, deadRet
 		authToken:   cfg.AuthToken,
 		timeout:     timeout,
 		wakeTimeout: cfg.WakeTimeout,
-		pool:        newProxyPool(proxySource, proxyTTL, deadRetryAfter, httpClient, log),
+		pool:        pool,
 		http:        httpClient,
 		log:         log,
 	}, nil
@@ -223,6 +219,14 @@ func (n *NodriverClient) post(req nodriverRequest) ([]byte, error) {
 }
 
 // Close is a no-op for the nodriver client (the Chrome lifecycle is owned by the
-// sidecar). Present to satisfy the browserFetcher interface alongside
-// FlareSolverrClient.
+// sidecar). Present to satisfy the browserFetcher interface.
 func (n *NodriverClient) Close() {}
+
+// truncateBytes caps a byte slice for error messages.
+func truncateBytes(b []byte, n int) string {
+	s := string(b)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}

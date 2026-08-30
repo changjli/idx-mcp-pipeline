@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,11 +20,10 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
-// TestStockSummary_FlareSolverr_EndToEnd drives the stock summary handler with a
-// fake FlareSolverr returning a canned GetStockSummary payload (wrapped in the
-// <pre> envelope) and asserts Daily Price rows land in Postgres. Skipped unless
-// IDX_MCP_DB_DSN is set.
-func TestStockSummary_FlareSolverr_EndToEnd(t *testing.T) {
+// TestStockSummary_Nodriver_EndToEnd drives the stock summary handler with a
+// fake nodriver sidecar returning a canned GetStockSummary payload and asserts
+// Daily Price rows land in Postgres. Skipped unless IDX_MCP_DB_DSN is set.
+func TestStockSummary_Nodriver_EndToEnd(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
 		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
@@ -34,7 +32,7 @@ func TestStockSummary_FlareSolverr_EndToEnd(t *testing.T) {
 	db := sqlx.MustConnect("pgx", dsn)
 	log := logrus.New()
 
-	const ticker = "FLARX"
+	const ticker = "NODRX"
 	date := "2026-08-21"
 
 	// Clean slate: only rows this test creates.
@@ -47,49 +45,41 @@ func TestStockSummary_FlareSolverr_EndToEnd(t *testing.T) {
 		db.MustExec("DELETE FROM source_status WHERE source = $1", TypeStockSummary)
 	})
 
-	// Canned GetStockSummary payload wrapped in FlareSolverr's <pre> envelope.
+	// Canned GetStockSummary payload returned verbatim by the fake sidecar.
 	open, high, low, closeP, vol, val, freq, shares := 1000.0, 1100.0, 990.0, 1050.0, 100000.0, 105000000.0, 500.0, 1000000000.0
 	payload := StockSummaryResponse{
 		Draw:            1,
 		RecordsTotal:    1,
 		RecordsFiltered: 1,
 		Data: []pipeline.StockSummaryItem{
-			{StockCode: ticker, StockName: "Flare Test Tbk.", OpenPrice: &open, High: &high, Low: &low, Close: &closeP, Volume: &vol, Value: &val, Frequency: &freq, ListedShares: &shares},
+			{StockCode: ticker, StockName: "Nodriver Test Tbk.", OpenPrice: &open, High: &high, Low: &low, Close: &closeP, Volume: &vol, Value: &val, Frequency: &freq, ListedShares: &shares},
 		},
 	}
 	rawPayload, _ := json.Marshal(payload)
-	envelope := "<html><body><pre>" + string(rawPayload) + "</pre></body></html>"
 
-	// Fake FlareSolverr /v1.
-	var mu sync.Mutex
+	// Fake nodriver sidecar: /health + /fetch.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			json.NewEncoder(w).Encode(map[string]string{"msg": "FlareSolverr is ready!"})
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
 			return
 		}
-		var req map[string]any
+		var req struct {
+			URL   string `json:"url"`
+			Proxy string `json:"proxy"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		mu.Lock()
-		defer mu.Unlock()
-		switch req["cmd"] {
-		case "sessions.create":
-			json.NewEncoder(w).Encode(map[string]any{"status": "ok", "session": "test-session"})
-		case "sessions.destroy":
-			json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
-		case "request.get":
-			json.NewEncoder(w).Encode(map[string]any{
-				"status": "ok",
-				"solution": map[string]any{
-					"status":   http.StatusOK,
-					"response": envelope,
-				},
-			})
-		default:
-			json.NewEncoder(w).Encode(map[string]any{"status": "error", "message": "unknown cmd"})
+		if req.URL == "" || req.Proxy == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status": http.StatusOK,
+			"body":   string(rawPayload),
+		})
 	}))
 	defer ts.Close()
 
@@ -101,18 +91,14 @@ func TestStockSummary_FlareSolverr_EndToEnd(t *testing.T) {
 	}
 
 	idxClient, err := client.NewClient(client.Config{
-		BaseURL:         "https://idx.example",
-		Timeout:         5 * time.Second,
-		RateLimitPerSec: 1000,
-		FetchMode:       "flaresolverr",
-		FlareSolverr: client.FlareSolverrConfig{
-			BaseURL:           ts.URL,
-			Timeout:           time.Second,
-			Proxies:           proxyFile,
-			ProxiesTTL:        time.Hour,
-			DeadRetryAfter:    time.Hour,
-			WakeTimeout:       2 * time.Second,
-			SessionTTLMinutes: 30,
+		BaseURL: "https://idx.example",
+		Nodriver: client.NodriverConfig{
+			BaseURL:        ts.URL,
+			Timeout:        time.Second,
+			WakeTimeout:    2 * time.Second,
+			Proxies:        proxyFile,
+			ProxiesTTL:     time.Hour,
+			DeadRetryAfter: time.Hour,
 		},
 	}, log)
 	if err != nil {

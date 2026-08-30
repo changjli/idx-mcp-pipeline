@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -86,18 +84,13 @@ func newTestNodriver(t *testing.T, stub *nodriverStub, proxies []string) *Nodriv
 	t.Helper()
 	ts := httptest.NewServer(stub.handler())
 	t.Cleanup(ts.Close)
-	dir := t.TempDir()
-	f := filepath.Join(dir, "proxies.json")
-	raw, _ := json.Marshal(proxies)
-	if err := os.WriteFile(f, raw, 0o644); err != nil {
-		t.Fatalf("write proxy list: %v", err)
-	}
+	pool := newProxyPool(writeProxyFile(t, proxies), time.Hour, time.Hour, &http.Client{Timeout: time.Second}, logrus.New())
 	cfg := NodriverConfig{
 		BaseURL:     ts.URL,
 		Timeout:     time.Second,
 		WakeTimeout: 2 * time.Second,
 	}
-	nc, err := NewNodriverClient(cfg, f, time.Hour, time.Hour, logrus.New())
+	nc, err := NewNodriverClient(cfg, pool, logrus.New())
 	if err != nil {
 		t.Fatalf("NewNodriverClient: %v", err)
 	}

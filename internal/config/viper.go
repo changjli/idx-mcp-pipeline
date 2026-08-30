@@ -20,11 +20,10 @@ func NewViper() *viper.Viper {
 	config.AutomaticEnv()
 
 	// Explicit bindings where the documented env var name is not the literal
-	// dot->underscore uppercased key. flaresolverr.auth_token / nodriver.auth_token
-	// would otherwise map to FLARESOLVERR_AUTH_TOKEN / NODRIVER_AUTH_TOKEN, but the
-	// deploy config + .env.example use FLARESOLVERR_TOKEN / NODRIVER_TOKEN (and the
-	// reverse proxy reads the same var). Bind them so the documented names work.
-	_ = config.BindEnv("flaresolverr.auth_token", "FLARESOLVERR_TOKEN")
+	// dot->underscore uppercased key. nodriver.auth_token would otherwise map to
+	// NODRIVER_AUTH_TOKEN, but the deploy config + .env.example use NODRIVER_TOKEN
+	// (and the reverse proxy reads the same var). Bind it so the documented name
+	// works.
 	_ = config.BindEnv("nodriver.auth_token", "NODRIVER_TOKEN")
 
 	// Config file is optional: when absent (e.g. Heroku, which relies on env

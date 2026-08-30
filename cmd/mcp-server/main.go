@@ -65,8 +65,8 @@ func main() {
 	asynqSrv := config.NewAsynqServer(vip, log)
 	asynqClient := config.NewAsynqClient(vip, log)
 
-	// IDX HTTP client (singleton)
-	idxClient, err := client.InitDefaultClient(vip, log)
+	// IDX HTTP client
+	idxClient, err := client.NewDefaultClient(vip, log)
 	if err != nil {
 		log.Fatalf("failed to init IDX client: %v", err)
 	}

@@ -160,7 +160,7 @@ func runBulkBackfill(vip *viper.Viper, log *logrus.Logger, startStr, endStr stri
 	db := config.NewDatabase(vip, log)
 	defer db.Close()
 
-	idxClient, err := client.InitDefaultClient(vip, log)
+	idxClient, err := client.NewDefaultClient(vip, log)
 	if err != nil {
 		log.Fatalf("failed to init IDX client: %v", err)
 	}
@@ -209,7 +209,7 @@ func runBulkAnnouncements(vip *viper.Viper, log *logrus.Logger, startStr, endStr
 	db := config.NewDatabase(vip, log)
 	defer db.Close()
 
-	idxClient, err := client.InitDefaultClient(vip, log)
+	idxClient, err := client.NewDefaultClient(vip, log)
 	if err != nil {
 		log.Fatalf("failed to init IDX client: %v", err)
 	}

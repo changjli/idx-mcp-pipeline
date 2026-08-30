@@ -13,10 +13,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// proxyPool is a rotating pool of egress proxies shared by the browser fetch
-// modes (flaresolverr and nodriver). The list is loaded from an HTTPS URL or a
-// local file path (JSON array of proxy URL strings), cached in-memory for ttl,
-// and refreshed lazily. Dead proxies are skipped until deadRetryAfter elapses.
+// proxyPool is a rotating pool of egress proxies used by the nodriver browser
+// transport. The list is loaded from an HTTPS URL or a local file path (JSON
+// array of proxy URL strings), cached in-memory for ttl, and refreshed lazily.
+// Dead proxies are skipped until deadRetryAfter elapses.
 type proxyPool struct {
 	mu             sync.Mutex
 	source         string
@@ -29,6 +29,13 @@ type proxyPool struct {
 	dead      map[string]time.Time
 	cursor    int
 	lastFetch time.Time
+}
+
+// proxyPoolHTTPClient is the HTTP client the shared proxy pool uses to load the
+// proxy list from a URL source. Built once in NewClient; the pool is injected
+// into whichever browser adapter is active.
+func proxyPoolHTTPClient() *http.Client {
+	return &http.Client{Timeout: 30 * time.Second}
 }
 
 func newProxyPool(source string, ttl, deadRetryAfter time.Duration, httpClient *http.Client, log *logrus.Logger) *proxyPool {

@@ -55,7 +55,7 @@ _Avoid_: cron job, batch
 ## Fetch transport
 
 **Fetch Mode**:
-The IDX client's transport selection: `direct` (plain Go HTTP, default) or `flaresolverr` (headless-browser fetch through a proxy pool). Mode is config-driven (`idx.fetch_mode`), so the pipeline can fall back to direct when Cloudflare is not challenging.
+The IDX client's transport: `nodriver` — headless Chrome sidecar + rotating proxy pool, the only fetch route (ADR-0007). Every fetch — stock summary, announcements, and disclosure PDF streams (`GetStream`) — goes through the sidecar; direct GETs on the StaticData host 403 on the Cloudflare JS-execution gate (issue 01, resolved). Fetches are coarse (one request per source per day) and uncached/unthrottled by design. Proxy pool source: `nodriver.proxies`.
 _Avoid_: transport mode, proxy mode
 
 **Proxy Pool**:
