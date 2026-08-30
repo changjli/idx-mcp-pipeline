@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -21,7 +20,7 @@ const (
 
 	// archivedRequeueDelay is how long a recovered archived task waits before
 	// firing — gives transient upstream blocks (e.g. Cloudflare 403) time to
-	// lift. Shared by stock_summary and announcements self-heal.
+	// lift. Shared by every self-heal-eligible node.
 	archivedRequeueDelay = 30 * time.Minute
 )
 
@@ -79,66 +78,29 @@ func LogNextFireTime(sched *asynq.Scheduler, log *logrus.Logger) {
 	log.Infof("scheduler next fire: %s (%s)", next.Format(time.RFC3339), DailyCronSpec)
 }
 
-// SelfHealMissedTick checks if today's noop task was already enqueued.
-// If not, it enqueues one immediately to recover from a missed scheduler tick.
+// SelfHealMissedTick recovers a missed scheduler tick: if today's
+// pipeline:daily task isn't enqueued, enqueue it. TaskID dedup makes a
+// double-fire safe — ErrTaskIDConflict means today's fan-out is already queued.
 func SelfHealMissedTick(client *asynq.Client, log *logrus.Logger) {
 	now := time.Now()
-	info, err := tasks.EnqueueNoop(client, now)
+	info, err := tasks.EnqueuePipelineDaily(client, now)
 	if errors.Is(err, asynq.ErrTaskIDConflict) {
-		log.Infof("self-heal: noop task for %s already enqueued, skipping", now.Format("2006-01-02"))
+		log.Infof("self-heal: pipeline:daily task for %s already enqueued, skipping", now.Format("2006-01-02"))
 	} else if err != nil {
-		log.Warnf("self-heal: failed to enqueue noop task: %v", err)
+		log.Warnf("self-heal: failed to enqueue pipeline:daily: %v", err)
 	} else {
-		log.Infof("self-heal: enqueued missed noop task id=%s", info.ID)
+		log.Infof("self-heal: re-enqueued missed pipeline:daily task id=%s", info.ID)
 	}
 }
 
-// SelfHealArchivedStockSummary recovers archived idx:stock_summary tasks.
-func SelfHealArchivedStockSummary(inspector *asynq.Inspector, client *asynq.Client, log *logrus.Logger) {
-	selfHealArchived(inspector, client, log,
-		tasks.TypeStockSummary, "stock_summary",
-		stockSummaryDateFromID,
-		func(date time.Time) (*asynq.TaskInfo, error) {
-			return tasks.EnqueueStockSummary(client, date, asynq.ProcessIn(archivedRequeueDelay))
-		},
-	)
-}
-
-// SelfHealArchivedAnnouncements recovers archived idx:announcements tasks.
-func SelfHealArchivedAnnouncements(inspector *asynq.Inspector, client *asynq.Client, log *logrus.Logger) {
-	selfHealArchived(inspector, client, log,
-		tasks.TypeAnnouncements, "announcements",
-		announcementsDateFromID,
-		func(date time.Time) (*asynq.TaskInfo, error) {
-			return tasks.EnqueueAnnouncements(client, date, asynq.ProcessIn(archivedRequeueDelay))
-		},
-	)
-}
-
-// SelfHealArchivedRSS recovers archived rss:ingest tasks.
-func SelfHealArchivedRSS(inspector *asynq.Inspector, client *asynq.Client, log *logrus.Logger) {
-	selfHealArchived(inspector, client, log,
-		tasks.TypeRSS, "rss",
-		rssDateFromID,
-		func(date time.Time) (*asynq.TaskInfo, error) {
-			return tasks.EnqueueRSS(client, date, asynq.ProcessIn(archivedRequeueDelay))
-		},
-	)
-}
-
-// selfHealArchived recovers archived tasks of one type. Archived tasks hold
-// their date-keyed TaskID, blocking re-enqueue (ErrTaskIDConflict) — a dead-end
-// after retries are exhausted. Deletes each archived task to free the ID, then
-// re-enqueues with a delay so transient upstream blocks (e.g. Cloudflare 403)
-// have time to lift.
-func selfHealArchived(
-	inspector *asynq.Inspector,
-	client *asynq.Client,
-	log *logrus.Logger,
-	typ, label string,
-	dateFromID func(string) (time.Time, error),
-	enqueue func(time.Time) (*asynq.TaskInfo, error),
-) {
+// SelfHealArchived recovers archived tasks of one registry node. Archived
+// tasks hold their date-keyed TaskID, blocking re-enqueue (ErrTaskIDConflict)
+// — a dead-end after retries are exhausted. Deletes each archived task to free
+// the ID, then re-enqueues with a delay so transient upstream blocks (e.g.
+// Cloudflare 403) have time to lift. The node's Day parser inverts its TaskKey
+// format; only date-keyed, self-heal-eligible nodes (tasks.Graph.SelfHealEligible)
+// are passed in.
+func SelfHealArchived(inspector *asynq.Inspector, client *asynq.Client, log *logrus.Logger, node *tasks.Node) {
 	archived, err := inspector.ListArchivedTasks("ingest")
 	if err != nil {
 		log.Warnf("self-heal: failed to list archived tasks: %v", err)
@@ -147,11 +109,11 @@ func selfHealArchived(
 
 	recovered := 0
 	for _, t := range archived {
-		if t.Type != typ {
+		if t.Type != node.Type {
 			continue
 		}
 
-		date, err := dateFromID(t.ID)
+		date, err := node.Day(t.ID)
 		if err != nil {
 			log.Warnf("self-heal: invalid archived task id %q: %v", t.ID, err)
 			continue
@@ -164,7 +126,7 @@ func selfHealArchived(
 		}
 
 		// Re-enqueue with delay so transient blocks can lift.
-		info, err := enqueue(date)
+		info, err := node.Enqueue(client, date, nil, asynq.ProcessIn(archivedRequeueDelay))
 		if errors.Is(err, asynq.ErrTaskIDConflict) {
 			log.Infof("self-heal: task %s already enqueued, skipping", t.ID)
 			continue
@@ -173,32 +135,11 @@ func selfHealArchived(
 			log.Warnf("self-heal: failed to re-enqueue %s: %v", t.ID, err)
 			continue
 		}
-		log.Infof("self-heal: recovered archived %s task %s -> new id=%s", label, t.ID, info.ID)
+		log.Infof("self-heal: recovered archived %s task %s -> new id=%s", node.Type, t.ID, info.ID)
 		recovered++
 	}
 
 	if recovered > 0 {
-		log.Infof("self-heal: recovered %d archived %s task(s)", recovered, label)
+		log.Infof("self-heal: recovered %d archived %s task(s)", recovered, node.Type)
 	}
-}
-
-// announcementsDateFromID parses the date from an announcements task ID
-// of the form "idx:announcements:2026-08-09".
-func announcementsDateFromID(id string) (time.Time, error) {
-	dateStr := strings.TrimPrefix(id, tasks.TypeAnnouncements+":")
-	return time.Parse("2006-01-02", dateStr)
-}
-
-// stockSummaryDateFromID parses the date from a stock_summary task ID
-// of the form "idx:stock_summary:2026-08-08".
-func stockSummaryDateFromID(id string) (time.Time, error) {
-	dateStr := strings.TrimPrefix(id, tasks.TypeStockSummary+":")
-	return time.Parse("2006-01-02", dateStr)
-}
-
-// rssDateFromID parses the date from an rss task ID of the form
-// "rss:ingest:2026-08-10".
-func rssDateFromID(id string) (time.Time, error) {
-	dateStr := strings.TrimPrefix(id, tasks.TypeRSS+":")
-	return time.Parse("2006-01-02", dateStr)
 }

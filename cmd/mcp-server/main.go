@@ -74,7 +74,6 @@ func main() {
 
 	// Task mux: route task types to handlers
 	mux := asynq.NewServeMux()
-	mux.Handle(tasks.TypeNoop, tasks.NewNoopHandler(log))
 	mux.Handle(tasks.TypePipelineDaily, tasks.NewPipelineDailyHandler(log, asynqClient))
 	stockSummaryIngest := pipeline.NewStockSummaryIngest(
 		pipeline.NewSQLDailyPriceStore(dailyPriceRepo, db),
@@ -190,22 +189,24 @@ func main() {
 		}
 	}()
 
-	// Self-heal: enqueue today's noop task if scheduler missed its tick
+	// Self-heal: re-enqueue today's pipeline:daily task if the scheduler
+	// missed its tick (TaskID dedup makes a double-fire safe).
 	scheduler.SelfHealMissedTick(asynqClient, log)
 
-	// Self-heal: recover archived stock_summary, announcements, and rss tasks
-	// (dead-end recovery). Run once at startup, then periodically.
+	// Self-heal: recover archived wave-1 tasks (dead-end recovery), driven by
+	// the graph registry's self-heal-eligible nodes. Run once at startup, then
+	// periodically.
 	inspector := asynq.NewInspector(redisOpt)
-	scheduler.SelfHealArchivedStockSummary(inspector, asynqClient, log)
-	scheduler.SelfHealArchivedAnnouncements(inspector, asynqClient, log)
-	scheduler.SelfHealArchivedRSS(inspector, asynqClient, log)
+	for _, node := range tasks.Graph.SelfHealEligible() {
+		scheduler.SelfHealArchived(inspector, asynqClient, log, node)
+	}
 	go func() {
 		ticker := time.NewTicker(15 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			scheduler.SelfHealArchivedStockSummary(inspector, asynqClient, log)
-			scheduler.SelfHealArchivedAnnouncements(inspector, asynqClient, log)
-			scheduler.SelfHealArchivedRSS(inspector, asynqClient, log)
+			for _, node := range tasks.Graph.SelfHealEligible() {
+				scheduler.SelfHealArchived(inspector, asynqClient, log, node)
+			}
 		}
 	}()
 
