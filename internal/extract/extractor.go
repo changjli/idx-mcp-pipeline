@@ -1,7 +1,8 @@
-// Package extract turns binary documents into text. The Extractor seam keeps
-// the extraction task (ticket 11) independent of the concrete engine so an
-// OCR fallback (e.g. gosseract/Tesseract, ticket 16) can slot in later without
-// touching the task.
+// Package extract turns binary documents into text and owns the disclosure
+// PDF fetch + persist core shared by the extract:disclosure task and the
+// fetch_disclosure_pdf tool. The Extractor seam keeps callers independent of
+// the concrete engine so an OCR fallback (e.g. gosseract/Tesseract, ticket 16)
+// can slot in later without touching them.
 package extract
 
 import (

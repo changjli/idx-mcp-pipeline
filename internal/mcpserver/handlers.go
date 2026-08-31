@@ -223,6 +223,28 @@ func (s *Server) handleReadIdxDisclosure(ctx context.Context, req mcpgo.CallTool
 	}), nil
 }
 
+// fetchDisclosurePDFResponse wraps the usecase data with staleness metadata.
+type fetchDisclosurePDFResponse struct {
+	*usecase.FetchDisclosurePDFData
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleFetchDisclosurePDF(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	id, ok := disclosureIDArg(req.GetArguments())
+	if !ok {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid disclosure_id", false)), nil
+	}
+
+	data, err := s.fetchDisclosureUC.FetchDisclosurePDF(ctx, id)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(fetchDisclosurePDFResponse{
+		FetchDisclosurePDFData: data,
+		StalenessMetadata:      stalenessFor(s.db, s.sourceStatusRepo, sourceIdxAnnouncements, time.Now()),
+	}), nil
+}
+
 // pipelineStatusResponse wraps the usecase data with overall staleness.
 type pipelineStatusResponse struct {
 	*usecase.PipelineStatusData

@@ -103,6 +103,36 @@ func TestHandleReadIdxDisclosureInvalidID(t *testing.T) {
 	}
 }
 
+// TestHandleFetchDisclosurePDFInvalidID covers the parse path, which returns
+// INVALID_ARGUMENT before touching any dependency (safe on a nil *Server).
+func TestHandleFetchDisclosurePDFInvalidID(t *testing.T) {
+	var s *Server
+	for _, bad := range []any{"", "abc", "-1", "12.5", "99999999999999999999", 0, -5, 1.5, 3.14159} {
+		req := mcpgo.CallToolRequest{Params: mcpgo.CallToolParams{
+			Name:      "fetch_disclosure_pdf",
+			Arguments: map[string]any{"disclosure_id": bad},
+		}}
+		res, err := s.handleFetchDisclosurePDF(context.Background(), req)
+		if err != nil {
+			t.Fatalf("disclosure_id=%v: unexpected error: %v", bad, err)
+		}
+		if !res.IsError {
+			t.Fatalf("disclosure_id=%v: result must be an error", bad)
+		}
+		text, ok := res.Content[0].(mcpgo.TextContent)
+		if !ok {
+			t.Fatalf("disclosure_id=%v: content type = %T", bad, res.Content[0])
+		}
+		var got mcp.ErrorEnvelope
+		if err := json.Unmarshal([]byte(text.Text), &got); err != nil {
+			t.Fatalf("disclosure_id=%v: unmarshal envelope: %v", bad, err)
+		}
+		if got.Error.Code != mcp.ErrorCodeInvalidArgument {
+			t.Fatalf("disclosure_id=%v: code = %q, want INVALID_ARGUMENT", bad, got.Error.Code)
+		}
+	}
+}
+
 // TestDisclosureIDArg — the string form is the documented input; the numeric
 // form matches what get_market_anomalies emits in disclosure_ids.
 func TestDisclosureIDArg(t *testing.T) {

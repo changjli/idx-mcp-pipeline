@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/extract"
 )
 
 func TestFilterDisclosuresPayload_Marshal(t *testing.T) {
@@ -39,8 +40,8 @@ func TestDisclosureTextKey_DeterministicAndScoped(t *testing.T) {
 	ticker := "BBCA"
 	d := &entity.Disclosure{Ticker: &ticker, PdfURL: "https://www.idx.co.id/announcement/abc.pdf"}
 
-	k1 := disclosureTextKey(d)
-	k2 := disclosureTextKey(d)
+	k1 := extract.DisclosureTextKey(d)
+	k2 := extract.DisclosureTextKey(d)
 	if k1 != k2 {
 		t.Errorf("expected deterministic key, got %q vs %q", k1, k2)
 	}
@@ -54,7 +55,7 @@ func TestDisclosureTextKey_DeterministicAndScoped(t *testing.T) {
 
 func TestDisclosureTextKey_NoTicker(t *testing.T) {
 	d := &entity.Disclosure{PdfURL: "https://www.idx.co.id/announcement/abc.pdf"}
-	k := disclosureTextKey(d)
+	k := extract.DisclosureTextKey(d)
 	if !strings.HasPrefix(k, "disclosure_text/unknown/") {
 		t.Errorf("expected unknown ticker scope, got %q", k)
 	}

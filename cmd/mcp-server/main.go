@@ -216,6 +216,13 @@ func main() {
 	// read_idx_disclosure (ticket 12) reads extracted text from R2; a nil
 	// store (r2 not configured) serves metadata-only responses.
 	disclosureUC := usecase.NewDisclosureUseCase(db, log, validate, disclosureRepo, r2Store, rawFileRepo)
+	// fetch_disclosure_pdf (ticket 05) live-fetches + extracts one disclosure
+	// PDF on demand through the nodriver Fetcher seam, persisting under the
+	// same ADR-0004 contract the extract task uses.
+	fetchDisclosureUC := usecase.NewFetchDisclosureUseCase(
+		db, log, validate, disclosureRepo, rawFileRepo,
+		idxClient, r2Store, extract.PDFExtractor{},
+	)
 	brokerUC := usecase.NewBrokerUseCase(db, log, validate, brokerRepo, dailyPriceRepo)
 	newsUC := usecase.NewNewsUseCase(db, log, validate, newsRepo, newsTickerRepo)
 	pipelineUC := usecase.NewPipelineUseCase(db, log, validate, sourceStatusRepo, alertRepo)
@@ -260,6 +267,7 @@ func main() {
 		DB:                   db,
 		AnomalyUC:            anomalyUC,
 		DisclosureUC:         disclosureUC,
+		FetchDisclosureUC:    fetchDisclosureUC,
 		BrokerUC:             brokerUC,
 		NewsUC:               newsUC,
 		PipelineUC:           pipelineUC,
