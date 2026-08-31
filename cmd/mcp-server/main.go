@@ -224,6 +224,7 @@ func main() {
 		idxClient, r2Store, extract.PDFExtractor{},
 	)
 	brokerUC := usecase.NewBrokerUseCase(db, log, validate, brokerRepo, dailyPriceRepo)
+	dailyPriceUC := usecase.NewDailyPriceUseCase(db, log, validate, dailyPriceRepo)
 	newsUC := usecase.NewNewsUseCase(db, log, validate, newsRepo, newsTickerRepo)
 	pipelineUC := usecase.NewPipelineUseCase(db, log, validate, sourceStatusRepo, alertRepo)
 
@@ -272,6 +273,7 @@ func main() {
 		NewsUC:               newsUC,
 		PipelineUC:           pipelineUC,
 		BrokerStockSummaryUC: brokerStockSummaryUC,
+		DailyPriceUC:         dailyPriceUC,
 		SourceStatusRepo:     sourceStatusRepo,
 		TickerRepo:           tickerRepo,
 	})

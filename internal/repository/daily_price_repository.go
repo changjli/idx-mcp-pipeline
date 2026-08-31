@@ -108,6 +108,17 @@ func (r *DailyPriceRepository) TradingDaysInRange(db *sqlx.DB, ticker string, fr
 	return days, err
 }
 
+// FindByTickerAndDateRange returns the OHLCV rows for a ticker between two
+// dates (inclusive), ascending by trading day.
+func (r *DailyPriceRepository) FindByTickerAndDateRange(db *sqlx.DB, ticker string, from, to time.Time) ([]entity.DailyPrice, error) {
+	var prices []entity.DailyPrice
+	err := db.Select(&prices,
+		"SELECT * FROM daily_prices WHERE ticker = $1 AND trading_day BETWEEN $2 AND $3 ORDER BY trading_day",
+		ticker, from, to,
+	)
+	return prices, err
+}
+
 // DeleteOlderThan deletes daily_prices rows whose trading_day is older than
 // the retention window. Returns the number of rows deleted (0 on a re-run —
 // the delete is idempotent).

@@ -23,6 +23,7 @@ type Deps struct {
 	NewsUC               *usecase.NewsUseCase
 	PipelineUC           *usecase.PipelineUseCase
 	BrokerStockSummaryUC *usecase.BrokerStockSummaryUseCase
+	DailyPriceUC         *usecase.DailyPriceUseCase
 	SourceStatusRepo     *repository.SourceStatusRepository
 	TickerRepo           *repository.TickerRepository
 }
@@ -39,6 +40,7 @@ type Server struct {
 	newsUC               *usecase.NewsUseCase
 	pipelineUC           *usecase.PipelineUseCase
 	brokerStockSummaryUC *usecase.BrokerStockSummaryUseCase
+	dailyPriceUC         *usecase.DailyPriceUseCase
 	sourceStatusRepo     *repository.SourceStatusRepository
 	tickers              *TickerValidator
 }
@@ -54,6 +56,7 @@ func NewServer(deps Deps) *Server {
 		newsUC:               deps.NewsUC,
 		pipelineUC:           deps.PipelineUC,
 		brokerStockSummaryUC: deps.BrokerStockSummaryUC,
+		dailyPriceUC:         deps.DailyPriceUC,
 		sourceStatusRepo:     deps.SourceStatusRepo,
 		tickers:              NewTickerValidator(deps.DB, deps.TickerRepo, deps.Log),
 	}
@@ -72,5 +75,6 @@ func (s *Server) Handler() http.Handler {
 	srv.AddTool(toolGetPipelineStatus, s.handleGetPipelineStatus)
 	srv.AddTool(toolGetStockBrokerSummary, s.handleGetStockBrokerSummary)
 	srv.AddTool(toolGetStockBrokerSummaryHistory, s.handleGetStockBrokerSummaryHistory)
+	srv.AddTool(toolGetDailyPrices, s.handleGetDailyPrices)
 	return server.NewStreamableHTTPServer(srv)
 }

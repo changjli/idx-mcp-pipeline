@@ -328,3 +328,37 @@ func (s *Server) handleGetStockBrokerSummaryHistory(ctx context.Context, req mcp
 		StalenessMetadata:                 stalenessFor(s.db, s.sourceStatusRepo, sourceBrokerStockSummary, time.Now()),
 	}), nil
 }
+
+// dailyPricesResponse wraps the usecase data with staleness metadata.
+type dailyPricesResponse struct {
+	*usecase.DailyPricesData
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleGetDailyPrices(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	ticker, _ := req.GetArguments()["ticker"].(string)
+	fromStr, _ := req.GetArguments()["from"].(string)
+	toStr, _ := req.GetArguments()["to"].(string)
+
+	norm, ok := s.tickers.Normalize(ticker)
+	if !ok {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+	}
+	from, err := time.Parse("2006-01-02", fromStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid from date: "+fromStr, false)), nil
+	}
+	to, err := time.Parse("2006-01-02", toStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid to date: "+toStr, false)), nil
+	}
+
+	data, err := s.dailyPriceUC.GetDailyPrices(ctx, norm, from, to)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(dailyPricesResponse{
+		DailyPricesData:   data,
+		StalenessMetadata: stalenessFor(s.db, s.sourceStatusRepo, sourceIdxStockSummary, time.Now()),
+	}), nil
+}

@@ -6,7 +6,7 @@ import (
 
 // instructions is the server-level instructions string (draft from spec §11,
 // trimmed to the tools actually wired — read_idx_disclosure is ticket 12).
-const instructions = "IDX Market Analyzer co-pilot. Tools read a daily-persisted IDX pipeline (no live network fetch in V1, except get_stock_broker_summary and fetch_disclosure_pdf which fetch on demand). get_market_anomalies — volume/price anomalies for a trading day, each with disclosure_ids to follow into list_idx_disclosures or read_idx_disclosure. list_idx_disclosures — browse a ticker's filings (metadata only). read_idx_disclosure — one disclosure's metadata plus pre-extracted text (truncated to 64KB); check its status field (ok/pending/failed/evicted) before assuming text is present. fetch_disclosure_pdf — live-fetch + extract one disclosure's PDF on demand when read_idx_disclosure reports pending/failed/evicted or the text is missing; persists the text and returns it. get_ticker_news — RSS headlines tagged to a ticker. get_broker_summary — aggregate per-broker activity for a date. get_stock_broker_summary — per-stock top buyers/sellers for a ticker+day (fetches + persists). get_stock_broker_summary_history — stored per-stock broker history over a date range. get_pipeline_status — pipeline health / staleness. All outputs carry data_stale + last_good_date; if stale, note it to the user."
+const instructions = "IDX Market Analyzer co-pilot. Tools read a daily-persisted IDX pipeline (no live network fetch in V1, except get_stock_broker_summary and fetch_disclosure_pdf which fetch on demand). get_market_anomalies — volume/price anomalies for a trading day, each with disclosure_ids to follow into list_idx_disclosures or read_idx_disclosure. list_idx_disclosures — browse a ticker's filings (metadata only). read_idx_disclosure — one disclosure's metadata plus pre-extracted text (truncated to 64KB); check its status field (ok/pending/failed/evicted) before assuming text is present. fetch_disclosure_pdf — live-fetch + extract one disclosure's PDF on demand when read_idx_disclosure reports pending/failed/evicted or the text is missing; persists the text and returns it. get_ticker_news — RSS headlines tagged to a ticker. get_broker_summary — aggregate per-broker activity for a date. get_stock_broker_summary — per-stock top buyers/sellers for a ticker+day (fetches + persists). get_stock_broker_summary_history — stored per-stock broker history over a date range. get_daily_prices — stored Daily Price (OHLCV) series for a ticker over a date range. get_pipeline_status — pipeline health / staleness. All outputs carry data_stale + last_good_date; if stale, note it to the user."
 
 // readOnlyAnnotations marks a tool read-only: clients skip confirmation
 // prompts. Every tool declares readOnlyHint=true, destructiveHint=false,
@@ -87,6 +87,15 @@ var toolGetStockBrokerSummary = mcpgo.NewTool("get_stock_broker_summary",
 // toolGetStockBrokerSummaryHistory — stored per-stock broker history.
 var toolGetStockBrokerSummaryHistory = mcpgo.NewTool("get_stock_broker_summary_history",
 	mcpgo.WithDescription("Stored per-stock broker history over a date range, grouped by trading day. Pure DB read — no upstream call. Empty range returns an empty list."),
+	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. RAJA or RAJA.JK)."), mcpgo.Required()),
+	mcpgo.WithString("from", mcpgo.Description("Range start, YYYY-MM-DD."), mcpgo.Required()),
+	mcpgo.WithString("to", mcpgo.Description("Range end, YYYY-MM-DD."), mcpgo.Required()),
+	readOnlyAnnotations(),
+)
+
+// toolGetDailyPrices — stored OHLCV price history over a date range.
+var toolGetDailyPrices = mcpgo.NewTool("get_daily_prices",
+	mcpgo.WithDescription("Stored Daily Price (OHLCV) series for a ticker over a date range, ascending by trading day. Pure DB read — no upstream call. Empty range returns an empty list."),
 	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. RAJA or RAJA.JK)."), mcpgo.Required()),
 	mcpgo.WithString("from", mcpgo.Description("Range start, YYYY-MM-DD."), mcpgo.Required()),
 	mcpgo.WithString("to", mcpgo.Description("Range end, YYYY-MM-DD."), mcpgo.Required()),

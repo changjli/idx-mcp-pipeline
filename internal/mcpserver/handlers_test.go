@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/pkg/mcp"
 )
@@ -130,6 +131,51 @@ func TestHandleFetchDisclosurePDFInvalidID(t *testing.T) {
 		if got.Error.Code != mcp.ErrorCodeInvalidArgument {
 			t.Fatalf("disclosure_id=%v: code = %q, want INVALID_ARGUMENT", bad, got.Error.Code)
 		}
+	}
+}
+
+// TestHandleGetDailyPricesInvalidArgs covers the parse path, which returns
+// INVALID_TICKER / INVALID_ARGUMENT before touching the usecase. Uses a real
+// TickerValidator over the bundled list (no DB needed).
+func TestHandleGetDailyPricesInvalidArgs(t *testing.T) {
+	s := &Server{tickers: NewTickerValidator(nil, nil, logrus.New())}
+
+	cases := []struct {
+		name string
+		args map[string]any
+		want mcp.ErrorCode
+	}{
+		{"invalid ticker", map[string]any{"ticker": "NOPE", "from": "2026-01-01", "to": "2026-01-31"}, mcp.ErrorCodeInvalidTicker},
+		{"empty ticker", map[string]any{"ticker": "", "from": "2026-01-01", "to": "2026-01-31"}, mcp.ErrorCodeInvalidTicker},
+		{"invalid from", map[string]any{"ticker": "BBCA", "from": "abc", "to": "2026-01-31"}, mcp.ErrorCodeInvalidArgument},
+		{"invalid to", map[string]any{"ticker": "BBCA", "from": "2026-01-01", "to": "2026-13-40"}, mcp.ErrorCodeInvalidArgument},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := mcpgo.CallToolRequest{Params: mcpgo.CallToolParams{
+				Name:      "get_daily_prices",
+				Arguments: tc.args,
+			}}
+			res, err := s.handleGetDailyPrices(context.Background(), req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !res.IsError {
+				t.Fatal("result must be an error")
+			}
+			text, ok := res.Content[0].(mcpgo.TextContent)
+			if !ok {
+				t.Fatalf("content type = %T, want text", res.Content[0])
+			}
+			var got mcp.ErrorEnvelope
+			if err := json.Unmarshal([]byte(text.Text), &got); err != nil {
+				t.Fatalf("unmarshal envelope: %v", err)
+			}
+			if got.Error.Code != tc.want {
+				t.Fatalf("code = %q, want %q", got.Error.Code, tc.want)
+			}
+		})
 	}
 }
 
