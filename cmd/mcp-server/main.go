@@ -227,6 +227,9 @@ func main() {
 	dailyPriceUC := usecase.NewDailyPriceUseCase(db, log, validate, dailyPriceRepo)
 	newsUC := usecase.NewNewsUseCase(db, log, validate, newsRepo, newsTickerRepo)
 	pipelineUC := usecase.NewPipelineUseCase(db, log, validate, sourceStatusRepo, alertRepo)
+	// get_financials (issue 07): temporary live-fetch route over the shared
+	// IPOT client — nothing persisted (persisted pipeline is issue 07b).
+	financialsUC := usecase.NewFinancialsUseCase(db, log, ipotClient)
 
 	// ─── HTTP router ────────────────────────────────────────────
 
@@ -274,6 +277,7 @@ func main() {
 		PipelineUC:           pipelineUC,
 		BrokerStockSummaryUC: brokerStockSummaryUC,
 		DailyPriceUC:         dailyPriceUC,
+		FinancialsUC:         financialsUC,
 		SourceStatusRepo:     sourceStatusRepo,
 		TickerRepo:           tickerRepo,
 	})

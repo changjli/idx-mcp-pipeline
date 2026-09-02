@@ -362,3 +362,33 @@ func (s *Server) handleGetDailyPrices(ctx context.Context, req mcpgo.CallToolReq
 		StalenessMetadata: stalenessFor(s.db, s.sourceStatusRepo, sourceIdxStockSummary, time.Now()),
 	}), nil
 }
+
+// financialsResponse wraps the live financial statements with the staleness
+// envelope. The fetch is live, so data_stale is always false (omitted, per
+// the shared metadata convention); last_good_date is the newest statement
+// period end, not a pipeline timestamp.
+type financialsResponse struct {
+	*usecase.FinancialsResponse
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleGetFinancials(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	ticker, _ := req.GetArguments()["ticker"].(string)
+	period, _ := req.GetArguments()["period"].(string)
+
+	norm, ok := s.tickers.Normalize(ticker)
+	if !ok {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+	}
+
+	data, err := s.financialsUC.GetFinancials(ctx, norm, period)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(financialsResponse{
+		FinancialsResponse: data,
+		StalenessMetadata: mcp.StalenessMetadata{
+			LastGoodDate: data.LatestPeriodEnd,
+		},
+	}), nil
+}
