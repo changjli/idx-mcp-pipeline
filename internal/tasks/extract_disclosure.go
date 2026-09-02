@@ -2,12 +2,9 @@ package tasks
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -24,33 +21,15 @@ import (
 )
 
 const (
-	// extractMaxPDFBytes caps a disclosure PDF at 10MB — probed via a ranged
-	// GET before download and enforced again by the bounded read buffer.
-	extractMaxPDFBytes = 10 * 1024 * 1024
 	// extractMaxRetry disables asynq's retry clock for extract:disclosure: the
 	// self-managed extractRetryDelays ladder is the single owner of the retry
 	// policy (issue 06). Two clocks on one task risked a retry storm.
 	extractMaxRetry = 0
-	// extractTimeout caps text extraction per disclosure (30s). OCR (ticket
-	// 16) will need its own budget — scans are slower than text layers.
-	extractTimeout = 30 * time.Second
 	// extractConcurrency caps concurrent extract tasks (RAM: 3 x 10MB PDFs +
 	// overhead stays well under 512MB). asynq has no per-type concurrency, so
 	// the handler gates itself with a semaphore.
 	extractConcurrency = 3
-	// disclosureTextRetentionDays is the raw_files retention for extracted
-	// disclosure text (90 days; metadata survives eviction).
-	disclosureTextRetentionDays = 90
 )
-
-// pdfFetcher is the injected seam for disclosure PDF downloads. The caller
-// owns the returned response body and must close it — no buffering, no
-// caching. client.Client's GetStream satisfies it with the full Cloudflare
-// session (cookies, browser headers, pacing); a fake backed by httptest keeps
-// unit tests hermetic (no real upstream, per CLAUDE.md).
-type pdfFetcher interface {
-	GetStream(url string, extraHeaders map[string]string) (*http.Response, error)
-}
 
 // extractRetryDelays is the single retry budget for extract:disclosure
 // transient failures (network, timeout, 5xx). asynq retry is disabled
@@ -58,9 +37,6 @@ type pdfFetcher interface {
 // than asynq's default so a bad PDF or a Cloudflare block doesn't hammer
 // idx.co.id. Index = attempt number.
 var extractRetryDelays = []time.Duration{30 * time.Second, 2 * time.Minute}
-
-// errPDFTooLarge is returned when a download exceeds the size cap.
-var errPDFTooLarge = errors.New("pdf exceeds size cap")
 
 // ExtractDisclosurePayload is the payload for an extract:disclosure task.
 type ExtractDisclosurePayload struct {
@@ -91,7 +67,7 @@ func reenqueueExtractDisclosure(enq pipeline.Enqueuer, id int64, attempt int, de
 func NewExtractDisclosureHandler(
 	log *logrus.Logger,
 	enq pipeline.Enqueuer,
-	fetcher pdfFetcher,
+	fetcher extract.PDFFetcher,
 	r2Store storage.ObjectStore,
 	db *sqlx.DB,
 	disclosureRepo *repository.DisclosureRepository,
@@ -152,7 +128,7 @@ func NewExtractDisclosureHandler(
 type extractDisclosureRunner struct {
 	log            *logrus.Logger
 	taskID         string
-	fetcher        pdfFetcher
+	fetcher        extract.PDFFetcher
 	r2Store        storage.ObjectStore
 	db             *sqlx.DB
 	disclosureRepo *repository.DisclosureRepository
@@ -169,16 +145,16 @@ func (h *extractDisclosureRunner) run(ctx context.Context, d *entity.Disclosure,
 	// then bounded download. Fetch failures are retryable; too_large is
 	// permanent — a re-download won't shrink the PDF. Per-attempt download
 	// budget is the client's idx.timeout (default 30s).
-	data, err := fetchPDF(h.fetcher, d.PdfURL, extractMaxPDFBytes)
+	data, err := extract.FetchPDF(h.fetcher, d.PdfURL, extract.MaxPDFBytes)
 	if err != nil {
-		if errors.Is(err, errPDFTooLarge) {
+		if errors.Is(err, extract.ErrPDFTooLarge) {
 			return h.failPermanent(d.ID, "too_large", nil)
 		}
 		return h.retryOrGiveUp(d.ID, attempt, "download_failed", err)
 	}
 
 	// Extract text in-memory under a hard timeout.
-	ectx, cancel := context.WithTimeout(ctx, extractTimeout)
+	ectx, cancel := context.WithTimeout(ctx, extract.ExtractTimeout)
 	defer cancel()
 	text, err := h.extractor.Extract(ectx, data)
 	if err != nil {
@@ -189,27 +165,17 @@ func (h *extractDisclosureRunner) run(ctx context.Context, d *entity.Disclosure,
 		return h.failPermanent(d.ID, "empty_text", nil)
 	}
 
-	// Store extracted text on R2 (claim-checked via raw_files).
-	key := disclosureTextKey(d)
-	if err := h.r2Store.PutObject(ctx, key, []byte(text)); err != nil {
-		return h.retryOrGiveUp(d.ID, attempt, "r2_put_failed", err)
+	// Store extracted text on R2 (claim-checked via raw_files) and move the
+	// Extraction Status to ok — the shared ADR-0004 contract.
+	persister := &extract.DisclosureTextPersister{
+		Store:       h.r2Store,
+		RawFiles:    h.rawFileRepo,
+		Disclosures: h.disclosureRepo,
+		DB:          h.db,
 	}
-
-	size := int64(len(text))
-	sourceRef := d.PdfURL
-	rf := &entity.RawFile{
-		StorageKey:    key,
-		Kind:          "disclosure_text",
-		SourceRef:     &sourceRef,
-		SizeBytes:     &size,
-		RetentionDays: disclosureTextRetentionDays,
-	}
-	if err := h.rawFileRepo.Insert(h.db, rf); err != nil {
-		return h.retryOrGiveUp(d.ID, attempt, "raw_files_failed", err)
-	}
-
-	if err := h.disclosureRepo.UpdateExtractionStatus(h.db, d.ID, "ok", &key, nil); err != nil {
-		return h.retryOrGiveUp(d.ID, attempt, "status_update_failed", err)
+	key, err := persister.Persist(ctx, d, text)
+	if err != nil {
+		return h.retryOrGiveUp(d.ID, attempt, "persist_failed", err)
 	}
 	logEvent(h.log, logrus.InfoLevel, "extraction_success", "disclosure text extracted and stored",
 		logrus.Fields{
@@ -275,79 +241,4 @@ func disclosureTicker(d *entity.Disclosure) string {
 		return "unknown"
 	}
 	return *d.Ticker
-}
-
-// fetchPDF downloads a disclosure PDF through the session-aware fetcher,
-// bounded to maxBytes. The size probe is a ranged GET (Range: bytes=0-0) —
-// Cloudflare 403s a bare HEAD on the StaticData path — and the probe body is
-// closed unread. The total comes from Content-Range, or Content-Length when
-// the server ignores the range.
-func fetchPDF(f pdfFetcher, url string, maxBytes int64) ([]byte, error) {
-	probe, err := f.GetStream(url, map[string]string{"Range": "bytes=0-0"})
-	if err != nil {
-		return nil, fmt.Errorf("size probe: %w", err)
-	}
-	// Status before size: a 403 (Cloudflare block) must surface as a retryable
-	// fetch error, never as errPDFTooLarge — the CDN's 403 body could carry a
-	// Content-Length/Content-Range that only coincidentally exceeds the cap.
-	probe.Body.Close()
-	if probe.StatusCode >= 400 {
-		return nil, fmt.Errorf("size probe: http status %d", probe.StatusCode)
-	}
-	if probeSize(probe) > maxBytes {
-		return nil, errPDFTooLarge
-	}
-	return downloadBounded(f, url, maxBytes)
-}
-
-// probeSize extracts the full resource size from a ranged-GET response,
-// preferring Content-Range ("bytes 0-0/TOTAL") and falling back to
-// Content-Length. -1 means unknown.
-func probeSize(resp *http.Response) int64 {
-	if cr := resp.Header.Get("Content-Range"); cr != "" {
-		if _, after, ok := strings.Cut(cr, "/"); ok {
-			if total, err := strconv.ParseInt(strings.TrimSpace(after), 10, 64); err == nil {
-				return total
-			}
-		}
-	}
-	return resp.ContentLength
-}
-
-// downloadBounded fetches a URL through the session-aware fetcher into memory,
-// aborting once the body exceeds maxBytes. The Content-Length check is a fast
-// path; the LimitedReader is the enforcement for chunked/unknown-size responses.
-func downloadBounded(f pdfFetcher, url string, maxBytes int64) ([]byte, error) {
-	resp, err := f.GetStream(url, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("http status %d", resp.StatusCode)
-	}
-	if resp.ContentLength > maxBytes {
-		return nil, errPDFTooLarge
-	}
-	lr := &io.LimitedReader{R: resp.Body, N: maxBytes + 1}
-	data, err := io.ReadAll(lr)
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > maxBytes {
-		return nil, errPDFTooLarge
-	}
-	return data, nil
-}
-
-// disclosureTextKey builds the R2 key for extracted disclosure text, following
-// the rss_xml content-hash scheme: kind/ticker/sha256(pdf_url)[:16].txt. The
-// content-addressed key makes re-extraction idempotent.
-func disclosureTextKey(d *entity.Disclosure) string {
-	sum := sha256.Sum256([]byte(d.PdfURL))
-	ticker := "unknown"
-	if d.Ticker != nil {
-		ticker = *d.Ticker
-	}
-	return fmt.Sprintf("disclosure_text/%s/%x.txt", ticker, sum[:16])
 }

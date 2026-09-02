@@ -18,10 +18,13 @@ type Deps struct {
 	DB                   *sqlx.DB
 	AnomalyUC            *usecase.AnomalyUseCase
 	DisclosureUC         *usecase.DisclosureUseCase
+	FetchDisclosureUC    *usecase.FetchDisclosureUseCase
 	BrokerUC             *usecase.BrokerUseCase
 	NewsUC               *usecase.NewsUseCase
 	PipelineUC           *usecase.PipelineUseCase
 	BrokerStockSummaryUC *usecase.BrokerStockSummaryUseCase
+	DailyPriceUC         *usecase.DailyPriceUseCase
+	FinancialsUC         *usecase.FinancialsUseCase
 	SourceStatusRepo     *repository.SourceStatusRepository
 	TickerRepo           *repository.TickerRepository
 }
@@ -33,10 +36,13 @@ type Server struct {
 	db                   *sqlx.DB
 	anomalyUC            *usecase.AnomalyUseCase
 	disclosureUC         *usecase.DisclosureUseCase
+	fetchDisclosureUC    *usecase.FetchDisclosureUseCase
 	brokerUC             *usecase.BrokerUseCase
 	newsUC               *usecase.NewsUseCase
 	pipelineUC           *usecase.PipelineUseCase
 	brokerStockSummaryUC *usecase.BrokerStockSummaryUseCase
+	dailyPriceUC         *usecase.DailyPriceUseCase
+	financialsUC         *usecase.FinancialsUseCase
 	sourceStatusRepo     *repository.SourceStatusRepository
 	tickers              *TickerValidator
 }
@@ -47,10 +53,13 @@ func NewServer(deps Deps) *Server {
 		db:                   deps.DB,
 		anomalyUC:            deps.AnomalyUC,
 		disclosureUC:         deps.DisclosureUC,
+		fetchDisclosureUC:    deps.FetchDisclosureUC,
 		brokerUC:             deps.BrokerUC,
 		newsUC:               deps.NewsUC,
 		pipelineUC:           deps.PipelineUC,
 		brokerStockSummaryUC: deps.BrokerStockSummaryUC,
+		dailyPriceUC:         deps.DailyPriceUC,
+		financialsUC:         deps.FinancialsUC,
 		sourceStatusRepo:     deps.SourceStatusRepo,
 		tickers:              NewTickerValidator(deps.DB, deps.TickerRepo, deps.Log),
 	}
@@ -65,8 +74,11 @@ func (s *Server) Handler() http.Handler {
 	srv.AddTool(toolGetBrokerSummary, s.handleGetBrokerSummary)
 	srv.AddTool(toolListIdxDisclosures, s.handleListIdxDisclosures)
 	srv.AddTool(toolReadIdxDisclosure, s.handleReadIdxDisclosure)
+	srv.AddTool(toolFetchDisclosurePDF, s.handleFetchDisclosurePDF)
 	srv.AddTool(toolGetPipelineStatus, s.handleGetPipelineStatus)
 	srv.AddTool(toolGetStockBrokerSummary, s.handleGetStockBrokerSummary)
 	srv.AddTool(toolGetStockBrokerSummaryHistory, s.handleGetStockBrokerSummaryHistory)
+	srv.AddTool(toolGetDailyPrices, s.handleGetDailyPrices)
+	srv.AddTool(toolGetFinancials, s.handleGetFinancials)
 	return server.NewStreamableHTTPServer(srv)
 }

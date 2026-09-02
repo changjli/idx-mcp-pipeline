@@ -10,6 +10,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/extract"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/storage"
@@ -238,7 +239,7 @@ func (r *cleanupRunner) evictExpiredRawFiles(ctx context.Context) (int, error) {
 func (r *cleanupRunner) evictExpiredDisclosureText(ctx context.Context) (int, error) {
 	evicted := 0
 	for {
-		rows, err := r.disclosureRepo.FindEvictable(r.db, disclosureTextRetentionDays, cleanupBatchSize)
+		rows, err := r.disclosureRepo.FindEvictable(r.db, extract.DisclosureTextRetentionDays, cleanupBatchSize)
 		if err != nil {
 			return evicted, err
 		}

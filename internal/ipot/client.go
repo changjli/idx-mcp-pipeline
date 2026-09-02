@@ -73,6 +73,7 @@ type Client struct {
 	lastCall time.Time
 	cacheMu  sync.Mutex
 	cache    map[string]cacheEntry
+	finCache map[string]finCacheEntry
 }
 
 // NewClient creates an IPOT client with the given config.
@@ -100,6 +101,7 @@ func NewClient(cfg Config, log *logrus.Logger) *Client {
 		log:      log,
 		http:     &http.Client{Timeout: cfg.Timeout},
 		cache:    make(map[string]cacheEntry),
+		finCache: make(map[string]finCacheEntry),
 	}
 }
 

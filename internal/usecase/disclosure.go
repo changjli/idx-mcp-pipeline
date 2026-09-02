@@ -158,7 +158,7 @@ func (uc *DisclosureUseCase) ReadIdxDisclosure(ctx context.Context, id int64) (*
 		return resp, nil
 	}
 
-	data, evicted, err := uc.fetchText(ctx, *d.TextR2Key)
+	data, evicted, err := fetchDisclosureText(ctx, uc.DB, uc.RawFileRepo, uc.TextStore, *d.TextR2Key)
 	if err != nil {
 		return nil, err
 	}
@@ -171,15 +171,16 @@ func (uc *DisclosureUseCase) ReadIdxDisclosure(ctx context.Context, id int64) (*
 	return resp, nil
 }
 
-// fetchText reads a disclosure's extracted text, reporting eviction through
-// the bool return: either the claim-check row is marked deleted or the R2
-// object no longer exists. A missing raw_files row is fine — the row is only
-// required for eviction signaling, not for serving.
-func (uc *DisclosureUseCase) fetchText(ctx context.Context, key string) (data []byte, evicted bool, err error) {
+// fetchDisclosureText reads a disclosure's extracted text, reporting eviction
+// through the bool return: either the claim-check row is marked deleted or the
+// R2 object no longer exists. A missing raw_files row is fine — the row is only
+// required for eviction signaling, not for serving. Shared by the read and
+// live-fetch disclosure usecases.
+func fetchDisclosureText(ctx context.Context, db *sqlx.DB, rawFileRepo *repository.RawFileRepository, store DisclosureTextStore, key string) (data []byte, evicted bool, err error) {
 	// The claim-check row is optional — it only signals eviction. A nil repo
 	// (alternate wiring) skips the check and relies on the R2 404 path.
-	if uc.RawFileRepo != nil {
-		rf, rerr := uc.RawFileRepo.FindByStorageKey(uc.DB, key)
+	if rawFileRepo != nil {
+		rf, rerr := rawFileRepo.FindByStorageKey(db, key)
 		if rerr != nil && !errors.Is(rerr, sql.ErrNoRows) {
 			return nil, false, rerr
 		}
@@ -188,7 +189,7 @@ func (uc *DisclosureUseCase) fetchText(ctx context.Context, key string) (data []
 		}
 	}
 
-	data, err = uc.TextStore.GetObject(ctx, key)
+	data, err = store.GetObject(ctx, key)
 	if errors.Is(err, storage.ErrObjectNotFound) {
 		return nil, true, nil
 	}

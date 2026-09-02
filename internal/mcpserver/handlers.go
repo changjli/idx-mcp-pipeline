@@ -223,6 +223,28 @@ func (s *Server) handleReadIdxDisclosure(ctx context.Context, req mcpgo.CallTool
 	}), nil
 }
 
+// fetchDisclosurePDFResponse wraps the usecase data with staleness metadata.
+type fetchDisclosurePDFResponse struct {
+	*usecase.FetchDisclosurePDFData
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleFetchDisclosurePDF(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	id, ok := disclosureIDArg(req.GetArguments())
+	if !ok {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid disclosure_id", false)), nil
+	}
+
+	data, err := s.fetchDisclosureUC.FetchDisclosurePDF(ctx, id)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(fetchDisclosurePDFResponse{
+		FetchDisclosurePDFData: data,
+		StalenessMetadata:      stalenessFor(s.db, s.sourceStatusRepo, sourceIdxAnnouncements, time.Now()),
+	}), nil
+}
+
 // pipelineStatusResponse wraps the usecase data with overall staleness.
 type pipelineStatusResponse struct {
 	*usecase.PipelineStatusData
@@ -304,5 +326,69 @@ func (s *Server) handleGetStockBrokerSummaryHistory(ctx context.Context, req mcp
 	return textResult(stockBrokerSummaryHistoryResponse{
 		BrokerStockSummaryHistoryResponse: data,
 		StalenessMetadata:                 stalenessFor(s.db, s.sourceStatusRepo, sourceBrokerStockSummary, time.Now()),
+	}), nil
+}
+
+// dailyPricesResponse wraps the usecase data with staleness metadata.
+type dailyPricesResponse struct {
+	*usecase.DailyPricesData
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleGetDailyPrices(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	ticker, _ := req.GetArguments()["ticker"].(string)
+	fromStr, _ := req.GetArguments()["from"].(string)
+	toStr, _ := req.GetArguments()["to"].(string)
+
+	norm, ok := s.tickers.Normalize(ticker)
+	if !ok {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+	}
+	from, err := time.Parse("2006-01-02", fromStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid from date: "+fromStr, false)), nil
+	}
+	to, err := time.Parse("2006-01-02", toStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid to date: "+toStr, false)), nil
+	}
+
+	data, err := s.dailyPriceUC.GetDailyPrices(ctx, norm, from, to)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(dailyPricesResponse{
+		DailyPricesData:   data,
+		StalenessMetadata: stalenessFor(s.db, s.sourceStatusRepo, sourceIdxStockSummary, time.Now()),
+	}), nil
+}
+
+// financialsResponse wraps the live financial statements with the staleness
+// envelope. The fetch is live, so data_stale is always false (omitted, per
+// the shared metadata convention); last_good_date is the newest statement
+// period end, not a pipeline timestamp.
+type financialsResponse struct {
+	*usecase.FinancialsResponse
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleGetFinancials(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	ticker, _ := req.GetArguments()["ticker"].(string)
+	period, _ := req.GetArguments()["period"].(string)
+
+	norm, ok := s.tickers.Normalize(ticker)
+	if !ok {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+	}
+
+	data, err := s.financialsUC.GetFinancials(ctx, norm, period)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(financialsResponse{
+		FinancialsResponse: data,
+		StalenessMetadata: mcp.StalenessMetadata{
+			LastGoodDate: data.LatestPeriodEnd,
+		},
 	}), nil
 }

@@ -15,9 +15,11 @@ var allTools = []mcpgo.Tool{
 	toolGetBrokerSummary,
 	toolListIdxDisclosures,
 	toolReadIdxDisclosure,
+	toolFetchDisclosurePDF,
 	toolGetPipelineStatus,
 	toolGetStockBrokerSummary,
 	toolGetStockBrokerSummaryHistory,
+	toolGetDailyPrices,
 }
 
 func TestToolAnnotationsContract(t *testing.T) {
@@ -47,9 +49,11 @@ func TestToolRequiredArguments(t *testing.T) {
 		"get_broker_summary":               {},
 		"list_idx_disclosures":             {"ticker"},
 		"read_idx_disclosure":              {"disclosure_id"},
+		"fetch_disclosure_pdf":             {"disclosure_id"},
 		"get_pipeline_status":              {},
 		"get_stock_broker_summary":         {"ticker"},
 		"get_stock_broker_summary_history": {"ticker", "from", "to"},
+		"get_daily_prices":                 {"ticker", "from", "to"},
 	}
 
 	for _, tool := range allTools {
