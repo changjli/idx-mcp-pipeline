@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/hibiken/asynq"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
@@ -100,6 +101,12 @@ func (f *fakeObjectStore) DeleteObject(_ context.Context, key string) error {
 }
 
 func newFetchDisclosureTestUC(t *testing.T, db *sqlx.DB, fetcher extract.PDFFetcher, store storage.ObjectStore, extractor extract.Extractor) *FetchDisclosureUseCase {
+	return newFetchDisclosureTestUCWithEnqueuer(t, db, fetcher, store, extractor, nil)
+}
+
+// newFetchDisclosureTestUCWithEnqueuer builds the usecase with an explicit
+// enqueuer seam — nil selects the sync fallback (inline live path).
+func newFetchDisclosureTestUCWithEnqueuer(t *testing.T, db *sqlx.DB, fetcher extract.PDFFetcher, store storage.ObjectStore, extractor extract.Extractor, enqueuer ExtractDisclosureEnqueuer) *FetchDisclosureUseCase {
 	t.Helper()
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -107,8 +114,19 @@ func newFetchDisclosureTestUC(t *testing.T, db *sqlx.DB, fetcher extract.PDFFetc
 		db, log, validator.New(),
 		repository.NewDisclosureRepository(log),
 		repository.NewRawFileRepository(log),
-		fetcher, store, extractor,
+		fetcher, store, extractor, enqueuer,
 	)
+}
+
+// fakeExtractEnqueuer records enqueue calls and returns a fixed error.
+type fakeExtractEnqueuer struct {
+	err error
+	ids []int64
+}
+
+func (f *fakeExtractEnqueuer) EnqueueExtractDisclosure(id int64) error {
+	f.ids = append(f.ids, id)
+	return f.err
 }
 
 // seedDisclosure inserts a ticker + disclosure and returns the disclosure id.
@@ -377,5 +395,110 @@ func TestFetchDisclosurePDF_NotFound(t *testing.T) {
 
 	if _, err := uc.FetchDisclosurePDF(context.Background(), 999999999); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown id: err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestFetchDisclosurePDF_AsyncEnqueued verifies the async live path: with an
+// enqueuer wired, the tool enqueues extract:disclosure and returns the pending
+// envelope immediately — no upstream fetch, no persist, status stays pending
+// (the worker owns the transition to ok|failed).
+func TestFetchDisclosurePDF_AsyncEnqueued(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
+	t.Cleanup(func() { db.Close() }) // LIFO: runs after the data cleanup
+	pdfURL := "https://example.com/fdpg.pdf"
+	cleanupDisclosure(t, db, "FDPG", pdfURL)
+
+	store := &fakeObjectStore{objects: map[string][]byte{}}
+	fetcher := &fakePDFFetcher{}
+	enq := &fakeExtractEnqueuer{}
+	uc := newFetchDisclosureTestUCWithEnqueuer(t, db, fetcher, store, fakeExtractor{}, enq)
+
+	id := seedDisclosure(t, db, "FDPG", pdfURL, "pending")
+
+	resp, err := uc.FetchDisclosurePDF(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FetchDisclosurePDF: %v", err)
+	}
+	if resp.Status != "pending" || resp.Text != nil {
+		t.Fatalf("resp = %+v, want pending envelope with no text", resp)
+	}
+	if len(enq.ids) != 1 || enq.ids[0] != id {
+		t.Errorf("enqueued ids = %v, want [%d]", enq.ids, id)
+	}
+	if fetcher.calls != 0 {
+		t.Errorf("async path must not fetch upstream, got %d calls", fetcher.calls)
+	}
+	var status string
+	if err := db.Get(&status, "SELECT extraction_status FROM disclosures WHERE id = $1", id); err != nil {
+		t.Fatalf("fetch status: %v", err)
+	}
+	if status != "pending" {
+		t.Errorf("extraction_status = %q, want pending (worker owns the transition)", status)
+	}
+}
+
+// TestFetchDisclosurePDF_AsyncDedupe verifies a duplicate enqueue
+// (asynq.ErrTaskIDConflict) returns the same pending envelope — idempotent,
+// matching the daily filter's conflict-swallow precedent.
+func TestFetchDisclosurePDF_AsyncDedupe(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
+	t.Cleanup(func() { db.Close() }) // LIFO: runs after the data cleanup
+	pdfURL := "https://example.com/fdph.pdf"
+	cleanupDisclosure(t, db, "FDPH", pdfURL)
+
+	store := &fakeObjectStore{objects: map[string][]byte{}}
+	fetcher := &fakePDFFetcher{}
+	enq := &fakeExtractEnqueuer{err: asynq.ErrTaskIDConflict}
+	uc := newFetchDisclosureTestUCWithEnqueuer(t, db, fetcher, store, fakeExtractor{}, enq)
+
+	id := seedDisclosure(t, db, "FDPH", pdfURL, "pending")
+
+	resp, err := uc.FetchDisclosurePDF(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FetchDisclosurePDF: %v", err)
+	}
+	if resp.Status != "pending" || resp.Text != nil {
+		t.Fatalf("resp = %+v, want pending envelope", resp)
+	}
+	if len(enq.ids) != 1 {
+		t.Errorf("enqueued ids = %v, want 1 call", enq.ids)
+	}
+	if fetcher.calls != 0 {
+		t.Errorf("dedupe path must not fetch upstream, got %d calls", fetcher.calls)
+	}
+}
+
+// TestFetchDisclosurePDF_AsyncEnqueueError verifies an enqueue failure (Redis
+// down) is a Go error — the tool raises, not a failed envelope.
+func TestFetchDisclosurePDF_AsyncEnqueueError(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
+	t.Cleanup(func() { db.Close() }) // LIFO: runs after the data cleanup
+	pdfURL := "https://example.com/fdpi.pdf"
+	cleanupDisclosure(t, db, "FDPI", pdfURL)
+
+	store := &fakeObjectStore{objects: map[string][]byte{}}
+	fetcher := &fakePDFFetcher{}
+	enq := &fakeExtractEnqueuer{err: errors.New("redis down")}
+	uc := newFetchDisclosureTestUCWithEnqueuer(t, db, fetcher, store, fakeExtractor{}, enq)
+
+	id := seedDisclosure(t, db, "FDPI", pdfURL, "pending")
+
+	if _, err := uc.FetchDisclosurePDF(context.Background(), id); err == nil {
+		t.Fatal("expected Go error on enqueue failure")
+	}
+	if fetcher.calls != 0 {
+		t.Errorf("enqueue-error path must not fetch upstream, got %d calls", fetcher.calls)
 	}
 }

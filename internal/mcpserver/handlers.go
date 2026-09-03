@@ -201,6 +201,44 @@ func (s *Server) handleListIdxDisclosures(ctx context.Context, req mcpgo.CallToo
 	}), nil
 }
 
+// disclosureSearchResponse wraps the usecase data with staleness metadata.
+type disclosureSearchResponse struct {
+	*usecase.DisclosureSearchData
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleSearchDisclosures(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	args := req.GetArguments()
+	query, _ := args["query"].(string)
+	fromStr, _ := args["date_from"].(string)
+	toStr, _ := args["date_to"].(string)
+
+	var fromPtr, toPtr *time.Time
+	if fromStr != "" {
+		t, err := time.Parse("2006-01-02", fromStr)
+		if err != nil {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date_from: "+fromStr, false)), nil
+		}
+		fromPtr = &t
+	}
+	if toStr != "" {
+		t, err := time.Parse("2006-01-02", toStr)
+		if err != nil {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date_to: "+toStr, false)), nil
+		}
+		toPtr = &t
+	}
+
+	data, err := s.disclosureUC.SearchDisclosures(ctx, query, fromPtr, toPtr, argLimit(args))
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(disclosureSearchResponse{
+		DisclosureSearchData: data,
+		StalenessMetadata:    stalenessFor(s.db, s.sourceStatusRepo, sourceIdxAnnouncements, time.Now()),
+	}), nil
+}
+
 // disclosureReadResponse wraps the usecase data with staleness metadata.
 type disclosureReadResponse struct {
 	*usecase.ReadIdxDisclosureData

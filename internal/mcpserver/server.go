@@ -35,7 +35,7 @@ type Server struct {
 	log                  *logrus.Logger
 	db                   *sqlx.DB
 	anomalyUC            *usecase.AnomalyUseCase
-	disclosureUC         *usecase.DisclosureUseCase
+	disclosureUC         usecase.DisclosureReader
 	fetchDisclosureUC    *usecase.FetchDisclosureUseCase
 	brokerUC             *usecase.BrokerUseCase
 	newsUC               *usecase.NewsUseCase
@@ -73,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	srv.AddTool(toolGetTickerNews, s.handleGetTickerNews)
 	srv.AddTool(toolGetBrokerSummary, s.handleGetBrokerSummary)
 	srv.AddTool(toolListIdxDisclosures, s.handleListIdxDisclosures)
+	srv.AddTool(toolSearchDisclosures, s.handleSearchDisclosures)
 	srv.AddTool(toolReadIdxDisclosure, s.handleReadIdxDisclosure)
 	srv.AddTool(toolFetchDisclosurePDF, s.handleFetchDisclosurePDF)
 	srv.AddTool(toolGetPipelineStatus, s.handleGetPipelineStatus)

@@ -25,8 +25,8 @@ An IDX material announcement filing (PDF + metadata) for a ticker on a date. `di
 _Avoid_: filing, report, announcement (use Disclosure for the row; "announcement" for the IDX source item)
 
 **Extraction Status**:
-State of a Disclosure's pre-extracted PDF text: `pending` (not yet processed), `ok` (text on R2), `failed` (errored / exceeded caps), `evicted` (text R2 object past 90-day retention, metadata kept). A body status on a successful response, not an error.
-_Avoid_: parse state
+State of a Disclosure's pre-extracted PDF text: `pending` (extraction in flight — queued, running, or retrying; text not yet available; poll `read_idx_disclosure`), `ok` (text on R2), `failed` (errored / exceeded caps), `evicted` (text R2 object past 90-day retention, metadata kept). A body status on a successful response, not an error. `queued` is deliberately not a concept — it collapses into `pending`.
+_Avoid_: parse state, queued
 
 **Broker Summary**:
 Per-broker aggregate trading activity across all stocks for a date (V1). No ticker dimension and no buy/sell split in V1; per-symbol bandarmology is a fast-follow.

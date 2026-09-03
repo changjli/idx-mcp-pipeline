@@ -218,10 +218,13 @@ func main() {
 	disclosureUC := usecase.NewDisclosureUseCase(db, log, validate, disclosureRepo, r2Store, rawFileRepo)
 	// fetch_disclosure_pdf (ticket 05) live-fetches + extracts one disclosure
 	// PDF on demand through the nodriver Fetcher seam, persisting under the
-	// same ADR-0004 contract the extract task uses.
+	// same ADR-0004 contract the extract task uses. Async live path (issue 05b):
+	// the usecase enqueues extract:disclosure and returns a pending envelope;
+	// the in-process asynq server consumes it.
 	fetchDisclosureUC := usecase.NewFetchDisclosureUseCase(
 		db, log, validate, disclosureRepo, rawFileRepo,
 		idxClient, r2Store, extract.PDFExtractor{},
+		tasks.NewExtractDisclosureEnqueuer(asynqClient),
 	)
 	brokerUC := usecase.NewBrokerUseCase(db, log, validate, brokerRepo, dailyPriceRepo)
 	dailyPriceUC := usecase.NewDailyPriceUseCase(db, log, validate, dailyPriceRepo)

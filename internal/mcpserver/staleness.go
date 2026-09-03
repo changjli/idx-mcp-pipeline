@@ -16,6 +16,11 @@ import (
 // also report stale — the tool still returns its data, just flagged, rather
 // than failing the whole call.
 func stalenessFor(db *sqlx.DB, repo *repository.SourceStatusRepository, source string, now time.Time) mcp.StalenessMetadata {
+	if db == nil || repo == nil {
+		// Test wiring or an unconfigured source: report stale rather than
+		// panic on a nil DB.
+		return mcp.StalenessMetadata{DataStale: true}
+	}
 	status, err := repo.FindBySource(db, source)
 	if err != nil || status.LastSuccessAt == nil {
 		return mcp.StalenessMetadata{DataStale: true}

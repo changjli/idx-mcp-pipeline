@@ -81,6 +81,29 @@ func (r *DisclosureRepository) FindByTickerWithDate(db *sqlx.DB, ticker string, 
 	return rows, err
 }
 
+// SearchByKeyword returns disclosures across tickers whose title or categories
+// contain the keyword (case-insensitive substring), within an optional
+// announcement-date range, newest first. from/to are inclusive; nil means
+// unbounded. limit caps the result. No passed_filter gate — the filter
+// whitelist is narrow, so title matching is how the AI discovers disclosures
+// that were never categorized; the response carries passed_filter so the
+// caller can see the filter status.
+func (r *DisclosureRepository) SearchByKeyword(db *sqlx.DB, keyword string, from, to *time.Time, limit int) ([]entity.Disclosure, error) {
+	var rows []entity.Disclosure
+	err := db.Select(&rows, `
+		SELECT * FROM disclosures
+		WHERE (title ILIKE '%' || $1 || '%'
+		   OR EXISTS (
+			SELECT 1 FROM unnest(categories) AS c WHERE c ILIKE '%' || $1 || '%'
+		   ))
+		  AND ($2::date IS NULL OR announcement_date >= $2::date)
+		  AND ($3::date IS NULL OR announcement_date <= $3::date)
+		ORDER BY announcement_date DESC, id DESC
+		LIMIT $4
+	`, keyword, from, to, limit)
+	return rows, err
+}
+
 // FindPendingForFilter returns the disclosures the filter task (ticket 11)
 // should process on the given run date:
 //   - never-filtered rows (passed_filter IS NULL, any date — catch-up for
