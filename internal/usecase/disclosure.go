@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -21,6 +22,14 @@ import (
 // needed — writing lives in the extract task.
 type DisclosureTextStore interface {
 	GetObject(ctx context.Context, key string) ([]byte, error)
+}
+
+// DisclosureReader is the disclosure read surface the MCP server depends on.
+// *DisclosureUseCase satisfies it; handler tests use a fake.
+type DisclosureReader interface {
+	ListIdxDisclosures(ctx context.Context, ticker string, date *string, limit int) (*DisclosureListData, error)
+	ReadIdxDisclosure(ctx context.Context, id int64) (*ReadIdxDisclosureData, error)
+	SearchDisclosures(ctx context.Context, category string, from, to *time.Time, limit int) (*DisclosureSearchData, error)
 }
 
 // maxDisclosureTextBytes bounds read_idx_disclosure's text payload to 64KB so
@@ -89,6 +98,62 @@ func (uc *DisclosureUseCase) ListIdxDisclosures(ctx context.Context, ticker stri
 	for _, r := range rows {
 		resp.Disclosures = append(resp.Disclosures, DisclosureListItem{
 			DisclosureID:     r.ID,
+			Title:            r.Title,
+			Date:             r.AnnouncementDate.Format("2006-01-02"),
+			Categories:       []string(r.Categories),
+			PassedFilter:     r.PassedFilter,
+			ExtractionStatus: r.ExtractionStatus,
+		})
+	}
+	return resp, nil
+}
+
+// DisclosureSearchItem is one disclosure row in a search_disclosures response.
+// Cross-ticker, so each row carries its own ticker.
+type DisclosureSearchItem struct {
+	DisclosureID     int64    `json:"disclosure_id"`
+	Ticker           string   `json:"ticker"`
+	Title            string   `json:"title"`
+	Date             string   `json:"date"`
+	Categories       []string `json:"categories"`
+	PassedFilter     *bool    `json:"passed_filter"`
+	ExtractionStatus string   `json:"extraction_status"`
+}
+
+// DisclosureSearchData is the data payload of a search_disclosures response.
+type DisclosureSearchData struct {
+	Query       string                 `json:"query"`
+	Disclosures []DisclosureSearchItem `json:"disclosures"`
+}
+
+// SearchDisclosures returns disclosures across tickers whose title or
+// categories match the keyword (case-insensitive substring), within an
+// optional announcement date range, newest first. from/to are inclusive; nil
+// means unbounded. limit caps the result. No passed_filter gate — the filter
+// whitelist is narrow, so title matching is how the AI discovers disclosures
+// that were never categorized. No extracted text is returned — metadata only.
+func (uc *DisclosureUseCase) SearchDisclosures(ctx context.Context, query string, from, to *time.Time, limit int) (*DisclosureSearchData, error) {
+	if strings.TrimSpace(query) == "" {
+		return nil, ErrInvalidArgument
+	}
+	if from != nil && to != nil && from.After(*to) {
+		return nil, ErrInvalidRange
+	}
+
+	rows, err := uc.DisclosureRepo.SearchByKeyword(uc.DB, query, from, to, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search disclosures: %w", err)
+	}
+
+	resp := &DisclosureSearchData{Query: query, Disclosures: []DisclosureSearchItem{}}
+	for _, r := range rows {
+		ticker := ""
+		if r.Ticker != nil {
+			ticker = *r.Ticker
+		}
+		resp.Disclosures = append(resp.Disclosures, DisclosureSearchItem{
+			DisclosureID:     r.ID,
+			Ticker:           ticker,
 			Title:            r.Title,
 			Date:             r.AnnouncementDate.Format("2006-01-02"),
 			Categories:       []string(r.Categories),

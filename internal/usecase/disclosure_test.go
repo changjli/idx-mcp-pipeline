@@ -6,11 +6,13 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/go-playground/validator/v10"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
@@ -265,5 +267,112 @@ func TestReadIdxDisclosure_StoreError(t *testing.T) {
 
 	if _, err := uc.ReadIdxDisclosure(context.Background(), id); err == nil {
 		t.Fatal("store error swallowed, want error")
+	}
+}
+
+// TestSearchDisclosures_Validation covers the input checks that return before
+// touching the DB — safe on a bare usecase with no repository.
+func TestSearchDisclosures_Validation(t *testing.T) {
+	uc := &DisclosureUseCase{}
+	if _, err := uc.SearchDisclosures(context.Background(), "  ", nil, nil, 20); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("empty query: err = %v, want ErrInvalidArgument", err)
+	}
+	from := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := uc.SearchDisclosures(context.Background(), "Dividen", &from, &to, 20); !errors.Is(err, ErrInvalidRange) {
+		t.Fatalf("backwards range: err = %v, want ErrInvalidRange", err)
+	}
+}
+
+// TestSearchDisclosures_DBVerify returns the expected disclosures for a known
+// keyword + range: case-insensitive match over title OR categories, newest
+// first, date bounds inclusive, and unfiltered — rejected rows (NULL
+// categories) are discoverable by title.
+func TestSearchDisclosures_DBVerify(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
+	uc := newDisclosureTestUC(t, db, nil)
+
+	db.MustExec("DELETE FROM disclosures WHERE ticker = 'SRCH'")
+	db.MustExec("DELETE FROM tickers WHERE code = 'SRCH'")
+	t.Cleanup(func() {
+		db.MustExec("DELETE FROM disclosures WHERE ticker = 'SRCH'")
+		db.MustExec("DELETE FROM tickers WHERE code = 'SRCH'")
+	})
+	db.MustExec("INSERT INTO tickers (code, name, active) VALUES ('SRCH', 'Search Test Tbk.', true)")
+
+	insert := func(date, title, url string, passed bool, cats []string) {
+		var catsArg any
+		if cats != nil {
+			catsArg = pq.StringArray(cats)
+		}
+		db.MustExec(`INSERT INTO disclosures (ticker, announcement_date, title, pdf_url, passed_filter, categories)
+			VALUES ('SRCH', $1, $2, $3, $4, $5)`, date, title, url, passed, catsArg)
+	}
+	insert("2026-08-12", "Dividen Final", "https://example.com/srch-final.pdf", true, []string{"Dividen"})
+	insert("2026-08-10", "Pembagian Dividen Interim", "https://example.com/srch-interim.pdf", true, []string{"Dividen"})
+	insert("2026-08-05", "Pemanggilan RUPS Tahunan", "https://example.com/srch-rups.pdf", true, []string{"Pemanggilan RUPS"})
+	insert("2026-07-20", "Laporan Keuangan", "https://example.com/srch-lk.pdf", false, nil)
+
+	// Case-insensitive keyword match over title + categories, newest first.
+	resp, err := uc.SearchDisclosures(context.Background(), "dividen", nil, nil, 20)
+	if err != nil {
+		t.Fatalf("SearchDisclosures(dividen): %v", err)
+	}
+	if len(resp.Disclosures) != 2 {
+		t.Fatalf("dividen: disclosures = %d, want 2", len(resp.Disclosures))
+	}
+	if resp.Disclosures[0].Title != "Dividen Final" || resp.Disclosures[1].Title != "Pembagian Dividen Interim" {
+		t.Fatalf("dividen: order = %q, %q; want newest first", resp.Disclosures[0].Title, resp.Disclosures[1].Title)
+	}
+	if resp.Disclosures[0].Ticker != "SRCH" {
+		t.Fatalf("dividen: ticker = %q, want SRCH", resp.Disclosures[0].Ticker)
+	}
+	if resp.Query != "dividen" {
+		t.Fatalf("query echo = %q, want the input keyword", resp.Query)
+	}
+
+	// Inclusive date_from narrows the result.
+	from := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
+	resp, err = uc.SearchDisclosures(context.Background(), "dividen", &from, nil, 20)
+	if err != nil {
+		t.Fatalf("SearchDisclosures(dividen, from): %v", err)
+	}
+	if len(resp.Disclosures) != 1 || resp.Disclosures[0].Title != "Dividen Final" {
+		t.Fatalf("dividen from 08-11: got %d rows, want 1 (Dividen Final)", len(resp.Disclosures))
+	}
+
+	// Substring keyword matches the RUPS title.
+	resp, err = uc.SearchDisclosures(context.Background(), "rups", nil, nil, 20)
+	if err != nil {
+		t.Fatalf("SearchDisclosures(rups): %v", err)
+	}
+	if len(resp.Disclosures) != 1 || resp.Disclosures[0].Title != "Pemanggilan RUPS Tahunan" {
+		t.Fatalf("rups: got %d rows, want 1", len(resp.Disclosures))
+	}
+
+	// Unfiltered: a rejected row (NULL categories) is discoverable by title —
+	// the whole point of title search when the filter whitelist is narrow.
+	resp, err = uc.SearchDisclosures(context.Background(), "laporan", nil, nil, 20)
+	if err != nil {
+		t.Fatalf("SearchDisclosures(laporan): %v", err)
+	}
+	if len(resp.Disclosures) != 1 || resp.Disclosures[0].Title != "Laporan Keuangan" {
+		t.Fatalf("laporan: got %d rows, want 1 (Laporan Keuangan by title)", len(resp.Disclosures))
+	}
+	if resp.Disclosures[0].PassedFilter == nil || *resp.Disclosures[0].PassedFilter {
+		t.Fatalf("laporan: passed_filter = %v, want false (rejected row still discoverable)", resp.Disclosures[0].PassedFilter)
+	}
+
+	// Unknown keyword → empty.
+	resp, err = uc.SearchDisclosures(context.Background(), "nonexistent", nil, nil, 20)
+	if err != nil {
+		t.Fatalf("SearchDisclosures(nonexistent): %v", err)
+	}
+	if len(resp.Disclosures) != 0 {
+		t.Fatalf("nonexistent: got %d rows, want 0", len(resp.Disclosures))
 	}
 }

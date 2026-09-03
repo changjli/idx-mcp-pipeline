@@ -14,6 +14,7 @@ var allTools = []mcpgo.Tool{
 	toolGetTickerNews,
 	toolGetBrokerSummary,
 	toolListIdxDisclosures,
+	toolSearchDisclosures,
 	toolReadIdxDisclosure,
 	toolFetchDisclosurePDF,
 	toolGetPipelineStatus,
@@ -48,6 +49,7 @@ func TestToolRequiredArguments(t *testing.T) {
 		"get_ticker_news":                  {"ticker"},
 		"get_broker_summary":               {},
 		"list_idx_disclosures":             {"ticker"},
+		"search_disclosures":               {"query"},
 		"read_idx_disclosure":              {"disclosure_id"},
 		"fetch_disclosure_pdf":             {"disclosure_id"},
 		"get_pipeline_status":              {},
@@ -73,7 +75,7 @@ func TestToolRequiredArguments(t *testing.T) {
 }
 
 func TestToolLimitDefaults(t *testing.T) {
-	for _, name := range []string{"get_ticker_news", "list_idx_disclosures"} {
+	for _, name := range []string{"get_ticker_news", "list_idx_disclosures", "search_disclosures"} {
 		tool := toolByName(t, name)
 		prop, ok := tool.InputSchema.Properties["limit"]
 		if !ok {
