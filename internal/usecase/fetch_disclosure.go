@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/hibiken/asynq"
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
@@ -17,12 +18,24 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/storage"
 )
 
+// ExtractDisclosureEnqueuer is the async live-path seam: enqueue an
+// extract:disclosure task for one disclosure. Implemented by the asynq wiring
+// in cmd/mcp-server (adapter over tasks.EnqueueExtractDisclosure). A nil
+// Enqueuer selects the sync fallback — the inline fetch+extract+persist path
+// (local dev, tests).
+type ExtractDisclosureEnqueuer interface {
+	EnqueueExtractDisclosure(id int64) error
+}
+
 // FetchDisclosureUseCase fetches and extracts a single Disclosure's PDF on
 // demand, persisting the text under the ADR-0004 Raw File / Extraction Status
 // contract and returning it. It is the live counterpart to the read-only
 // DisclosureUseCase: where read_idx_disclosure serves pre-extracted text,
 // fetch_disclosure_pdf covers the pending/failed/evicted cases the daily
-// extract never produced text for (e.g. disclosure 27883).
+// extract never produced text for (e.g. disclosure 27883). The live path is
+// async (issue 05b): it enqueues the extract:disclosure task and returns a
+// pending envelope; the worker owns the fetch/extract/persist and the client
+// polls read_idx_disclosure.
 type FetchDisclosureUseCase struct {
 	DB             *sqlx.DB
 	Log            *logrus.Logger
@@ -32,6 +45,7 @@ type FetchDisclosureUseCase struct {
 	Fetcher        extract.PDFFetcher
 	Store          storage.ObjectStore
 	Extractor      extract.Extractor
+	Enqueuer       ExtractDisclosureEnqueuer
 }
 
 func NewFetchDisclosureUseCase(
@@ -43,6 +57,7 @@ func NewFetchDisclosureUseCase(
 	fetcher extract.PDFFetcher,
 	store storage.ObjectStore,
 	extractor extract.Extractor,
+	enqueuer ExtractDisclosureEnqueuer,
 ) *FetchDisclosureUseCase {
 	return &FetchDisclosureUseCase{
 		DB:             db,
@@ -53,6 +68,7 @@ func NewFetchDisclosureUseCase(
 		Fetcher:        fetcher,
 		Store:          store,
 		Extractor:      extractor,
+		Enqueuer:       enqueuer,
 	}
 }
 
@@ -111,8 +127,30 @@ func (uc *FetchDisclosureUseCase) FetchDisclosurePDF(ctx context.Context, id int
 		return nil, fmt.Errorf("r2 not configured")
 	}
 
-	// Live path: session-aware fetch (ranged-GET size probe, then bounded
-	// download), extract in-memory under a hard timeout, persist.
+	// Async live path (issue 05b): enqueue the extract:disclosure task and
+	// return the pending envelope immediately — the worker owns the
+	// fetch/extract/persist and the client polls read_idx_disclosure. The sync
+	// fallback (nil Enqueuer) keeps the inline path for local dev and tests.
+	if uc.Enqueuer != nil {
+		if err := uc.Enqueuer.EnqueueExtractDisclosure(d.ID); err != nil {
+			if errors.Is(err, asynq.ErrTaskIDConflict) {
+				// Already queued/running for this id — same pending envelope,
+				// idempotent (the daily filter swallows the same conflict).
+				return pendingEnvelope(d), nil
+			}
+			return nil, fmt.Errorf("enqueue extract:disclosure: %w", err)
+		}
+		return pendingEnvelope(d), nil
+	}
+	return uc.fetchInline(ctx, d)
+}
+
+// fetchInline is the sync fallback live path: session-aware fetch (ranged-GET
+// size probe, then bounded download), extract in-memory under a hard timeout,
+// persist under the ADR-0004 contract. Runs when no Enqueuer is wired (local
+// dev, tests); the async path delegates the same work to the extract:disclosure
+// worker.
+func (uc *FetchDisclosureUseCase) fetchInline(ctx context.Context, d *entity.Disclosure) (*FetchDisclosurePDFData, error) {
 	data, err := extract.FetchPDF(uc.Fetcher, d.PdfURL, extract.MaxPDFBytes)
 	if err != nil {
 		if errors.Is(err, extract.ErrPDFTooLarge) {
@@ -151,6 +189,18 @@ func (uc *FetchDisclosureUseCase) FetchDisclosurePDF(ctx context.Context, id int
 		Text:   &truncated,
 		Status: "ok",
 	}, nil
+}
+
+// pendingEnvelope is the async live-path response: no text yet, the worker
+// owns the transition to ok|failed. The client polls read_idx_disclosure.
+func pendingEnvelope(d *entity.Disclosure) *FetchDisclosurePDFData {
+	return &FetchDisclosurePDFData{
+		Ticker: d.Ticker,
+		Title:  d.Title,
+		Date:   d.AnnouncementDate.Format("2006-01-02"),
+		PdfURL: d.PdfURL,
+		Status: "pending",
+	}
 }
 
 // fail marks the disclosure failed and returns the failed envelope — a success

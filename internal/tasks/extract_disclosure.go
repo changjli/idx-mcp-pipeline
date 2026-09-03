@@ -18,6 +18,7 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/storage"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/usecase"
 )
 
 const (
@@ -49,6 +50,23 @@ type ExtractDisclosurePayload struct {
 // ErrTaskIDConflict if already enqueued. Chained from filter:disclosures.
 func EnqueueExtractDisclosure(enq pipeline.Enqueuer, id int64) (*asynq.TaskInfo, error) {
 	return Graph.Node(TypeExtractDisclosure).Enqueue(enq, time.Time{}, []string{"id=" + strconv.FormatInt(id, 10)})
+}
+
+// extractDisclosureEnqueuer adapts EnqueueExtractDisclosure to the usecase's
+// async seam (issue 05b): enqueue an extract:disclosure task for one
+// disclosure id. The per-disclosure TaskID dedup surfaces as
+// asynq.ErrTaskIDConflict, which the usecase maps to the pending envelope.
+type extractDisclosureEnqueuer struct{ enq pipeline.Enqueuer }
+
+func (e extractDisclosureEnqueuer) EnqueueExtractDisclosure(id int64) error {
+	_, err := EnqueueExtractDisclosure(e.enq, id)
+	return err
+}
+
+// NewExtractDisclosureEnqueuer returns the usecase's async enqueue seam over
+// the given pipeline.Enqueuer (the asynq client in production).
+func NewExtractDisclosureEnqueuer(enq pipeline.Enqueuer) usecase.ExtractDisclosureEnqueuer {
+	return extractDisclosureEnqueuer{enq: enq}
 }
 
 // reenqueueExtractDisclosure re-enqueues an extract:disclosure task with a
