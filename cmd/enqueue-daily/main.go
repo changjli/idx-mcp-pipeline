@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,9 +15,11 @@ import (
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/config"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/tasks"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/usecase"
 )
 
 // argList collects repeatable --arg key=value flags.
@@ -55,8 +58,10 @@ func main() {
 			runBulkAnnouncements(vip, log, *startDateStr, *endDateStr)
 		case "stock-summary":
 			runBulkBackfill(vip, log, *startDateStr, *endDateStr)
+		case "broker-summary":
+			runBulkBrokerSummary(vip, log, *startDateStr, *endDateStr, args)
 		default:
-			log.Fatalf("--task %s has no bulk mode; bulk backfill supports stock-summary and announcements", *taskName)
+			log.Fatalf("--task %s has no bulk mode; bulk backfill supports stock-summary, announcements, and broker-summary", *taskName)
 		}
 		return
 	}
@@ -186,4 +191,72 @@ func runBulkAnnouncements(vip *viper.Viper, log *logrus.Logger, startStr, endStr
 	if result.Total > 0 && result.Failed == result.Total {
 		os.Exit(1)
 	}
+}
+
+// runBulkBrokerSummary backfills per-stock broker summaries for one ticker over
+// a date range, calling the shared GetStockBrokerSummaryRange usecase directly
+// (the same core the MCP tool and the async task use). Synchronous loop, manual
+// invocation, one-off script — mirrors runBulkBackfill. Requires
+// --arg ticker=<code>; only trading days (daily_prices presence) are fetched.
+func runBulkBrokerSummary(vip *viper.Viper, log *logrus.Logger, startStr, endStr string, args argList) {
+	start, err := time.Parse("2006-01-02", startStr)
+	if err != nil {
+		log.Fatalf("invalid --start-date format: %s (use YYYY-MM-DD)", startStr)
+	}
+	end, err := time.Parse("2006-01-02", endStr)
+	if err != nil {
+		log.Fatalf("invalid --end-date format: %s (use YYYY-MM-DD)", endStr)
+	}
+	if start.After(end) {
+		log.Fatalf("--start-date (%s) must be on or before --end-date (%s)", startStr, endStr)
+	}
+	ticker := argValue(args, "ticker")
+	if ticker == "" {
+		log.Fatalf("--task broker-summary requires --arg ticker=<code>")
+	}
+
+	db := config.NewDatabase(vip, log)
+	defer db.Close()
+
+	ipotClient := ipot.NewClient(ipot.DefaultConfig(), log)
+	brokerStockSummaryUC := usecase.NewBrokerStockSummaryUseCase(
+		db, log, config.NewValidator(), ipotClient,
+		repository.NewBrokerStockSummaryRepository(log),
+		repository.NewDailyPriceRepository(log),
+	)
+
+	log.Infof("bulk broker-summary: backfilling %s %s to %s", ticker, startStr, endStr)
+	resp, err := brokerStockSummaryUC.GetStockBrokerSummaryRange(context.Background(), ticker, start, end)
+	if err != nil {
+		log.Fatalf("bulk broker-summary: %v", err)
+	}
+	log.Infof("bulk broker-summary complete: %s %s..%s fetched=%d failed=%d empty=%d",
+		resp.Ticker, resp.Start, resp.End, resp.Fetched, resp.Failed, resp.Empty)
+
+	// Record source_status so the read tools' staleness metadata reflects the
+	// backfill; last good date = the most recent day that produced data.
+	if resp.Fetched > 0 {
+		recorder := pipeline.NewSourceStatusRecorder(
+			pipeline.NewSQLSourceStatusStore(repository.NewSourceStatusRepository(log), db), nil, log,
+		)
+		last, _ := time.Parse("2006-01-02", resp.Days[len(resp.Days)-1].TradingDay)
+		recorder.Success(tasks.TypeBrokerStockSummary, tasks.BrokerStockSummaryMaxAgeSeconds, &last)
+	}
+
+	// A run where every trading day failed is indistinguishable from a no-op in
+	// automation — exit non-zero so callers can detect total failure.
+	if resp.Failed > 0 && resp.Fetched == 0 {
+		os.Exit(1)
+	}
+}
+
+// argValue returns the value of an --arg key=value entry, or "" if absent.
+func argValue(args argList, key string) string {
+	prefix := key + "="
+	for _, a := range args {
+		if strings.HasPrefix(a, prefix) {
+			return strings.TrimPrefix(a, prefix)
+		}
+	}
+	return ""
 }

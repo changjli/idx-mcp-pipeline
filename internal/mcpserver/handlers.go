@@ -367,6 +367,34 @@ func (s *Server) handleGetStockBrokerSummaryHistory(ctx context.Context, req mcp
 	}), nil
 }
 
+// handleBackfillStockBrokerSummary validates the range and enqueues the async
+// backfill task (issue 12). The response is the pending envelope — the worker
+// owns the fetch+persist loop, the client polls get_stock_broker_summary_history.
+func (s *Server) handleBackfillStockBrokerSummary(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	ticker, _ := req.GetArguments()["ticker"].(string)
+	fromStr, _ := req.GetArguments()["from"].(string)
+	toStr, _ := req.GetArguments()["to"].(string)
+
+	norm, ok := s.tickers.Normalize(ticker)
+	if !ok {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+	}
+	from, err := time.Parse("2006-01-02", fromStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid from date: "+fromStr, false)), nil
+	}
+	to, err := time.Parse("2006-01-02", toStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid to date: "+toStr, false)), nil
+	}
+
+	data, err := s.brokerSummaryBackfillUC.BackfillStockBrokerSummary(ctx, norm, from, to)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(data), nil
+}
+
 // brokerNetFlowResponse wraps the usecase data with staleness metadata.
 type brokerNetFlowResponse struct {
 	*usecase.BrokerNetFlowResponse

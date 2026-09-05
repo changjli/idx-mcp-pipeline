@@ -14,9 +14,12 @@ const (
 	TypeDetectAnomalies    = "detect:anomalies"
 	TypeRSS                = "rss:ingest"
 	TypeBrokerStockSummary = "idx:broker_stock_summary"
-	TypeFilterDisclosures  = "filter:disclosures"
-	TypeExtractDisclosure  = "extract:disclosure"
-	TypeCleanup            = "cleanup"
+	// TypeBrokerStockSummaryRange is the on-demand range backfill task (issue
+	// 12): one ticker over a date range, enqueued by the MCP backfill tool.
+	TypeBrokerStockSummaryRange = "idx:broker_stock_summary_range"
+	TypeFilterDisclosures       = "filter:disclosures"
+	TypeExtractDisclosure       = "extract:disclosure"
+	TypeCleanup                 = "cleanup"
 )
 
 // TaskKey returns a dedup key for a task type and date.

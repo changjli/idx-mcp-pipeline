@@ -6,7 +6,7 @@ import (
 
 // instructions is the server-level instructions string (draft from spec §11,
 // trimmed to the tools actually wired — read_idx_disclosure is ticket 12).
-const instructions = "IDX Market Analyzer co-pilot. Tools read a daily-persisted IDX pipeline (no live network fetch in V1, except get_stock_broker_summary and fetch_disclosure_pdf which fetch on demand, and get_financials which fetches financial statements live from IPOT — nothing persisted). get_market_anomalies — volume/price anomalies for a trading day, each with disclosure_ids to follow into list_idx_disclosures or read_idx_disclosure. list_idx_disclosures — browse a ticker's filings (metadata only). search_disclosures — cross-ticker disclosure search by keyword over titles and categories, with date range (e.g. which issuers announced a dividend this week). read_idx_disclosure — one disclosure's metadata plus pre-extracted text (truncated to 64KB); check its status field (ok/pending/failed/evicted) before assuming text is present. fetch_disclosure_pdf — on-demand PDF extraction. Cached text → return it. Otherwise enqueue an async extraction job and return pending; poll read_idx_disclosure until status leaves pending (ok | failed). get_ticker_news — RSS headlines tagged to a ticker. get_broker_summary — aggregate per-broker activity for a date. get_stock_broker_summary — per-stock top buyers/sellers for a ticker+day (fetches + persists). get_stock_broker_summary_history — stored per-stock broker history over a date range. get_broker_net_flow — per-broker cumulative net flow over a window (omit ticker for market-wide stance); rows read from stored history, coverage declared. get_daily_prices — stored Daily Price (OHLCV) series for a ticker over a date range. get_financials — normalized financial statements fetched live; periods are cumulative YTD, use the same-duration columns for comparison. get_pipeline_status — pipeline health / staleness. All outputs carry data_stale + last_good_date; if stale, note it to the user."
+const instructions = "IDX Market Analyzer co-pilot. Tools read a daily-persisted IDX pipeline (no live network fetch in V1, except get_stock_broker_summary and fetch_disclosure_pdf which fetch on demand, and get_financials which fetches financial statements live from IPOT — nothing persisted). get_market_anomalies — volume/price anomalies for a trading day, each with disclosure_ids to follow into list_idx_disclosures or read_idx_disclosure. list_idx_disclosures — browse a ticker's filings (metadata only). search_disclosures — cross-ticker disclosure search by keyword over titles and categories, with date range (e.g. which issuers announced a dividend this week). read_idx_disclosure — one disclosure's metadata plus pre-extracted text (truncated to 64KB); check its status field (ok/pending/failed/evicted) before assuming text is present. fetch_disclosure_pdf — on-demand PDF extraction. Cached text → return it. Otherwise enqueue an async extraction job and return pending; poll read_idx_disclosure until status leaves pending (ok | failed). get_ticker_news — RSS headlines tagged to a ticker. get_broker_summary — aggregate per-broker activity for a date. get_stock_broker_summary — per-stock top buyers/sellers for a ticker+day (fetches + persists). get_stock_broker_summary_history — stored per-stock broker history over a date range. backfill_stock_broker_summary — enqueue a per-stock broker summary backfill over a date range (async; poll get_stock_broker_summary_history for completion). get_broker_net_flow — per-broker cumulative net flow over a window (omit ticker for market-wide stance); rows read from stored history, coverage declared. get_daily_prices — stored Daily Price (OHLCV) series for a ticker over a date range. get_financials — normalized financial statements fetched live; periods are cumulative YTD, use the same-duration columns for comparison. get_pipeline_status — pipeline health / staleness. All outputs carry data_stale + last_good_date; if stale, note it to the user."
 
 // readOnlyAnnotations marks a tool read-only: clients skip confirmation
 // prompts. Every tool declares readOnlyHint=true, destructiveHint=false,
@@ -14,6 +14,18 @@ const instructions = "IDX Market Analyzer co-pilot. Tools read a daily-persisted
 func readOnlyAnnotations() mcpgo.ToolOption {
 	return mcpgo.WithToolAnnotation(mcpgo.ToolAnnotation{
 		ReadOnlyHint:    boolPtr(true),
+		DestructiveHint: boolPtr(false),
+		OpenWorldHint:   boolPtr(true),
+	})
+}
+
+// writeAnnotations marks a tool as a write: readOnlyHint=false so clients
+// prompt for confirmation. destructiveHint stays false — the backfill is an
+// idempotent upsert, not a delete. The spec's rule (issue 12): a write tool
+// must not silently declare destructive=false via the read-only helper.
+func writeAnnotations() mcpgo.ToolOption {
+	return mcpgo.WithToolAnnotation(mcpgo.ToolAnnotation{
+		ReadOnlyHint:    boolPtr(false),
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(true),
 	})
@@ -128,6 +140,19 @@ var toolGetDailyPrices = mcpgo.NewTool("get_daily_prices",
 	mcpgo.WithString("from", mcpgo.Description("Range start, YYYY-MM-DD."), mcpgo.Required()),
 	mcpgo.WithString("to", mcpgo.Description("Range end, YYYY-MM-DD."), mcpgo.Required()),
 	readOnlyAnnotations(),
+)
+
+// toolBackfillStockBrokerSummary — on-demand per-stock broker summary backfill
+// over a date range (issue 12). Async: enqueues an idx:broker_stock_summary_range
+// task and returns a pending envelope; the worker owns the fetch+persist loop
+// and the client polls get_stock_broker_summary_history until the range's days
+// are covered. A write tool — declared with writeAnnotations, not read-only.
+var toolBackfillStockBrokerSummary = mcpgo.NewTool("backfill_stock_broker_summary",
+	mcpgo.WithDescription("Backfill per-stock broker summaries for a ticker over a date range. Enqueues an async backfill task and returns immediately with status pending; the worker fetches + persists each trading day in the range (IPOT on-demand). Poll get_stock_broker_summary_history with the same ticker/from/to until the days are covered. Use to fill gaps get_broker_net_flow or get_stock_broker_summary_history reveal (e.g. days the anomaly gate missed, or pre-others_net rows)."),
+	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. RAJA or RAJA.JK)."), mcpgo.Required()),
+	mcpgo.WithString("from", mcpgo.Description("Range start, YYYY-MM-DD."), mcpgo.Required()),
+	mcpgo.WithString("to", mcpgo.Description("Range end, YYYY-MM-DD."), mcpgo.Required()),
+	writeAnnotations(),
 )
 
 // toolGetFinancials — live financial statements from IPOT (temporary route,

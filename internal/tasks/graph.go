@@ -268,6 +268,20 @@ var Graph = NewRegistry(
 		},
 	},
 	&Node{
+		Name: "broker-summary-range",
+		Type: TypeBrokerStockSummaryRange,
+		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+			ticker := argValue(args, "ticker")
+			from := argValue(args, "from")
+			to := argValue(args, "to")
+			if ticker == "" || from == "" || to == "" {
+				return nil, errors.New("idx:broker_stock_summary_range requires --arg ticker=<ticker> --arg from=<date> --arg to=<date>")
+			}
+			stage := pipeline.NewIngestStage(TypeBrokerStockSummaryRange, nil, enq, 3)
+			return stage.Enqueue(TaskKey(TypeBrokerStockSummaryRange, ticker+":"+from+":"+to), BrokerStockSummaryRangePayload{Ticker: ticker, From: from, To: to})
+		},
+	},
+	&Node{
 		Name: "pipeline",
 		Type: TypePipelineDaily,
 		Key:  dateKey(TypePipelineDaily),

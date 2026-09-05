@@ -168,6 +168,12 @@ func main() {
 	mux.Handle(tasks.TypeBrokerStockSummary, tasks.NewBrokerStockSummaryHandler(
 		log, brokerStockSummaryUC, recorder,
 	))
+	// Range backfill (issue 12): the MCP backfill tool enqueues this task; the
+	// worker runs the same GetStockBrokerSummaryRange loop the CLI bulk mode
+	// calls synchronously.
+	mux.Handle(tasks.TypeBrokerStockSummaryRange, tasks.NewBrokerStockSummaryRangeHandler(
+		log, brokerStockSummaryUC, recorder,
+	))
 
 	// Start asynq server in background goroutine
 	go func() {
@@ -233,6 +239,11 @@ func main() {
 	// get_financials (issue 07): temporary live-fetch route over the shared
 	// IPOT client — nothing persisted (persisted pipeline is issue 07b).
 	financialsUC := usecase.NewFinancialsUseCase(db, log, ipotClient)
+	// backfill_stock_broker_summary (issue 12): async enqueue seam over the
+	// in-process asynq server; the worker consumes the range task.
+	brokerSummaryBackfillUC := usecase.NewBrokerSummaryBackfillUseCase(
+		log, validate, tasks.NewBrokerStockSummaryRangeEnqueuer(asynqClient),
+	)
 
 	// ─── HTTP router ────────────────────────────────────────────
 
@@ -270,19 +281,20 @@ func main() {
 	// MCP server over streamable HTTP (tickets 10 + 12): 8 tools, bearer-token
 	// auth on every request, structured error envelopes, staleness metadata.
 	mcpSrv := mcpserver.NewServer(mcpserver.Deps{
-		Log:                  log,
-		DB:                   db,
-		AnomalyUC:            anomalyUC,
-		DisclosureUC:         disclosureUC,
-		FetchDisclosureUC:    fetchDisclosureUC,
-		BrokerUC:             brokerUC,
-		NewsUC:               newsUC,
-		PipelineUC:           pipelineUC,
-		BrokerStockSummaryUC: brokerStockSummaryUC,
-		DailyPriceUC:         dailyPriceUC,
-		FinancialsUC:         financialsUC,
-		SourceStatusRepo:     sourceStatusRepo,
-		TickerRepo:           tickerRepo,
+		Log:                     log,
+		DB:                      db,
+		AnomalyUC:               anomalyUC,
+		DisclosureUC:            disclosureUC,
+		FetchDisclosureUC:       fetchDisclosureUC,
+		BrokerUC:                brokerUC,
+		NewsUC:                  newsUC,
+		PipelineUC:              pipelineUC,
+		BrokerStockSummaryUC:    brokerStockSummaryUC,
+		BrokerSummaryBackfillUC: brokerSummaryBackfillUC,
+		DailyPriceUC:            dailyPriceUC,
+		FinancialsUC:            financialsUC,
+		SourceStatusRepo:        sourceStatusRepo,
+		TickerRepo:              tickerRepo,
 	})
 	router.Mount("/mcp", authMW.Authenticate(mcpSrv.Handler()))
 
