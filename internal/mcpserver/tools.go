@@ -89,9 +89,11 @@ var toolGetPipelineStatus = mcpgo.NewTool("get_pipeline_status",
 )
 
 // toolGetStockBrokerSummary — per-stock broker summary via IPOT (the one tool
-// that makes an upstream call).
+// that makes an upstream call). IPOT lists only the top-10 each side; the
+// response's total_buy_value / total_sell_value / others_net cover the whole
+// market incl. the non-listed tail (issue 03).
 var toolGetStockBrokerSummary = mcpgo.NewTool("get_stock_broker_summary",
-	mcpgo.WithDescription("Per-stock top buyers/sellers for a ticker+day, fetched from IPOT on demand and persisted. Defaults to the ticker's latest trading day."),
+	mcpgo.WithDescription("Per-stock top buyers/sellers for a ticker+day, fetched from IPOT on demand and persisted. IPOT shows only the top-10 per side, so total_buy_value, total_sell_value, and others_net (= the unlisted tail's net) are included to keep sums market-accurate. Defaults to the ticker's latest trading day."),
 	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. RAJA or RAJA.JK)."), mcpgo.Required()),
 	mcpgo.WithString("date", mcpgo.Description("Trading day, YYYY-MM-DD. Defaults to the ticker's latest stored trading day.")),
 	readOnlyAnnotations(),

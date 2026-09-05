@@ -90,6 +90,18 @@ func TestGetStockBrokerSummaryHistory_ReadsStoredRange(t *testing.T) {
 	if res.Days[0].Totals.TVal != 1_000_000_000 {
 		t.Errorf("days[0].Totals.TVal = %d, want 1000000000", res.Days[0].Totals.TVal)
 	}
+	// Issue 03: totals ride through; others_net recomputed from stored rows
+	// (day1 = buy 1B / sell 0.5B → tail net = 0.5B − 1B = −0.5B).
+	if res.Days[0].TotalBuyValue != 1_000_000_000 || res.Days[0].TotalSellValue != 1_000_000_000 {
+		t.Errorf("days[0] totals = %d/%d, want 1000000000/1000000000",
+			res.Days[0].TotalBuyValue, res.Days[0].TotalSellValue)
+	}
+	if res.Days[0].OthersNet != -500_000_000 {
+		t.Errorf("days[0].OthersNet = %d, want -500000000 (sell 0.5B − buy 1B)", res.Days[0].OthersNet)
+	}
+	if res.Days[0].Totals.OthersNet != -500_000_000 {
+		t.Errorf("days[0].Totals.OthersNet = %d, want -500000000", res.Days[0].Totals.OthersNet)
+	}
 	if res.Days[1].TradingDay != "2026-08-11" {
 		t.Errorf("days[1].TradingDay = %q, want 2026-08-11", res.Days[1].TradingDay)
 	}

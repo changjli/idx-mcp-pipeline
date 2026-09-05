@@ -68,13 +68,14 @@ func (r *BrokerStockSummaryRepository) UpsertDay(db *sqlx.DB, rows []entity.Brok
 
 	if totals != nil {
 		if _, err := tx.NamedExec(`
-			INSERT INTO broker_stock_summary_totals (ticker, trading_day, t_val, f_nval, t_lot, avg)
-			VALUES (:ticker, :trading_day, :t_val, :f_nval, :t_lot, :avg)
+			INSERT INTO broker_stock_summary_totals (ticker, trading_day, t_val, f_nval, t_lot, avg, others_net)
+			VALUES (:ticker, :trading_day, :t_val, :f_nval, :t_lot, :avg, :others_net)
 			ON CONFLICT (ticker, trading_day) DO UPDATE SET
 				t_val = EXCLUDED.t_val,
 				f_nval = EXCLUDED.f_nval,
 				t_lot = EXCLUDED.t_lot,
-				avg = EXCLUDED.avg
+				avg = EXCLUDED.avg,
+				others_net = EXCLUDED.others_net
 		`, totals); err != nil {
 			return err
 		}

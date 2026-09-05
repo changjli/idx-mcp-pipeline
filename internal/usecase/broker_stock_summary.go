@@ -67,32 +67,41 @@ type BrokerSummaryRow struct {
 
 // BrokerSummaryTotals is the footer summary line in the response.
 type BrokerSummaryTotals struct {
-	TVal  int64 `json:"t_val"`
-	FNVal int64 `json:"f_nval"`
-	TLot  int64 `json:"t_lot"`
-	Avg   int64 `json:"avg"`
+	TVal      int64 `json:"t_val"`
+	FNVal     int64 `json:"f_nval"`
+	TLot      int64 `json:"t_lot"`
+	Avg       int64 `json:"avg"`
+	OthersNet int64 `json:"others_net"` // tail net = Σ sell − Σ buy over non-listed brokers
 }
 
 // BrokerStockSummaryResponse is the structured MCP tool result.
 // AsOf + Cause are set only when the requested date returned empty and the
 // publish-lag fallback served a prior day's data (or explained the empty).
+// TotalBuyValue/TotalSellValue = t_val (every share has a buyer and a seller);
+// OthersNet covers the brokers IPOT doesn't list (only top-10 per side shown).
 type BrokerStockSummaryResponse struct {
-	Ticker     string              `json:"ticker"`
-	TradingDay string              `json:"trading_day"`
-	AsOf       string              `json:"as_of,omitempty"`
-	Cause      string              `json:"cause,omitempty"`
-	Totals     BrokerSummaryTotals `json:"totals"`
-	Buyers     []BrokerSummaryRow  `json:"buyers"`
-	Sellers    []BrokerSummaryRow  `json:"sellers"`
+	Ticker         string              `json:"ticker"`
+	TradingDay     string              `json:"trading_day"`
+	AsOf           string              `json:"as_of,omitempty"`
+	Cause          string              `json:"cause,omitempty"`
+	TotalBuyValue  int64               `json:"total_buy_value"`
+	TotalSellValue int64               `json:"total_sell_value"`
+	OthersNet      int64               `json:"others_net"`
+	Totals         BrokerSummaryTotals `json:"totals"`
+	Buyers         []BrokerSummaryRow  `json:"buyers"`
+	Sellers        []BrokerSummaryRow  `json:"sellers"`
 }
 
 // BrokerStockSummaryDay is one trading day's stored top-N + totals in a
 // history response.
 type BrokerStockSummaryDay struct {
-	TradingDay string              `json:"trading_day"`
-	Totals     BrokerSummaryTotals `json:"totals"`
-	Buyers     []BrokerSummaryRow  `json:"buyers"`
-	Sellers    []BrokerSummaryRow  `json:"sellers"`
+	TradingDay     string              `json:"trading_day"`
+	TotalBuyValue  int64               `json:"total_buy_value"`
+	TotalSellValue int64               `json:"total_sell_value"`
+	OthersNet      int64               `json:"others_net"`
+	Totals         BrokerSummaryTotals `json:"totals"`
+	Buyers         []BrokerSummaryRow  `json:"buyers"`
+	Sellers        []BrokerSummaryRow  `json:"sellers"`
 }
 
 // BrokerStockSummaryHistoryResponse is the structured result of a stored
@@ -158,11 +167,14 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummary(ctx context.Context, 
 	}
 
 	return &BrokerStockSummaryResponse{
-		Ticker:     ticker,
-		TradingDay: d.TradingDay,
-		Totals:     d.Totals,
-		Buyers:     d.Buyers,
-		Sellers:    d.Sellers,
+		Ticker:         ticker,
+		TradingDay:     d.TradingDay,
+		TotalBuyValue:  d.TotalBuyValue,
+		TotalSellValue: d.TotalSellValue,
+		OthersNet:      d.OthersNet,
+		Totals:         d.Totals,
+		Buyers:         d.Buyers,
+		Sellers:        d.Sellers,
 	}, nil
 }
 
@@ -201,13 +213,16 @@ func (uc *BrokerStockSummaryUseCase) fallbackEmpty(ctx context.Context, ticker s
 		}
 		if len(d.Buyers) > 0 || len(d.Sellers) > 0 {
 			return &BrokerStockSummaryResponse{
-				Ticker:     ticker,
-				TradingDay: d.TradingDay,
-				AsOf:       d.TradingDay,
-				Cause:      cause,
-				Totals:     d.Totals,
-				Buyers:     d.Buyers,
-				Sellers:    d.Sellers,
+				Ticker:         ticker,
+				TradingDay:     d.TradingDay,
+				AsOf:           d.TradingDay,
+				Cause:          cause,
+				TotalBuyValue:  d.TotalBuyValue,
+				TotalSellValue: d.TotalSellValue,
+				OthersNet:      d.OthersNet,
+				Totals:         d.Totals,
+				Buyers:         d.Buyers,
+				Sellers:        d.Sellers,
 			}, nil
 		}
 	}
@@ -289,10 +304,11 @@ func (uc *BrokerStockSummaryUseCase) fetchAndPersistDay(ctx context.Context, tic
 	if len(res.Buyers) == 0 && len(res.Sellers) == 0 {
 		return &BrokerStockSummaryDay{TradingDay: day.Format("2006-01-02")}, nil
 	}
-	if err := uc.persist(ticker, day, res); err != nil {
+	others := othersNet(res.Buyers, res.Sellers)
+	if err := uc.persist(ticker, day, res, others); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrPersist, err)
 	}
-	return dayFromResult(ticker, day, res), nil
+	return dayFromResult(ticker, day, res, others), nil
 }
 
 // GetStockBrokerSummaryHistory reads the persisted broker summary rows for a
@@ -337,17 +353,22 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryHistory(ctx context.Co
 	}
 
 	dayIndex := make(map[string]int)
+	dayBuy := make(map[string]int64)
+	daySell := make(map[string]int64)
 	for _, r := range rows {
 		key := r.TradingDay.Format("2006-01-02")
 		idx, ok := dayIndex[key]
 		if !ok {
 			idx = len(resp.Days)
 			dayIndex[key] = idx
+			t := totalsByDay[key]
 			resp.Days = append(resp.Days, BrokerStockSummaryDay{
-				TradingDay: key,
-				Totals:     totalsByDay[key],
-				Buyers:     []BrokerSummaryRow{},
-				Sellers:    []BrokerSummaryRow{},
+				TradingDay:     key,
+				TotalBuyValue:  t.TVal,
+				TotalSellValue: t.TVal,
+				Totals:         t,
+				Buyers:         []BrokerSummaryRow{},
+				Sellers:        []BrokerSummaryRow{},
 			})
 		}
 		row := BrokerSummaryRow{
@@ -358,16 +379,28 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryHistory(ctx context.Co
 			Rank:       int(deref32(r.Rank)),
 		}
 		if r.Side == "buy" {
+			dayBuy[key] += row.Value
 			resp.Days[idx].Buyers = append(resp.Days[idx].Buyers, row)
 		} else {
+			daySell[key] += row.Value
 			resp.Days[idx].Sellers = append(resp.Days[idx].Sellers, row)
 		}
+	}
+
+	// others_net is recomputed from the stored rows rather than read from the
+	// persisted totals: rows are already loaded, and it stays correct for rows
+	// written before the others_net column existed.
+	for i := range resp.Days {
+		key := resp.Days[i].TradingDay
+		others := daySell[key] - dayBuy[key]
+		resp.Days[i].OthersNet = others
+		resp.Days[i].Totals.OthersNet = others
 	}
 	return resp, nil
 }
 
 // persist writes the fetched rows and totals for one ticker+day atomically.
-func (uc *BrokerStockSummaryUseCase) persist(ticker string, day time.Time, res *ipot.Result) error {
+func (uc *BrokerStockSummaryUseCase) persist(ticker string, day time.Time, res *ipot.Result, others int64) error {
 	rows := make([]entity.BrokerStockSummary, 0, len(res.Buyers)+len(res.Sellers))
 	for _, b := range res.Buyers {
 		rows = append(rows, toEntity(ticker, day, "buy", b))
@@ -383,8 +416,26 @@ func (uc *BrokerStockSummaryUseCase) persist(ticker string, day time.Time, res *
 		FNVal:      i64p(res.Totals.FNVal),
 		TLot:       i64p(res.Totals.TLot),
 		Avg:        i64p(res.Totals.Avg),
+		OthersNet:  i64p(others),
 	}
 	return uc.Repo.UpsertDay(uc.DB, rows, totals)
+}
+
+// othersNet is the unlisted tail's net = total net − Σ listed net. Total net
+// clears to zero (every share has a buyer and a seller), so the tail's net is
+// −Σ listed net = Σ sellers − Σ buyers. Positive ⇒ brokers outside the top-10
+// net-bought (the quiet tail). Equals t_val-based total − Σ listed brokers' net,
+// matching the ticket definition. All-top-N (buyers+sellers cover the market)
+// yields 0.
+func othersNet(buyers, sellers []ipot.Row) int64 {
+	var buy, sell int64
+	for _, b := range buyers {
+		buy += b.Value
+	}
+	for _, s := range sellers {
+		sell += s.Value
+	}
+	return sell - buy
 }
 
 func toEntity(ticker string, day time.Time, side string, r ipot.Row) entity.BrokerStockSummary {
@@ -402,14 +453,18 @@ func toEntity(ticker string, day time.Time, side string, r ipot.Row) entity.Brok
 }
 
 // dayFromResult builds a day-level result from a fetched IPOT result.
-func dayFromResult(ticker string, day time.Time, res *ipot.Result) *BrokerStockSummaryDay {
+func dayFromResult(ticker string, day time.Time, res *ipot.Result, others int64) *BrokerStockSummaryDay {
 	d := &BrokerStockSummaryDay{
-		TradingDay: day.Format("2006-01-02"),
+		TradingDay:     day.Format("2006-01-02"),
+		TotalBuyValue:  res.Totals.TVal,
+		TotalSellValue: res.Totals.TVal,
+		OthersNet:      others,
 		Totals: BrokerSummaryTotals{
-			TVal:  res.Totals.TVal,
-			FNVal: res.Totals.FNVal,
-			TLot:  res.Totals.TLot,
-			Avg:   res.Totals.Avg,
+			TVal:      res.Totals.TVal,
+			FNVal:     res.Totals.FNVal,
+			TLot:      res.Totals.TLot,
+			Avg:       res.Totals.Avg,
+			OthersNet: others,
 		},
 		Buyers:  make([]BrokerSummaryRow, 0, len(res.Buyers)),
 		Sellers: make([]BrokerSummaryRow, 0, len(res.Sellers)),
