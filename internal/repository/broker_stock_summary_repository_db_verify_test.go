@@ -117,5 +117,63 @@ func TestBrokerStockSummaryRepository_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestHasStoredDay verifies the sweep's skip-if-stored guard: true for a
+// ticker+day with rows, false for a day with no rows, and scoped per ticker.
+// Skipped unless IDX_MCP_DB_DSN is set.
+func TestHasStoredDay(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+
+	db := sqlx.MustConnect("pgx", dsn)
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+	repo := NewBrokerStockSummaryRepository(log)
+
+	ticker := "TESTH"
+	day := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+	db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	t.Cleanup(func() {
+		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	})
+
+	// Empty ticker → no rows.
+	ok, err := repo.HasStoredDay(db, ticker, day)
+	if err != nil {
+		t.Fatalf("HasStoredDay empty: %v", err)
+	}
+	if ok {
+		t.Error("HasStoredDay = true for empty ticker, want false")
+	}
+
+	// After upsert → rows present.
+	rows := []entity.BrokerStockSummary{
+		{Ticker: ticker, BrokerCode: "AK", Side: "buy", TradingDay: day, Lot: i64(1), Value: i64(2), AvgPrice: i64(3), Rank: i32(1)},
+	}
+	if err := repo.UpsertDay(db, rows, nil); err != nil {
+		t.Fatalf("UpsertDay: %v", err)
+	}
+	ok, err = repo.HasStoredDay(db, ticker, day)
+	if err != nil {
+		t.Fatalf("HasStoredDay after upsert: %v", err)
+	}
+	if !ok {
+		t.Error("HasStoredDay = false after upsert, want true")
+	}
+
+	// Different day → no rows.
+	other := day.AddDate(0, 0, 1)
+	ok, err = repo.HasStoredDay(db, ticker, other)
+	if err != nil {
+		t.Fatalf("HasStoredDay other day: %v", err)
+	}
+	if ok {
+		t.Error("HasStoredDay = true for a day with no rows, want false")
+	}
+}
+
 func i64(v int64) *int64 { return &v }
 func i32(v int32) *int32 { return &v }

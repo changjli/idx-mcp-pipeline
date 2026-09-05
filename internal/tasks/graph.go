@@ -282,6 +282,20 @@ var Graph = NewRegistry(
 		},
 	},
 	&Node{
+		Name: "broker-summary-sweep",
+		Type: TypeBrokerStockSummarySweep,
+		Key:  dateKey(TypeBrokerStockSummarySweep),
+		Day:  dateDay(TypeBrokerStockSummarySweep),
+		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+			dateKey := day.Format("2006-01-02")
+			stage := pipeline.NewIngestStage(TypeBrokerStockSummarySweep, nil, enq, 3)
+			// Task-level timeout override: at the shared 2s IPOT pacing a
+			// fresh full-market sweep exceeds the 30m server default.
+			opts = append(opts, asynq.Timeout(sweepTaskTimeout))
+			return stage.EnqueueWithOpts(TaskKey(TypeBrokerStockSummarySweep, dateKey), BrokerSummarySweepPayload{Date: dateKey}, opts...)
+		},
+	},
+	&Node{
 		Name: "pipeline",
 		Type: TypePipelineDaily,
 		Key:  dateKey(TypePipelineDaily),

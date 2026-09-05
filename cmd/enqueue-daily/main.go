@@ -32,7 +32,7 @@ func (a *argList) Set(v string) error {
 }
 
 func main() {
-	taskName := flag.String("task", "stock-summary", "task to enqueue (registry node name): stock-summary, announcements, rss, cleanup, detect, filter, extract, broker-summary, pipeline (default: stock-summary)")
+	taskName := flag.String("task", "stock-summary", "task to enqueue (registry node name): stock-summary, announcements, rss, cleanup, detect, filter, extract, broker-summary, broker-summary-range, broker-summary-sweep, pipeline (default: stock-summary)")
 	dateStr := flag.String("date", "", "trading date in YYYY-MM-DD format (default: today)")
 	startDateStr := flag.String("start-date", "", "bulk backfill start date in YYYY-MM-DD format")
 	endDateStr := flag.String("end-date", "", "bulk backfill end date in YYYY-MM-DD format")

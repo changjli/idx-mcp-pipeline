@@ -18,6 +18,14 @@ const (
 	// 8 PM gives a few hours for the data to land before the pipeline fetches it.
 	DailyCronSpec = "CRON_TZ=Asia/Jakarta 5 20 * * *"
 
+	// SweepCronSpec fires the full-market broker-summary sweep at 10:05 PM WIB,
+	// an hour after the pipeline wave so the anomaly-gated per-ticker broker
+	// summaries have drained first — the sweep then skips them (HasStoredDay)
+	// and only fetches the quiet tickers the anomaly gate missed. A fresh
+	// sweep takes ~30 min at the IPOT client's 2s pacing; the date-keyed
+	// TaskID dedups a same-day re-fire.
+	SweepCronSpec = "CRON_TZ=Asia/Jakarta 5 22 * * *"
+
 	// archivedRequeueDelay is how long a recovered archived task waits before
 	// firing — gives transient upstream blocks (e.g. Cloudflare 403) time to
 	// lift. Shared by every self-heal-eligible node.
@@ -49,16 +57,25 @@ func NewScheduler(vip *viper.Viper, log *logrus.Logger) *asynq.Scheduler {
 	return sched
 }
 
-// RegisterDailyTasks registers the daily pipeline task on the scheduler.
-// It logs the next fire time of each registered entry.
+// RegisterDailyTasks registers the daily pipeline task and the full-market
+// broker-summary sweep (issue 14) on the scheduler. It logs the next fire time
+// of each registered entry. The sweep task carries no payload — the handler
+// derives the sweep date from time.Now() at fire time (same convention as
+// pipeline:daily), so the cron fires on the current trading day.
 func RegisterDailyTasks(sched *asynq.Scheduler, log *logrus.Logger) {
 	task := asynq.NewTask(tasks.TypePipelineDaily, nil)
 	entryID, err := sched.Register(DailyCronSpec, task)
 	if err != nil {
 		log.Fatalf("failed to register daily pipeline task: %v", err)
 	}
-
 	log.Infof("daily pipeline task registered: entry=%s cron=%s", entryID, DailyCronSpec)
+
+	sweepTask := asynq.NewTask(tasks.TypeBrokerStockSummarySweep, nil)
+	sweepEntryID, err := sched.Register(SweepCronSpec, sweepTask)
+	if err != nil {
+		log.Fatalf("failed to register broker summary sweep task: %v", err)
+	}
+	log.Infof("broker summary sweep task registered: entry=%s cron=%s", sweepEntryID, SweepCronSpec)
 }
 
 // LogNextFireTime logs the next fire time for all scheduler entries.

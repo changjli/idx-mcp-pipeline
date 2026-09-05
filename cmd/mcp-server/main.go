@@ -174,6 +174,12 @@ func main() {
 	mux.Handle(tasks.TypeBrokerStockSummaryRange, tasks.NewBrokerStockSummaryRangeHandler(
 		log, brokerStockSummaryUC, recorder,
 	))
+	// Full-market sweep (issue 14): every active ticker that traded today,
+	// skipping days the anomaly gate already covered. Scheduled daily after the
+	// pipeline wave; runs up to ~30 min under the IPOT client's 2s pacing.
+	mux.Handle(tasks.TypeBrokerStockSummarySweep, tasks.NewBrokerSummarySweepHandler(
+		log, db, brokerStockSummaryUC, tickerRepo, recorder,
+	))
 
 	// Start asynq server in background goroutine
 	go func() {

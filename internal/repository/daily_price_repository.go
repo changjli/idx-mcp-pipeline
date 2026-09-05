@@ -167,6 +167,19 @@ func (r *DailyPriceRepository) ExistsForDate(db *sqlx.DB, tradingDay string) (bo
 	return count > 0, err
 }
 
+// TradedTickersOnDate returns the distinct tickers with a daily_prices row on
+// a trading day — the market-wide trading-day signal (data presence, no
+// calendar). Empty on a non-trading day. Feeds the sweep's universe filter so
+// tickers that did not trade are skipped without an upstream call.
+func (r *DailyPriceRepository) TradedTickersOnDate(db *sqlx.DB, tradingDay string) ([]string, error) {
+	var tickers []string
+	err := db.Select(&tickers,
+		"SELECT DISTINCT ticker FROM daily_prices WHERE trading_day = $1",
+		tradingDay,
+	)
+	return tickers, err
+}
+
 // AnomalyCandidates returns, per ticker that traded on the given day, the
 // today volume/close, the 20-day volume baseline (recomputed on read from
 // daily_prices via the (ticker, trading_day DESC) index), and the prior

@@ -85,4 +85,61 @@ func TestDailyPriceRepository_DateRange(t *testing.T) {
 	}
 }
 
+// TestDailyPriceRepository_TradedTickersOnDate verifies the market-wide
+// trading-day signal the sweep uses: distinct tickers with a daily_prices row
+// on a day, empty on days nobody traded. Skipped unless IDX_MCP_DB_DSN is set.
+func TestDailyPriceRepository_TradedTickersOnDate(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+
+	db := sqlx.MustConnect("pgx", dsn)
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+	repo := NewDailyPriceRepository(log)
+
+	day := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+	tickers := []string{"TESTA", "TESTB", "TESTC"}
+	for _, tk := range tickers {
+		db.MustExec("DELETE FROM daily_prices WHERE ticker = $1", tk)
+		db.MustExec("DELETE FROM tickers WHERE code = $1", tk)
+		db.MustExec("INSERT INTO tickers (code, name, active) VALUES ($1, $2, true)", tk, tk)
+		db.MustExec(`INSERT INTO daily_prices (ticker, trading_day, open, high, low, close, volume, value, frequency, source)
+			VALUES ($1, $2, 100, 101, 99, 100, 1000, 100000, 10, 'idx')`, tk, day)
+	}
+	t.Cleanup(func() {
+		for _, tk := range tickers {
+			db.MustExec("DELETE FROM daily_prices WHERE ticker = $1", tk)
+			db.MustExec("DELETE FROM tickers WHERE code = $1", tk)
+		}
+	})
+
+	got, err := repo.TradedTickersOnDate(db, day.Format("2006-01-02"))
+	if err != nil {
+		t.Fatalf("TradedTickersOnDate: %v", err)
+	}
+	if len(got) != 3 {
+		t.Errorf("expected 3 traded tickers, got %v", got)
+	}
+	set := make(map[string]bool, len(got))
+	for _, tk := range got {
+		set[tk] = true
+	}
+	for _, tk := range tickers {
+		if !set[tk] {
+			t.Errorf("missing traded ticker %s", tk)
+		}
+	}
+
+	// A day nobody traded → empty.
+	empty, err := repo.TradedTickersOnDate(db, time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC).Format("2006-01-02"))
+	if err != nil {
+		t.Fatalf("TradedTickersOnDate empty: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("expected 0 traded tickers on non-trading day, got %v", empty)
+	}
+}
+
 func f64(v float64) *float64 { return &v }
