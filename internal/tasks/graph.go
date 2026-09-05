@@ -290,8 +290,8 @@ var Graph = NewRegistry(
 			dateKey := day.Format("2006-01-02")
 			stage := pipeline.NewIngestStage(TypeBrokerStockSummarySweep, nil, enq, 3)
 			// Task-level timeout override: at the shared 2s IPOT pacing a
-			// fresh full-market sweep exceeds the 30m server default.
-			opts = append(opts, asynq.Timeout(sweepTaskTimeout))
+			// fresh catch-up sweep exceeds the 30m server default.
+			opts = append(opts, asynq.Timeout(SweepTaskTimeout))
 			return stage.EnqueueWithOpts(TaskKey(TypeBrokerStockSummarySweep, dateKey), BrokerSummarySweepPayload{Date: dateKey}, opts...)
 		},
 	},

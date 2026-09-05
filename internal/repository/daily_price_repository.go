@@ -167,15 +167,23 @@ func (r *DailyPriceRepository) ExistsForDate(db *sqlx.DB, tradingDay string) (bo
 	return count > 0, err
 }
 
-// TradedTickersOnDate returns the distinct tickers with a daily_prices row on
-// a trading day — the market-wide trading-day signal (data presence, no
-// calendar). Empty on a non-trading day. Feeds the sweep's universe filter so
-// tickers that did not trade are skipped without an upstream call.
-func (r *DailyPriceRepository) TradedTickersOnDate(db *sqlx.DB, tradingDay string) ([]string, error) {
+// ADTVEligibleTickers returns the tickers that clear the liquidity floor over
+// a trailing window: at least minDays trading days and average daily trade
+// value >= minADTV (Rp). Computed fresh from daily_prices each call — the
+// weekly sweep's universe filter (issue 14b). Membership drifts with the
+// market: a new IPO enters once it accumulates enough trading days, a
+// suspended/dead name drops out when its window ADTV falls below the floor.
+// The minADTV bar is the anomaly detector's own DefaultADTVMinValue, so one
+// liquidity definition spans the pipeline.
+func (r *DailyPriceRepository) ADTVEligibleTickers(db *sqlx.DB, from, to time.Time, minDays int, minADTV int64) ([]string, error) {
 	var tickers []string
-	err := db.Select(&tickers,
-		"SELECT DISTINCT ticker FROM daily_prices WHERE trading_day = $1",
-		tradingDay,
+	err := db.Select(&tickers, `
+		SELECT ticker FROM daily_prices
+		WHERE trading_day BETWEEN $1 AND $2
+		GROUP BY ticker
+		HAVING COUNT(*) >= $3 AND AVG(value) >= $4
+		ORDER BY ticker`,
+		from, to, minDays, minADTV,
 	)
 	return tickers, err
 }

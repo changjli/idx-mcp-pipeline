@@ -111,7 +111,7 @@ func buildMultiRowUpsert(rows []entity.BrokerStockSummary) (string, []interface{
 }
 
 // HasStoredDay reports whether any broker_stock_summaries rows exist for a
-// ticker+day. Cheap EXISTS check — the full-market sweep's skip-if-stored
+// ticker+day. Cheap EXISTS check — the weekly sweep's skip-if-stored
 // guard. Idempotency note: rows present means the day is already covered, so
 // the sweep skips the ticker entirely (no IPOT call); a race between sweep and
 // an anomaly-gated refetch is harmless because UpsertDay replaces wholesale.

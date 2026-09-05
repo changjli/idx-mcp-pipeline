@@ -51,7 +51,7 @@ func newSweepTestUC(t *testing.T, db *sqlx.DB, f *sweepFetcher) *BrokerStockSumm
 	)
 }
 
-// sweepCleanup scopes cleanup to a set of test tickers + the sweep date's
+// sweepCleanup scopes cleanup to a set of test tickers + the sweep window's
 // daily_prices rows (shared across all sweep tests).
 func sweepCleanup(t *testing.T, db *sqlx.DB, tickers []string) {
 	t.Helper()
@@ -65,12 +65,33 @@ func sweepCleanup(t *testing.T, db *sqlx.DB, tickers []string) {
 	})
 }
 
-// seedTradedOn seeds active tickers with a daily_prices row on the given day.
-func seedTradedOn(t *testing.T, db *sqlx.DB, tickers []string, day time.Time) {
+// seedTradedRange seeds active tickers with a daily_prices row on each of the
+// given days (the sweep window's trading-day calendar).
+func seedTradedRange(t *testing.T, db *sqlx.DB, tickers []string, days []time.Time) {
 	t.Helper()
 	for _, tk := range tickers {
-		seedTickerAndPrice(t, db, tk, day)
+		for _, day := range days {
+			seedTickerAndPrice(t, db, tk, day)
+		}
 	}
+}
+
+// sweepWindow is a far-future Mon–Fri window: no real market data exists on
+// these dates, so the sweep is isolated from a shared DB's real rows.
+var sweepWindow = struct {
+	from time.Time
+	to   time.Time
+	days []time.Time
+}{
+	from: time.Date(2099, 1, 5, 0, 0, 0, 0, time.UTC),
+	to:   time.Date(2099, 1, 9, 0, 0, 0, 0, time.UTC),
+	days: []time.Time{
+		time.Date(2099, 1, 5, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 1, 6, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 1, 7, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 1, 8, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 1, 9, 0, 0, 0, 0, time.UTC),
+	},
 }
 
 func TestSweepStockBrokerSummaries_FetchesAndPersistsTraders(t *testing.T) {
@@ -82,36 +103,35 @@ func TestSweepStockBrokerSummaries_FetchesAndPersistsTraders(t *testing.T) {
 	f := &sweepFetcher{}
 	uc := newSweepTestUC(t, db, f)
 
-	day := time.Date(2099, 1, 5, 0, 0, 0, 0, time.UTC)
 	tickers := []string{"TESTA", "TESTB", "TESTC"}
-	seedTradedOn(t, db, tickers, day)
+	seedTradedRange(t, db, tickers, sweepWindow.days)
 	sweepCleanup(t, db, tickers)
 
-	res, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, day)
+	res, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, sweepWindow.from, sweepWindow.to)
 	if err != nil {
 		t.Fatalf("SweepStockBrokerSummaries: %v", err)
 	}
-	if res.Total != 3 || res.Fetched != 3 {
-		t.Errorf("res = %+v, want total=3 fetched=3", res)
+	if res.Tickers != 3 || res.Days != 15 || res.Fetched != 15 {
+		t.Errorf("res = %+v, want tickers=3 days=15 fetched=15", res)
 	}
-	if res.Skipped != 0 || res.NotTraded != 0 || res.Empty != 0 || res.Failed != 0 {
+	if res.Skipped != 0 || res.Empty != 0 || res.Failed != 0 {
 		t.Errorf("unexpected counters: %+v", res)
 	}
-	if len(f.calls) != 3 {
-		t.Fatalf("expected 3 upstream fetches, got %v", f.calls)
+	if len(f.calls) != 15 {
+		t.Fatalf("expected 15 upstream fetches (3 tickers × 5 days), got %d", len(f.calls))
 	}
 
-	// Persisted: 3 tickers × 2 rows.
-	stored, err := uc.Repo.FindByDateRangeAll(db, day, day)
+	// Persisted: 15 days × 2 rows.
+	stored, err := uc.Repo.FindByDateRangeAll(db, sweepWindow.from, sweepWindow.to)
 	if err != nil {
 		t.Fatalf("FindByDateRangeAll: %v", err)
 	}
-	if len(stored) != 6 {
-		t.Errorf("expected 6 persisted rows, got %d", len(stored))
+	if len(stored) != 30 {
+		t.Errorf("expected 30 persisted rows, got %d", len(stored))
 	}
 }
 
-// Second sweep of the same day must skip already-stored tickers without any
+// Second sweep of the same window must skip already-stored days without any
 // upstream call — the sweep's quota-honesty property.
 func TestSweepStockBrokerSummaries_SkipsStoredTickers(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
@@ -122,30 +142,30 @@ func TestSweepStockBrokerSummaries_SkipsStoredTickers(t *testing.T) {
 	f := &sweepFetcher{}
 	uc := newSweepTestUC(t, db, f)
 
-	day := time.Date(2099, 1, 5, 0, 0, 0, 0, time.UTC)
 	tickers := []string{"TESTA", "TESTB"}
-	seedTradedOn(t, db, tickers, day)
+	seedTradedRange(t, db, tickers, sweepWindow.days)
 	sweepCleanup(t, db, tickers)
 
-	if _, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, day); err != nil {
+	if _, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, sweepWindow.from, sweepWindow.to); err != nil {
 		t.Fatalf("first sweep: %v", err)
 	}
 	callsAfterFirst := len(f.calls)
 
-	res, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, day)
+	res, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, sweepWindow.from, sweepWindow.to)
 	if err != nil {
 		t.Fatalf("second sweep: %v", err)
 	}
-	if res.Skipped != 2 || res.Fetched != 0 {
-		t.Errorf("second sweep = %+v, want skipped=2 fetched=0", res)
+	if res.Skipped != 10 || res.Fetched != 0 {
+		t.Errorf("second sweep = %+v, want skipped=10 fetched=0", res)
 	}
 	if len(f.calls) != callsAfterFirst {
-		t.Errorf("second sweep made upstream calls: %v (was %d)", f.calls, callsAfterFirst)
+		t.Errorf("second sweep made upstream calls: %d (was %d)", len(f.calls), callsAfterFirst)
 	}
 }
 
-// Tickers without a daily_prices row for the day are not traded → skipped
-// without an upstream call (data presence is the trading-day signal).
+// A ticker with no daily_prices rows in the window contributes no days and no
+// fetches — the ADTV universe filter upstream already excluded it, and the
+// sweep's per-ticker trading-day query is the second gate.
 func TestSweepStockBrokerSummaries_SkipsUntradedTickers(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
@@ -155,28 +175,27 @@ func TestSweepStockBrokerSummaries_SkipsUntradedTickers(t *testing.T) {
 	f := &sweepFetcher{}
 	uc := newSweepTestUC(t, db, f)
 
-	day := time.Date(2099, 1, 5, 0, 0, 0, 0, time.UTC)
-	// TESTB has no daily_prices row → not traded that day.
-	seedTradedOn(t, db, []string{"TESTA"}, day)
+	// TESTB has no daily_prices rows in the window → not traded → no days.
+	seedTradedRange(t, db, []string{"TESTA"}, sweepWindow.days)
 	for _, tk := range []string{"TESTB"} {
 		db.MustExec("INSERT INTO tickers (code, name, active) VALUES ($1, $2, true) ON CONFLICT (code) DO NOTHING", tk, tk)
 	}
 	sweepCleanup(t, db, []string{"TESTA", "TESTB"})
 
-	res, err := uc.SweepStockBrokerSummaries(context.Background(), []string{"TESTA", "TESTB"}, day)
+	res, err := uc.SweepStockBrokerSummaries(context.Background(), []string{"TESTA", "TESTB"}, sweepWindow.from, sweepWindow.to)
 	if err != nil {
 		t.Fatalf("SweepStockBrokerSummaries: %v", err)
 	}
-	if res.Total != 2 || res.NotTraded != 1 || res.Fetched != 1 {
-		t.Errorf("res = %+v, want total=2 not_traded=1 fetched=1", res)
+	if res.Tickers != 2 || res.Days != 5 || res.Fetched != 5 {
+		t.Errorf("res = %+v, want tickers=2 days=5 fetched=5", res)
 	}
-	if len(f.calls) != 1 {
-		t.Errorf("expected 1 upstream fetch (TESTA only), got %v", f.calls)
+	if len(f.calls) != 5 {
+		t.Errorf("expected 5 upstream fetches (TESTA only), got %d", len(f.calls))
 	}
 }
 
-// A non-trading day (no daily_prices rows at all) is a zero-fetch sweep — the
-// traded-ticker query IS the calendar.
+// A window with no daily_prices rows at all is a zero-fetch sweep — the
+// per-ticker trading-day query IS the calendar.
 func TestSweepStockBrokerSummaries_NonTradingDayZeroFetch(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
@@ -186,22 +205,22 @@ func TestSweepStockBrokerSummaries_NonTradingDayZeroFetch(t *testing.T) {
 	f := &sweepFetcher{}
 	uc := newSweepTestUC(t, db, f)
 
-	weekend := time.Date(2099, 1, 6, 0, 0, 0, 0, time.UTC) // no daily_prices rows at all
+	// No daily_prices rows at all in the window.
 	tickers := []string{"TESTA", "TESTB"}
 	for _, tk := range tickers {
 		db.MustExec("INSERT INTO tickers (code, name, active) VALUES ($1, $2, true) ON CONFLICT (code) DO NOTHING", tk, tk)
 	}
 	sweepCleanup(t, db, tickers)
 
-	res, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, weekend)
+	res, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, sweepWindow.from, sweepWindow.to)
 	if err != nil {
 		t.Fatalf("SweepStockBrokerSummaries: %v", err)
 	}
-	if res.Total != 2 || res.NotTraded != 2 || res.Fetched != 0 {
-		t.Errorf("res = %+v, want total=2 not_traded=2 fetched=0", res)
+	if res.Tickers != 2 || res.Days != 0 || res.Fetched != 0 {
+		t.Errorf("res = %+v, want tickers=2 days=0 fetched=0", res)
 	}
 	if len(f.calls) != 0 {
-		t.Errorf("weekend sweep made upstream calls: %v", f.calls)
+		t.Errorf("empty-window sweep made upstream calls: %d", len(f.calls))
 	}
 }
 
@@ -216,28 +235,27 @@ func TestSweepStockBrokerSummaries_IsolatesEmptyAndFailed(t *testing.T) {
 	f := &sweepFetcher{empty: map[string]bool{"TESTB": true}, fail: map[string]bool{"TESTC": true}}
 	uc := newSweepTestUC(t, db, f)
 
-	day := time.Date(2099, 1, 5, 0, 0, 0, 0, time.UTC)
 	tickers := []string{"TESTA", "TESTB", "TESTC"}
-	seedTradedOn(t, db, tickers, day)
+	seedTradedRange(t, db, tickers, sweepWindow.days)
 	sweepCleanup(t, db, tickers)
 
-	res, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, day)
+	res, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, sweepWindow.from, sweepWindow.to)
 	if err != nil {
 		t.Fatalf("SweepStockBrokerSummaries: %v", err)
 	}
-	if res.Fetched != 1 || res.Empty != 1 || res.Failed != 1 {
-		t.Errorf("res = %+v, want fetched=1 empty=1 failed=1", res)
+	if res.Fetched != 5 || res.Empty != 5 || res.Failed != 5 {
+		t.Errorf("res = %+v, want fetched=5 empty=5 failed=5", res)
 	}
-	if res.Skipped != 0 || res.NotTraded != 0 {
-		t.Errorf("unexpected counters: %+v", res)
+	if res.Skipped != 0 {
+		t.Errorf("unexpected skipped: %+v", res)
 	}
 
-	// Only the good ticker persisted.
-	stored, err := uc.Repo.FindByDateRangeAll(db, day, day)
+	// Only the good ticker persisted (5 days × 2 rows).
+	stored, err := uc.Repo.FindByDateRangeAll(db, sweepWindow.from, sweepWindow.to)
 	if err != nil {
 		t.Fatalf("FindByDateRangeAll: %v", err)
 	}
-	if len(stored) != 2 {
-		t.Errorf("expected 2 persisted rows (TESTA only), got %d", len(stored))
+	if len(stored) != 10 {
+		t.Errorf("expected 10 persisted rows (TESTA only), got %d", len(stored))
 	}
 }

@@ -19,12 +19,12 @@ import (
 )
 
 // TestBrokerSummarySweepHandler_EndToEnd runs the idx:broker_stock_summary_sweep
-// handler against a real Postgres: active tickers that traded on the sweep day
-// get rows persisted, and source_status is updated. The sweep day is a
-// far-future date seeded with only the TEST tickers' daily_prices rows, so the
-// traded-ticker filter isolates the sweep from a shared DB's real market data
-// (every other active ticker is not-traded → zero upstream writes). A second
-// run is a no-op (skip-if-stored). Skipped unless IDX_MCP_DB_DSN is set.
+// handler against a real Postgres: ADTV-eligible tickers over the trailing
+// window get rows persisted, and source_status is updated. The sweep day is a
+// far-future date seeded with only the TEST tickers' daily_prices rows (8 days
+// ≥ the min-days floor, value ≥ the ADTV floor), so the eligibility query
+// isolates the sweep from a shared DB's real market data. A second run is a
+// no-op (skip-if-stored). Skipped unless IDX_MCP_DB_DSN is set.
 func TestBrokerSummarySweepHandler_EndToEnd(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
@@ -41,16 +41,29 @@ func TestBrokerSummarySweepHandler_EndToEnd(t *testing.T) {
 		repository.NewDailyPriceRepository(log),
 	)
 	handler := NewBrokerSummarySweepHandler(
-		log, db, uc, repository.NewTickerRepository(log),
+		log, db, uc, repository.NewDailyPriceRepository(log),
 		pipeline.NewSourceStatusRecorder(
 			pipeline.NewSQLSourceStatusStore(repository.NewSourceStatusRepository(log), db),
 			pipeline.NewSQLAlertStore(repository.NewAlertRepository(log), db),
 			log,
 		),
+		5_000_000_000,
 	)
 
 	tickers := []string{"TESTU", "TESTV"}
 	day := time.Date(2099, 12, 31, 0, 0, 0, 0, time.UTC) // no real market data this date
+	// 8 trading days inside the handler's trailing-21-day window (from =
+	// day-21d), each clearing the ADTV floor → both tickers eligible.
+	windowDays := []time.Time{
+		time.Date(2099, 12, 10, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 12, 11, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 12, 14, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 12, 15, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 12, 16, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 12, 17, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 12, 18, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 12, 21, 0, 0, 0, 0, time.UTC),
+	}
 	for _, tk := range tickers {
 		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", tk)
 		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", tk)
@@ -70,8 +83,10 @@ func TestBrokerSummarySweepHandler_EndToEnd(t *testing.T) {
 
 	for _, tk := range tickers {
 		db.MustExec("INSERT INTO tickers (code, name, active) VALUES ($1, $2, true)", tk, tk)
-		db.MustExec(`INSERT INTO daily_prices (ticker, trading_day, open, high, low, close, volume, value, frequency, source)
-			VALUES ($1, $2, 100, 101, 99, 100, 1000, 100000, 10, 'idx')`, tk, day)
+		for _, d := range windowDays {
+			db.MustExec(`INSERT INTO daily_prices (ticker, trading_day, open, high, low, close, volume, value, frequency, source)
+				VALUES ($1, $2, 100, 101, 99, 100, 1000, 10000000000, 10, 'idx')`, tk, d)
+		}
 	}
 
 	payload := BrokerSummarySweepPayload{Date: day.Format("2006-01-02")}
@@ -82,7 +97,7 @@ func TestBrokerSummarySweepHandler_EndToEnd(t *testing.T) {
 		t.Fatalf("handler: %v", err)
 	}
 
-	// Both traded test tickers persisted (2 rows each).
+	// Both eligible test tickers persisted (8 days × 2 rows each).
 	var count int
 	for _, tk := range tickers {
 		var c int
@@ -92,8 +107,8 @@ func TestBrokerSummarySweepHandler_EndToEnd(t *testing.T) {
 		}
 		count += c
 	}
-	if count != 4 {
-		t.Errorf("expected 4 persisted rows (2 tickers × 2), got %d", count)
+	if count != 32 {
+		t.Errorf("expected 32 persisted rows (2 tickers × 8 days × 2), got %d", count)
 	}
 
 	// Second run: already stored → skipped, no new rows, no error.
@@ -108,8 +123,8 @@ func TestBrokerSummarySweepHandler_EndToEnd(t *testing.T) {
 		}
 		after += c
 	}
-	if after != 4 {
-		t.Errorf("second run changed row count: got %d, want 4 (skip-if-stored)", after)
+	if after != 32 {
+		t.Errorf("second run changed row count: got %d, want 32 (skip-if-stored)", after)
 	}
 
 	// source_status recorded with no error.
