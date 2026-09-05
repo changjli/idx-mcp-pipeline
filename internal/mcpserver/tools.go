@@ -91,7 +91,10 @@ var toolReadIdxDisclosure = mcpgo.NewTool("read_idx_disclosure",
 var toolFetchDisclosurePDF = mcpgo.NewTool("fetch_disclosure_pdf",
 	mcpgo.WithDescription("Fetches and extracts a single Disclosure's PDF on demand. If the text is already cached (extraction status ok), returns it immediately. Otherwise enqueues an async extraction job and returns immediately with status pending and text null. Poll read_idx_disclosure with the same disclosure_id every few seconds: status stays pending while the job runs (self-retries twice, 30s and 2m), then returns ok with text, or failed with error. Use when read_idx_disclosure reports pending/failed/evicted or the text is missing."),
 	mcpgo.WithString("disclosure_id", mcpgo.Description("Postgres surrogate ID from get_market_anomalies.disclosure_ids or list_idx_disclosures."), mcpgo.Required()),
-	readOnlyAnnotations(),
+	// A write: enqueues an extraction job whose worker persists raw_files and
+	// updates the disclosure's extraction status. Declared with
+	// writeAnnotations, not read-only.
+	writeAnnotations(),
 )
 
 // toolGetPipelineStatus — per-source pipeline health.
@@ -108,7 +111,9 @@ var toolGetStockBrokerSummary = mcpgo.NewTool("get_stock_broker_summary",
 	mcpgo.WithDescription("Per-stock top buyers/sellers for a ticker+day, fetched from IPOT on demand and persisted. IPOT shows only the top-10 per side, so total_buy_value, total_sell_value, and others_net (= the unlisted tail's net) are included to keep sums market-accurate. Defaults to the ticker's latest trading day."),
 	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. RAJA or RAJA.JK)."), mcpgo.Required()),
 	mcpgo.WithString("date", mcpgo.Description("Trading day, YYYY-MM-DD. Defaults to the ticker's latest stored trading day.")),
-	readOnlyAnnotations(),
+	// A write: fetches from IPOT AND persists the day's rows. Declared with
+	// writeAnnotations, not read-only (the persist is the tool's contract).
+	writeAnnotations(),
 )
 
 // toolGetStockBrokerSummaryHistory — stored per-stock broker history.
