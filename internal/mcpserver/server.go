@@ -79,6 +79,7 @@ func (s *Server) Handler() http.Handler {
 	srv.AddTool(toolGetPipelineStatus, s.handleGetPipelineStatus)
 	srv.AddTool(toolGetStockBrokerSummary, s.handleGetStockBrokerSummary)
 	srv.AddTool(toolGetStockBrokerSummaryHistory, s.handleGetStockBrokerSummaryHistory)
+	srv.AddTool(toolGetBrokerNetFlow, s.handleGetBrokerNetFlow)
 	srv.AddTool(toolGetDailyPrices, s.handleGetDailyPrices)
 	srv.AddTool(toolGetFinancials, s.handleGetFinancials)
 	return server.NewStreamableHTTPServer(srv)

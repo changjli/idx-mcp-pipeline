@@ -108,6 +108,18 @@ func (r *DailyPriceRepository) TradingDaysInRange(db *sqlx.DB, ticker string, fr
 	return days, err
 }
 
+// TradingDaysInRangeAll returns the distinct trading days with any stored EOD
+// row between two dates (inclusive), ascending — the market-wide trading-day
+// calendar, used for coverage math in get_broker_net_flow.
+func (r *DailyPriceRepository) TradingDaysInRangeAll(db *sqlx.DB, from, to time.Time) ([]time.Time, error) {
+	var days []time.Time
+	err := db.Select(&days,
+		"SELECT DISTINCT trading_day FROM daily_prices WHERE trading_day BETWEEN $1 AND $2 ORDER BY trading_day",
+		from, to,
+	)
+	return days, err
+}
+
 // FindByTickerAndDateRange returns the OHLCV rows for a ticker between two
 // dates (inclusive), ascending by trading day.
 func (r *DailyPriceRepository) FindByTickerAndDateRange(db *sqlx.DB, ticker string, from, to time.Time) ([]entity.DailyPrice, error) {

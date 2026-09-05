@@ -20,6 +20,7 @@ var allTools = []mcpgo.Tool{
 	toolGetPipelineStatus,
 	toolGetStockBrokerSummary,
 	toolGetStockBrokerSummaryHistory,
+	toolGetBrokerNetFlow,
 	toolGetDailyPrices,
 }
 
@@ -55,6 +56,7 @@ func TestToolRequiredArguments(t *testing.T) {
 		"get_pipeline_status":              {},
 		"get_stock_broker_summary":         {"ticker"},
 		"get_stock_broker_summary_history": {"ticker", "from", "to"},
+		"get_broker_net_flow":              {},
 		"get_daily_prices":                 {"ticker", "from", "to"},
 	}
 

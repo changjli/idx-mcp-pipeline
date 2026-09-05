@@ -146,6 +146,18 @@ func (r *BrokerStockSummaryRepository) FindByTickerAndDateRange(db *sqlx.DB, tic
 	return rows, err
 }
 
+// FindByDateRangeAll returns the stored broker rows for every ticker between
+// two trading days (inclusive), ordered by trading day then ticker. Feeds
+// get_broker_net_flow's market-wide mode.
+func (r *BrokerStockSummaryRepository) FindByDateRangeAll(db *sqlx.DB, from, to time.Time) ([]entity.BrokerStockSummary, error) {
+	var rows []entity.BrokerStockSummary
+	err := db.Select(&rows,
+		"SELECT * FROM broker_stock_summaries WHERE trading_day BETWEEN $1 AND $2 ORDER BY trading_day, ticker, side, rank",
+		from, to,
+	)
+	return rows, err
+}
+
 // FindTotalsByTickerAndDateRange returns the stored footer summaries for a
 // ticker between two trading days (inclusive), ordered by trading day.
 func (r *BrokerStockSummaryRepository) FindTotalsByTickerAndDateRange(db *sqlx.DB, ticker string, from, to time.Time) ([]entity.BrokerStockSummaryTotals, error) {

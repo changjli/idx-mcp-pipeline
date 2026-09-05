@@ -367,6 +367,52 @@ func (s *Server) handleGetStockBrokerSummaryHistory(ctx context.Context, req mcp
 	}), nil
 }
 
+// brokerNetFlowResponse wraps the usecase data with staleness metadata.
+type brokerNetFlowResponse struct {
+	*usecase.BrokerNetFlowResponse
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleGetBrokerNetFlow(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	args := req.GetArguments()
+	ticker, _ := args["ticker"].(string)
+	fromStr, _ := args["from"].(string)
+	toStr, _ := args["to"].(string)
+
+	var tickerPtr *string
+	if ticker != "" {
+		norm, ok := s.tickers.Normalize(ticker)
+		if !ok {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+		}
+		tickerPtr = &norm
+	}
+	var fromPtr, toPtr *time.Time
+	if fromStr != "" {
+		t, err := time.Parse("2006-01-02", fromStr)
+		if err != nil {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid from date: "+fromStr, false)), nil
+		}
+		fromPtr = &t
+	}
+	if toStr != "" {
+		t, err := time.Parse("2006-01-02", toStr)
+		if err != nil {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid to date: "+toStr, false)), nil
+		}
+		toPtr = &t
+	}
+
+	data, err := s.brokerStockSummaryUC.GetBrokerNetFlow(ctx, tickerPtr, fromPtr, toPtr)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(brokerNetFlowResponse{
+		BrokerNetFlowResponse: data,
+		StalenessMetadata:     stalenessFor(s.db, s.sourceStatusRepo, sourceBrokerStockSummary, time.Now()),
+	}), nil
+}
+
 // dailyPricesResponse wraps the usecase data with staleness metadata.
 type dailyPricesResponse struct {
 	*usecase.DailyPricesData
