@@ -19,6 +19,7 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/config"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/extract"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ksei"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/mcpserver"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/middleware"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
@@ -51,6 +52,7 @@ func main() {
 	rawFileRepo := repository.NewRawFileRepository(log)
 	brokerStockSummaryRepo := repository.NewBrokerStockSummaryRepository(log)
 	corporateActionRepo := repository.NewCorporateActionRepository(log)
+	shareholderCompositionRepo := repository.NewShareholderCompositionRepository(log)
 
 	// source_status + alerts recorder: one shared instance every ingest stage
 	// reports its success/failure through (ADR-0006).
@@ -71,6 +73,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to init IDX client: %v", err)
 	}
+
+	// KSEI HTTP client (issue 08): plain HTTPS to web.ksei.co.id — the
+	// balance-position archive needs no browser transport and no sidecar.
+	kseiClient := ksei.NewClient("", nil)
 	defer idxClient.Close()
 
 	// Task mux: route task types to handlers
@@ -110,6 +116,12 @@ func main() {
 	}
 	mux.Handle(tasks.TypeCorporateActions, tasks.NewCorporateActionsHandler(
 		log, idxClient, db, corporateActionRepo, recorder, caLookback, caLookahead,
+	))
+	// ksei:balancepos (issue 08): monthly KSEI balance-position ingestion —
+	// the handler no-ops once the latest month-end file is stored; the MCP
+	// tool reads the stored rows.
+	mux.Handle(tasks.TypeKSEIBalancepos, tasks.NewKSEIBalanceposHandler(
+		log, kseiClient, db, shareholderCompositionRepo, recorder,
 	))
 	minADTV := vip.GetInt64("anomaly.min_adtv_value") // <= 0 → DefaultADTVMinValue in the constructor
 	anomalyDetector := pipeline.NewAnomalyDetector(
@@ -269,6 +281,10 @@ func main() {
 	// get_corporate_actions (issue 09): pure DB read over the corporate_actions
 	// table, populated by the daily idx:corporate_actions task.
 	corporateActionsUC := usecase.NewCorporateActionsUseCase(db, log, corporateActionRepo)
+	// get_shareholder_composition (issue 08): pure DB read over the
+	// shareholder_composition table, populated by the monthly ksei:balancepos
+	// task.
+	shareholderCompositionUC := usecase.NewShareholderCompositionUseCase(db, log, shareholderCompositionRepo)
 
 	// ─── HTTP router ────────────────────────────────────────────
 
@@ -319,6 +335,7 @@ func main() {
 		DailyPriceUC:            dailyPriceUC,
 		FinancialsUC:            financialsUC,
 		CorporateActionsUC:      corporateActionsUC,
+		ShareholderCompUC:       shareholderCompositionUC,
 		SourceStatusRepo:        sourceStatusRepo,
 		TickerRepo:              tickerRepo,
 	})

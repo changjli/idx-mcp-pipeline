@@ -27,6 +27,7 @@ type Deps struct {
 	DailyPriceUC            *usecase.DailyPriceUseCase
 	FinancialsUC            *usecase.FinancialsUseCase
 	CorporateActionsUC      *usecase.CorporateActionsUseCase
+	ShareholderCompUC       *usecase.ShareholderCompositionUseCase
 	SourceStatusRepo        *repository.SourceStatusRepository
 	TickerRepo              *repository.TickerRepository
 }
@@ -34,40 +35,42 @@ type Deps struct {
 // Server is the MCP server over streamable HTTP. It owns the tool registry
 // and the symbol normalization seam.
 type Server struct {
-	log                     *logrus.Logger
-	db                      *sqlx.DB
-	anomalyUC               *usecase.AnomalyUseCase
-	disclosureUC            usecase.DisclosureReader
-	fetchDisclosureUC       *usecase.FetchDisclosureUseCase
-	brokerUC                *usecase.BrokerUseCase
-	newsUC                  *usecase.NewsUseCase
-	pipelineUC              *usecase.PipelineUseCase
-	brokerStockSummaryUC    *usecase.BrokerStockSummaryUseCase
-	brokerSummaryBackfillUC *usecase.BrokerSummaryBackfillUseCase
-	dailyPriceUC            *usecase.DailyPriceUseCase
-	financialsUC            *usecase.FinancialsUseCase
-	corporateActionsUC      usecase.CorporateActionsReader
-	sourceStatusRepo        *repository.SourceStatusRepository
-	tickers                 *TickerValidator
+	log                      *logrus.Logger
+	db                       *sqlx.DB
+	anomalyUC                *usecase.AnomalyUseCase
+	disclosureUC             usecase.DisclosureReader
+	fetchDisclosureUC        *usecase.FetchDisclosureUseCase
+	brokerUC                 *usecase.BrokerUseCase
+	newsUC                   *usecase.NewsUseCase
+	pipelineUC               *usecase.PipelineUseCase
+	brokerStockSummaryUC     *usecase.BrokerStockSummaryUseCase
+	brokerSummaryBackfillUC  *usecase.BrokerSummaryBackfillUseCase
+	dailyPriceUC             *usecase.DailyPriceUseCase
+	financialsUC             *usecase.FinancialsUseCase
+	corporateActionsUC       usecase.CorporateActionsReader
+	shareholderCompositionUC usecase.ShareholderCompositionReader
+	sourceStatusRepo         *repository.SourceStatusRepository
+	tickers                  *TickerValidator
 }
 
 func NewServer(deps Deps) *Server {
 	return &Server{
-		log:                     deps.Log,
-		db:                      deps.DB,
-		anomalyUC:               deps.AnomalyUC,
-		disclosureUC:            deps.DisclosureUC,
-		fetchDisclosureUC:       deps.FetchDisclosureUC,
-		brokerUC:                deps.BrokerUC,
-		newsUC:                  deps.NewsUC,
-		pipelineUC:              deps.PipelineUC,
-		brokerStockSummaryUC:    deps.BrokerStockSummaryUC,
-		brokerSummaryBackfillUC: deps.BrokerSummaryBackfillUC,
-		dailyPriceUC:            deps.DailyPriceUC,
-		financialsUC:            deps.FinancialsUC,
-		corporateActionsUC:      deps.CorporateActionsUC,
-		sourceStatusRepo:        deps.SourceStatusRepo,
-		tickers:                 NewTickerValidator(deps.DB, deps.TickerRepo, deps.Log),
+		log:                      deps.Log,
+		db:                       deps.DB,
+		anomalyUC:                deps.AnomalyUC,
+		disclosureUC:             deps.DisclosureUC,
+		fetchDisclosureUC:        deps.FetchDisclosureUC,
+		brokerUC:                 deps.BrokerUC,
+		newsUC:                   deps.NewsUC,
+		pipelineUC:               deps.PipelineUC,
+		brokerStockSummaryUC:     deps.BrokerStockSummaryUC,
+		brokerSummaryBackfillUC:  deps.BrokerSummaryBackfillUC,
+		dailyPriceUC:             deps.DailyPriceUC,
+		financialsUC:             deps.FinancialsUC,
+		corporateActionsUC:       deps.CorporateActionsUC,
+		shareholderCompositionUC: deps.ShareholderCompUC,
+		sourceStatusRepo:         deps.SourceStatusRepo,
+		tickers:                  NewTickerValidator(deps.DB, deps.TickerRepo, deps.Log),
 	}
 }
 
@@ -90,5 +93,6 @@ func (s *Server) Handler() http.Handler {
 	srv.AddTool(toolGetDailyPrices, s.handleGetDailyPrices)
 	srv.AddTool(toolGetFinancials, s.handleGetFinancials)
 	srv.AddTool(toolGetCorporateActions, s.handleGetCorporateActions)
+	srv.AddTool(toolGetShareholderComposition, s.handleGetShareholderComposition)
 	return server.NewStreamableHTTPServer(srv)
 }

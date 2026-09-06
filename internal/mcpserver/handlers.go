@@ -22,6 +22,7 @@ const (
 	sourceRSS                = "rss"
 	sourceBrokerStockSummary = "idx:broker_stock_summary"
 	sourceCorporateActions   = "idx:corporate_actions"
+	sourceKSEIBalancepos     = "ksei:balancepos"
 )
 
 // defaultLimit is the default row cap for tools with a limit argument.
@@ -544,5 +545,44 @@ func (s *Server) handleGetCorporateActions(ctx context.Context, req mcpgo.CallTo
 	return textResult(corporateActionsResponse{
 		CorporateActionsResponse: data,
 		StalenessMetadata:        stalenessFor(s.db, s.sourceStatusRepo, sourceCorporateActions, time.Now()),
+	}), nil
+}
+
+// shareholderCompositionResponse wraps the usecase data with staleness
+// metadata from the ksei:balancepos source_status row, which the monthly task
+// updates on every run (including no-ops).
+type shareholderCompositionResponse struct {
+	*usecase.ShareholderCompositionResponse
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleGetShareholderComposition(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	ticker, _ := req.GetArguments()["ticker"].(string)
+	fromStr, _ := req.GetArguments()["date_from"].(string)
+	toStr, _ := req.GetArguments()["date_to"].(string)
+
+	if ticker == "" {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "ticker is required", false)), nil
+	}
+	norm, ok := s.tickers.Normalize(ticker)
+	if !ok {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+	}
+	from, err := time.Parse("2006-01-02", fromStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date_from: "+fromStr, false)), nil
+	}
+	to, err := time.Parse("2006-01-02", toStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date_to: "+toStr, false)), nil
+	}
+
+	data, err := s.shareholderCompositionUC.GetShareholderComposition(ctx, norm, from, to)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(shareholderCompositionResponse{
+		ShareholderCompositionResponse: data,
+		StalenessMetadata:              stalenessFor(s.db, s.sourceStatusRepo, sourceKSEIBalancepos, time.Now()),
 	}), nil
 }

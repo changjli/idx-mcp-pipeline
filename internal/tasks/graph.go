@@ -214,6 +214,20 @@ var Graph = NewRegistry(
 		SelfHeal: true,
 	},
 	&Node{
+		Name: "ksei-balancepos",
+		Type: TypeKSEIBalancepos,
+		Key:  dateKey(TypeKSEIBalancepos),
+		Day:  dateDay(TypeKSEIBalancepos),
+		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+			dateKey := day.Format("2006-01-02")
+			stage := pipeline.NewIngestStage(TypeKSEIBalancepos, nil, enq, 3)
+			return stage.EnqueueWithOpts(TaskKey(TypeKSEIBalancepos, dateKey), KSEIBalanceposPayload{Date: dateKey}, opts...)
+		},
+		// Monthly source behind a daily schedule: the handler no-ops once the
+		// latest month-end file is stored, so a daily wave slot is cheap.
+		SelfHeal: true,
+	},
+	&Node{
 		Name: "cleanup",
 		Type: TypeCleanup,
 		Key:  dateKey(TypeCleanup),
@@ -318,6 +332,6 @@ var Graph = NewRegistry(
 			task := asynq.NewTask(TypePipelineDaily, nil)
 			return enq.Enqueue(task, asynq.TaskID(taskKey), asynq.Queue("default"))
 		},
-		Wave: []string{TypeStockSummary, TypeAnnouncements, TypeRSS, TypeCorporateActions, TypeCleanup},
+		Wave: []string{TypeStockSummary, TypeAnnouncements, TypeRSS, TypeCorporateActions, TypeKSEIBalancepos, TypeCleanup},
 	},
 )
