@@ -25,6 +25,10 @@ const (
 	TypeFilterDisclosures       = "filter:disclosures"
 	TypeExtractDisclosure       = "extract:disclosure"
 	TypeCleanup                 = "cleanup"
+	// TypeCorporateActions is the daily corporate-actions calendar fetch (issue
+	// 09): one request to GetIssuedHistory over a rolling window, persisted to
+	// corporate_actions. The MCP tool is a pure DB read over the stored rows.
+	TypeCorporateActions = "idx:corporate_actions"
 )
 
 // TaskKey returns a dedup key for a task type and date.

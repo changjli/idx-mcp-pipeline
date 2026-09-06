@@ -50,6 +50,7 @@ func main() {
 	alertRepo := repository.NewAlertRepository(log)
 	rawFileRepo := repository.NewRawFileRepository(log)
 	brokerStockSummaryRepo := repository.NewBrokerStockSummaryRepository(log)
+	corporateActionRepo := repository.NewCorporateActionRepository(log)
 
 	// source_status + alerts recorder: one shared instance every ingest stage
 	// reports its success/failure through (ADR-0006).
@@ -95,6 +96,20 @@ func main() {
 	mux.Handle(tasks.TypeAnnouncements, tasks.NewAnnouncementsHandler(
 		log, idxClient, db,
 		recorder, disclosureIngest, lookback,
+	))
+	// idx:corporate_actions (issue 09): daily calendar fetch over a rolling
+	// window; the MCP tool reads the stored rows (no sidecar on the request
+	// path — Heroku H12 constraint, ADR-0009).
+	caLookback := vip.GetInt("idx.corporate_actions_lookback_days")
+	if caLookback <= 0 {
+		caLookback = tasks.DefaultCorporateActionsLookbackDays
+	}
+	caLookahead := vip.GetInt("idx.corporate_actions_lookahead_days")
+	if caLookahead <= 0 {
+		caLookahead = tasks.DefaultCorporateActionsLookaheadDays
+	}
+	mux.Handle(tasks.TypeCorporateActions, tasks.NewCorporateActionsHandler(
+		log, idxClient, db, corporateActionRepo, recorder, caLookback, caLookahead,
 	))
 	minADTV := vip.GetInt64("anomaly.min_adtv_value") // <= 0 → DefaultADTVMinValue in the constructor
 	anomalyDetector := pipeline.NewAnomalyDetector(
@@ -251,6 +266,9 @@ func main() {
 	brokerSummaryBackfillUC := usecase.NewBrokerSummaryBackfillUseCase(
 		log, validate, tasks.NewBrokerStockSummaryRangeEnqueuer(asynqClient),
 	)
+	// get_corporate_actions (issue 09): pure DB read over the corporate_actions
+	// table, populated by the daily idx:corporate_actions task.
+	corporateActionsUC := usecase.NewCorporateActionsUseCase(db, log, corporateActionRepo)
 
 	// ─── HTTP router ────────────────────────────────────────────
 
@@ -300,6 +318,7 @@ func main() {
 		BrokerSummaryBackfillUC: brokerSummaryBackfillUC,
 		DailyPriceUC:            dailyPriceUC,
 		FinancialsUC:            financialsUC,
+		CorporateActionsUC:      corporateActionsUC,
 		SourceStatusRepo:        sourceStatusRepo,
 		TickerRepo:              tickerRepo,
 	})

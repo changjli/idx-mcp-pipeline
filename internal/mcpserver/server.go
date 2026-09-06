@@ -26,6 +26,7 @@ type Deps struct {
 	BrokerSummaryBackfillUC *usecase.BrokerSummaryBackfillUseCase
 	DailyPriceUC            *usecase.DailyPriceUseCase
 	FinancialsUC            *usecase.FinancialsUseCase
+	CorporateActionsUC      *usecase.CorporateActionsUseCase
 	SourceStatusRepo        *repository.SourceStatusRepository
 	TickerRepo              *repository.TickerRepository
 }
@@ -45,6 +46,7 @@ type Server struct {
 	brokerSummaryBackfillUC *usecase.BrokerSummaryBackfillUseCase
 	dailyPriceUC            *usecase.DailyPriceUseCase
 	financialsUC            *usecase.FinancialsUseCase
+	corporateActionsUC      usecase.CorporateActionsReader
 	sourceStatusRepo        *repository.SourceStatusRepository
 	tickers                 *TickerValidator
 }
@@ -63,6 +65,7 @@ func NewServer(deps Deps) *Server {
 		brokerSummaryBackfillUC: deps.BrokerSummaryBackfillUC,
 		dailyPriceUC:            deps.DailyPriceUC,
 		financialsUC:            deps.FinancialsUC,
+		corporateActionsUC:      deps.CorporateActionsUC,
 		sourceStatusRepo:        deps.SourceStatusRepo,
 		tickers:                 NewTickerValidator(deps.DB, deps.TickerRepo, deps.Log),
 	}
@@ -86,5 +89,6 @@ func (s *Server) Handler() http.Handler {
 	srv.AddTool(toolGetBrokerNetFlow, s.handleGetBrokerNetFlow)
 	srv.AddTool(toolGetDailyPrices, s.handleGetDailyPrices)
 	srv.AddTool(toolGetFinancials, s.handleGetFinancials)
+	srv.AddTool(toolGetCorporateActions, s.handleGetCorporateActions)
 	return server.NewStreamableHTTPServer(srv)
 }

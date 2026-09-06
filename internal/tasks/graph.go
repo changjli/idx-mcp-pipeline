@@ -202,6 +202,18 @@ var Graph = NewRegistry(
 		SelfHeal: true,
 	},
 	&Node{
+		Name: "corporate-actions",
+		Type: TypeCorporateActions,
+		Key:  dateKey(TypeCorporateActions),
+		Day:  dateDay(TypeCorporateActions),
+		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+			dateKey := day.Format("2006-01-02")
+			stage := pipeline.NewIngestStage(TypeCorporateActions, nil, enq, 3)
+			return stage.EnqueueWithOpts(TaskKey(TypeCorporateActions, dateKey), CorporateActionsPayload{Date: dateKey}, opts...)
+		},
+		SelfHeal: true,
+	},
+	&Node{
 		Name: "cleanup",
 		Type: TypeCleanup,
 		Key:  dateKey(TypeCleanup),
@@ -306,6 +318,6 @@ var Graph = NewRegistry(
 			task := asynq.NewTask(TypePipelineDaily, nil)
 			return enq.Enqueue(task, asynq.TaskID(taskKey), asynq.Queue("default"))
 		},
-		Wave: []string{TypeStockSummary, TypeAnnouncements, TypeRSS, TypeCleanup},
+		Wave: []string{TypeStockSummary, TypeAnnouncements, TypeRSS, TypeCorporateActions, TypeCleanup},
 	},
 )

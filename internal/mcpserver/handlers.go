@@ -21,6 +21,7 @@ const (
 	sourceIdxAnnouncements   = "idx:announcements"
 	sourceRSS                = "rss"
 	sourceBrokerStockSummary = "idx:broker_stock_summary"
+	sourceCorporateActions   = "idx:corporate_actions"
 )
 
 // defaultLimit is the default row cap for tools with a limit argument.
@@ -502,5 +503,46 @@ func (s *Server) handleGetFinancials(ctx context.Context, req mcpgo.CallToolRequ
 		StalenessMetadata: mcp.StalenessMetadata{
 			LastGoodDate: data.LatestPeriodEnd,
 		},
+	}), nil
+}
+
+// corporateActionsResponse wraps the usecase data with staleness metadata from
+// the idx:corporate_actions source_status row, which the on-demand fetch
+// updates on every call.
+type corporateActionsResponse struct {
+	*usecase.CorporateActionsResponse
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleGetCorporateActions(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	fromStr, _ := req.GetArguments()["date_from"].(string)
+	toStr, _ := req.GetArguments()["date_to"].(string)
+	ticker, _ := req.GetArguments()["ticker"].(string)
+
+	from, err := time.Parse("2006-01-02", fromStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date_from: "+fromStr, false)), nil
+	}
+	to, err := time.Parse("2006-01-02", toStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date_to: "+toStr, false)), nil
+	}
+
+	var tickerPtr *string
+	if ticker != "" {
+		norm, ok := s.tickers.Normalize(ticker)
+		if !ok {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+		}
+		tickerPtr = &norm
+	}
+
+	data, err := s.corporateActionsUC.GetCorporateActions(ctx, from, to, tickerPtr)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(corporateActionsResponse{
+		CorporateActionsResponse: data,
+		StalenessMetadata:        stalenessFor(s.db, s.sourceStatusRepo, sourceCorporateActions, time.Now()),
 	}), nil
 }
