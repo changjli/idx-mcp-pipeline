@@ -52,6 +52,7 @@ func main() {
 	rawFileRepo := repository.NewRawFileRepository(log)
 	brokerStockSummaryRepo := repository.NewBrokerStockSummaryRepository(log)
 	corporateActionRepo := repository.NewCorporateActionRepository(log)
+	suspensionRepo := repository.NewSuspensionRepository(log)
 	shareholderCompositionRepo := repository.NewShareholderCompositionRepository(log)
 
 	// source_status + alerts recorder: one shared instance every ingest stage
@@ -116,6 +117,21 @@ func main() {
 	}
 	mux.Handle(tasks.TypeCorporateActions, tasks.NewCorporateActionsHandler(
 		log, idxClient, db, corporateActionRepo, recorder, caLookback, caLookahead,
+	))
+	// idx:suspensions (issue 10): daily BEI UMA/suspension list fetch (two IDX
+	// requests — GetSuspension + GetUma) over a rolling window; the MCP tool
+	// reads the stored rows (no sidecar on the request path — Heroku H12
+	// constraint, ADR-0009).
+	suspLookback := vip.GetInt("idx.suspensions_lookback_days")
+	if suspLookback <= 0 {
+		suspLookback = tasks.DefaultSuspensionsLookbackDays
+	}
+	suspLookahead := vip.GetInt("idx.suspensions_lookahead_days")
+	if suspLookahead <= 0 {
+		suspLookahead = tasks.DefaultSuspensionsLookaheadDays
+	}
+	mux.Handle(tasks.TypeSuspensions, tasks.NewSuspensionsHandler(
+		log, idxClient, db, suspensionRepo, recorder, suspLookback, suspLookahead,
 	))
 	// ksei:balancepos (issue 08): monthly KSEI balance-position ingestion —
 	// the handler no-ops once the latest month-end file is stored; the MCP
@@ -281,6 +297,9 @@ func main() {
 	// get_corporate_actions (issue 09): pure DB read over the corporate_actions
 	// table, populated by the daily idx:corporate_actions task.
 	corporateActionsUC := usecase.NewCorporateActionsUseCase(db, log, corporateActionRepo)
+	// get_suspensions (issue 10): pure DB read over the suspensions table,
+	// populated by the daily idx:suspensions task.
+	suspensionsUC := usecase.NewSuspensionsUseCase(db, log, suspensionRepo)
 	// get_shareholder_composition (issue 08): pure DB read over the
 	// shareholder_composition table, populated by the monthly ksei:balancepos
 	// task.
@@ -335,6 +354,7 @@ func main() {
 		DailyPriceUC:            dailyPriceUC,
 		FinancialsUC:            financialsUC,
 		CorporateActionsUC:      corporateActionsUC,
+		SuspensionsUC:           suspensionsUC,
 		ShareholderCompUC:       shareholderCompositionUC,
 		SourceStatusRepo:        sourceStatusRepo,
 		TickerRepo:              tickerRepo,

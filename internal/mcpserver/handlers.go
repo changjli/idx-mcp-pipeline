@@ -22,6 +22,7 @@ const (
 	sourceRSS                = "rss"
 	sourceBrokerStockSummary = "idx:broker_stock_summary"
 	sourceCorporateActions   = "idx:corporate_actions"
+	sourceSuspensions        = "idx:suspensions"
 	sourceKSEIBalancepos     = "ksei:balancepos"
 )
 
@@ -545,6 +546,46 @@ func (s *Server) handleGetCorporateActions(ctx context.Context, req mcpgo.CallTo
 	return textResult(corporateActionsResponse{
 		CorporateActionsResponse: data,
 		StalenessMetadata:        stalenessFor(s.db, s.sourceStatusRepo, sourceCorporateActions, time.Now()),
+	}), nil
+}
+
+// suspensionsResponse wraps the usecase data with staleness metadata from the
+// idx:suspensions source_status row, which the daily task updates on every run.
+type suspensionsResponse struct {
+	*usecase.SuspensionsResponse
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleGetSuspensions(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	fromStr, _ := req.GetArguments()["date_from"].(string)
+	toStr, _ := req.GetArguments()["date_to"].(string)
+	ticker, _ := req.GetArguments()["ticker"].(string)
+
+	from, err := time.Parse("2006-01-02", fromStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date_from: "+fromStr, false)), nil
+	}
+	to, err := time.Parse("2006-01-02", toStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date_to: "+toStr, false)), nil
+	}
+
+	var tickerPtr *string
+	if ticker != "" {
+		norm, ok := s.tickers.Normalize(ticker)
+		if !ok {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+		}
+		tickerPtr = &norm
+	}
+
+	data, err := s.suspensionsUC.GetSuspensions(ctx, from, to, tickerPtr)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(suspensionsResponse{
+		SuspensionsResponse: data,
+		StalenessMetadata:   stalenessFor(s.db, s.sourceStatusRepo, sourceSuspensions, time.Now()),
 	}), nil
 }
 

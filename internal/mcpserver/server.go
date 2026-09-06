@@ -27,6 +27,7 @@ type Deps struct {
 	DailyPriceUC            *usecase.DailyPriceUseCase
 	FinancialsUC            *usecase.FinancialsUseCase
 	CorporateActionsUC      *usecase.CorporateActionsUseCase
+	SuspensionsUC           *usecase.SuspensionsUseCase
 	ShareholderCompUC       *usecase.ShareholderCompositionUseCase
 	SourceStatusRepo        *repository.SourceStatusRepository
 	TickerRepo              *repository.TickerRepository
@@ -48,6 +49,7 @@ type Server struct {
 	dailyPriceUC             *usecase.DailyPriceUseCase
 	financialsUC             *usecase.FinancialsUseCase
 	corporateActionsUC       usecase.CorporateActionsReader
+	suspensionsUC            usecase.SuspensionsReader
 	shareholderCompositionUC usecase.ShareholderCompositionReader
 	sourceStatusRepo         *repository.SourceStatusRepository
 	tickers                  *TickerValidator
@@ -68,6 +70,7 @@ func NewServer(deps Deps) *Server {
 		dailyPriceUC:             deps.DailyPriceUC,
 		financialsUC:             deps.FinancialsUC,
 		corporateActionsUC:       deps.CorporateActionsUC,
+		suspensionsUC:            deps.SuspensionsUC,
 		shareholderCompositionUC: deps.ShareholderCompUC,
 		sourceStatusRepo:         deps.SourceStatusRepo,
 		tickers:                  NewTickerValidator(deps.DB, deps.TickerRepo, deps.Log),
@@ -93,6 +96,7 @@ func (s *Server) Handler() http.Handler {
 	srv.AddTool(toolGetDailyPrices, s.handleGetDailyPrices)
 	srv.AddTool(toolGetFinancials, s.handleGetFinancials)
 	srv.AddTool(toolGetCorporateActions, s.handleGetCorporateActions)
+	srv.AddTool(toolGetSuspensions, s.handleGetSuspensions)
 	srv.AddTool(toolGetShareholderComposition, s.handleGetShareholderComposition)
 	return server.NewStreamableHTTPServer(srv)
 }

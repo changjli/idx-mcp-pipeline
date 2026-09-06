@@ -21,6 +21,7 @@ var allTools = []mcpgo.Tool{
 	toolGetBrokerNetFlow,
 	toolGetDailyPrices,
 	toolGetCorporateActions,
+	toolGetSuspensions,
 	toolGetShareholderComposition,
 }
 
@@ -99,6 +100,7 @@ func TestToolRequiredArguments(t *testing.T) {
 		"get_broker_net_flow":              {},
 		"get_daily_prices":                 {"ticker", "from", "to"},
 		"get_corporate_actions":            {"date_from", "date_to"},
+		"get_suspensions":                  {"date_from", "date_to"},
 		"get_shareholder_composition":      {"ticker", "date_from", "date_to"},
 	}
 

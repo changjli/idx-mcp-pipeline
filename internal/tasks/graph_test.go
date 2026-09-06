@@ -92,7 +92,7 @@ func TestGraphKeyDayRoundTrip(t *testing.T) {
 
 func TestGraphWaveMembershipComplete(t *testing.T) {
 	node := Graph.Node(TypePipelineDaily)
-	want := []string{TypeStockSummary, TypeAnnouncements, TypeRSS, TypeCorporateActions, TypeKSEIBalancepos, TypeCleanup}
+	want := []string{TypeStockSummary, TypeAnnouncements, TypeRSS, TypeCorporateActions, TypeSuspensions, TypeKSEIBalancepos, TypeCleanup}
 	if len(node.Wave) != len(want) {
 		t.Fatalf("pipeline:daily wave = %v, want %v", node.Wave, want)
 	}
@@ -110,7 +110,7 @@ func TestGraphSelfHealSetExact(t *testing.T) {
 			got[node.Type] = true
 		}
 	}
-	want := map[string]bool{TypeStockSummary: true, TypeAnnouncements: true, TypeRSS: true, TypeCorporateActions: true, TypeKSEIBalancepos: true}
+	want := map[string]bool{TypeStockSummary: true, TypeAnnouncements: true, TypeRSS: true, TypeCorporateActions: true, TypeSuspensions: true, TypeKSEIBalancepos: true}
 	if len(got) != len(want) {
 		t.Fatalf("self-heal set = %v, want %v", got, want)
 	}
