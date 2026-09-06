@@ -32,6 +32,26 @@ _Avoid_: parse state, queued
 Per-broker aggregate trading activity across all stocks for a date (V1). No ticker dimension and no buy/sell split in V1; per-symbol bandarmology is a fast-follow.
 _Avoid_: broker report, orderbook
 
+**Broker Stock Summary**:
+Per-ticker, per-day broker table: top-10 buyers and top-10 sellers by value for one ticker on one day, plus footer totals (`t_val`, `f_nval`) and `others_net`. IPOT lists only the top-10 per side — brokers below the cut appear only inside `others_net`. Persisted for anomaly-passing days and on-demand `get_stock_broker_summary` fetches; this sparse coverage is the norm, never an error.
+_Avoid_: bandarmologi, broker table (use for the raw IPOT artifact)
+
+**Others Net**:
+The unlisted tail's net in one stock-day's broker table: `Σ listed sellers − Σ listed buyers` = the tail's net in buy−sell convention — positive = the quiet tail net-bought, negative = net-sold. Same sign convention as Net Flow (positive = accumulation). A single aggregate; the tail cannot be attributed to specific brokers. Computed by the pipeline, and recomputed by the history reader from stored rows (always correct for pre-000013 rows).
+_Avoid_: tail net value, residual
+
+**Net Flow**:
+Per-broker cumulative net over a `(ticker, from, to)` window: `Σ listed-day buy values − Σ listed-day sell values`, positive = net accumulation. Computed from stored top-10 rows; a broker below top-10 on a day contributes only to that day's Others Net and is never inferred from it.
+_Avoid_: flow, net value (ambiguous with a single day)
+
+**Coverage**:
+How much of a window a Net Flow answer actually observes: `covered_days` (distinct trading days with stored broker rows) vs `trade_days_in_window` (distinct EOD days in `daily_prices`). Reported so partial data reads as partial, never as silence.
+_Avoid_: completeness, freshness (owned by Stale)
+
+**Market-Wide Stance**:
+`get_broker_net_flow`'s ticker-less mode: per-broker Net Flow summed across all tickers with stored broker rows in the window, each broker row carrying a per-ticker breakdown (`by_ticker`) so the stance is attributable — which stocks a broker accumulated, not just how much. Population is anomaly-gated (skews to busy stocks); the response declares `tickers_covered` so the bias is visible, not hidden.
+_Avoid_: market sentiment, foreign flow (out of scope)
+
 **Financial Statement**:
 A ticker's normalized income-statement, balance-sheet and ratio line items for one reported period, in raw IDR. Fetched live on request from the IPOT fundamental source — not persisted, no pipeline stage (the persisted pipeline is a deferred fast-follow). IDX periods are cumulative year-to-date (3M, 6M, 9M, 12M columns) — statements are comparable only within the same duration. Analyst-forecast and interim columns ride along tagged (`is_forecast` / `is_interim`), not excluded; line items without a dedicated field land in `extra`.
 _Avoid_: fundamentals, financials (as stored entity — nothing is stored)

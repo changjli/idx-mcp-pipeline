@@ -14,9 +14,30 @@ const (
 	TypeDetectAnomalies    = "detect:anomalies"
 	TypeRSS                = "rss:ingest"
 	TypeBrokerStockSummary = "idx:broker_stock_summary"
-	TypeFilterDisclosures  = "filter:disclosures"
-	TypeExtractDisclosure  = "extract:disclosure"
-	TypeCleanup            = "cleanup"
+	// TypeBrokerStockSummaryRange is the on-demand range backfill task (issue
+	// 12): one ticker over a date range, enqueued by the MCP backfill tool.
+	TypeBrokerStockSummaryRange = "idx:broker_stock_summary_range"
+	// TypeBrokerStockSummarySweep is the weekly ADTV-gated sweep (issue 14b):
+	// one task per date that backfills broker summaries for liquid tickers
+	// over the trailing window, skipping days already stored. Runs on top of
+	// the anomaly-gated per-ticker flow.
+	TypeBrokerStockSummarySweep = "idx:broker_stock_summary_sweep"
+	TypeFilterDisclosures       = "filter:disclosures"
+	TypeExtractDisclosure       = "extract:disclosure"
+	TypeCleanup                 = "cleanup"
+	// TypeCorporateActions is the daily corporate-actions calendar fetch (issue
+	// 09): one request to GetIssuedHistory over a rolling window, persisted to
+	// corporate_actions. The MCP tool is a pure DB read over the stored rows.
+	TypeCorporateActions = "idx:corporate_actions"
+	// TypeSuspensions is the daily BEI UMA/suspension list fetch (issue 10):
+	// two requests (GetSuspension + GetUma) over a rolling window, persisted to
+	// suspensions. The MCP tool is a pure DB read over the stored rows.
+	TypeSuspensions = "idx:suspensions"
+	// TypeKSEIBalancepos is the monthly KSEI balance-position ingestion (issue
+	// 08): one zip download for the preceding month-end, persisted to
+	// shareholder_composition. The task runs daily but no-ops once the latest
+	// file is stored (watermark-gated). The MCP tool is a pure DB read.
+	TypeKSEIBalancepos = "ksei:balancepos"
 )
 
 // TaskKey returns a dedup key for a task type and date.

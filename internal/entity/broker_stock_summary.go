@@ -23,4 +23,5 @@ type BrokerStockSummaryTotals struct {
 	FNVal      *int64    `db:"f_nval"`
 	TLot       *int64    `db:"t_lot"`
 	Avg        *int64    `db:"avg"`
+	OthersNet  *int64    `db:"others_net"` // tail net = Σ sell − Σ buy over non-listed brokers
 }

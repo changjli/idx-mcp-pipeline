@@ -6,7 +6,7 @@ import (
 
 // instructions is the server-level instructions string (draft from spec §11,
 // trimmed to the tools actually wired — read_idx_disclosure is ticket 12).
-const instructions = "IDX Market Analyzer co-pilot. Tools read a daily-persisted IDX pipeline (no live network fetch in V1, except get_stock_broker_summary and fetch_disclosure_pdf which fetch on demand, and get_financials which fetches financial statements live from IPOT — nothing persisted). get_market_anomalies — volume/price anomalies for a trading day, each with disclosure_ids to follow into list_idx_disclosures or read_idx_disclosure. list_idx_disclosures — browse a ticker's filings (metadata only). search_disclosures — cross-ticker disclosure search by keyword over titles and categories, with date range (e.g. which issuers announced a dividend this week). read_idx_disclosure — one disclosure's metadata plus pre-extracted text (truncated to 64KB); check its status field (ok/pending/failed/evicted) before assuming text is present. fetch_disclosure_pdf — on-demand PDF extraction. Cached text → return it. Otherwise enqueue an async extraction job and return pending; poll read_idx_disclosure until status leaves pending (ok | failed). get_ticker_news — RSS headlines tagged to a ticker. get_broker_summary — aggregate per-broker activity for a date. get_stock_broker_summary — per-stock top buyers/sellers for a ticker+day (fetches + persists). get_stock_broker_summary_history — stored per-stock broker history over a date range. get_daily_prices — stored Daily Price (OHLCV) series for a ticker over a date range. get_financials — normalized financial statements fetched live; periods are cumulative YTD, use the same-duration columns for comparison. get_pipeline_status — pipeline health / staleness. All outputs carry data_stale + last_good_date; if stale, note it to the user."
+const instructions = "IDX Market Analyzer co-pilot. Tools read a daily-persisted IDX pipeline (no live network fetch in V1, except get_stock_broker_summary and fetch_disclosure_pdf which fetch on demand, and get_financials which fetches financial statements live from IPOT — nothing persisted). get_market_anomalies — volume/price anomalies for a trading day, each with disclosure_ids to follow into list_idx_disclosures or read_idx_disclosure. list_idx_disclosures — browse a ticker's filings (metadata only). search_disclosures — cross-ticker disclosure search by keyword over titles and categories, with date range (e.g. which issuers announced a dividend this week). read_idx_disclosure — one disclosure's metadata plus pre-extracted text (truncated to 64KB); check its status field (ok/pending/failed/evicted) before assuming text is present. fetch_disclosure_pdf — on-demand PDF extraction. Cached text → return it. Otherwise enqueue an async extraction job and return pending; poll read_idx_disclosure until status leaves pending (ok | failed). get_ticker_news — RSS headlines tagged to a ticker. get_broker_summary — aggregate per-broker activity for a date. get_stock_broker_summary — per-stock top buyers/sellers for a ticker+day (fetches + persists). get_stock_broker_summary_history — stored per-stock broker history over a date range. backfill_stock_broker_summary — enqueue a per-stock broker summary backfill over a date range (async; poll get_stock_broker_summary_history for completion). get_broker_net_flow — per-broker cumulative net flow over a window (omit ticker for market-wide stance); rows read from stored history, coverage declared. get_daily_prices — stored Daily Price (OHLCV) series for a ticker over a date range. get_financials — normalized financial statements fetched live; periods are cumulative YTD, use the same-duration columns for comparison. get_corporate_actions — stored corporate-actions calendar for a date range (dividends, stock splits, rights issues, warrants, ...), refreshed daily by the pipeline. get_suspensions — stored BEI UMA/suspension events for a date range (type SPT/UPT/UMA; a ticker's presence on a date = suspended or UMA'd that day), refreshed daily by the pipeline. get_shareholder_composition — stored monthly KSEI shareholder composition for one ticker (local/foreign × investor-type share counts, month-end positions, refreshed monthly by the pipeline); for named ≥5% holders use search_disclosures + fetch_disclosure_pdf on demand. get_pipeline_status — pipeline health / staleness. All outputs carry data_stale + last_good_date; if stale, note it to the user."
 
 // readOnlyAnnotations marks a tool read-only: clients skip confirmation
 // prompts. Every tool declares readOnlyHint=true, destructiveHint=false,
@@ -14,6 +14,18 @@ const instructions = "IDX Market Analyzer co-pilot. Tools read a daily-persisted
 func readOnlyAnnotations() mcpgo.ToolOption {
 	return mcpgo.WithToolAnnotation(mcpgo.ToolAnnotation{
 		ReadOnlyHint:    boolPtr(true),
+		DestructiveHint: boolPtr(false),
+		OpenWorldHint:   boolPtr(true),
+	})
+}
+
+// writeAnnotations marks a tool as a write: readOnlyHint=false so clients
+// prompt for confirmation. destructiveHint stays false — the backfill is an
+// idempotent upsert, not a delete. The spec's rule (issue 12): a write tool
+// must not silently declare destructive=false via the read-only helper.
+func writeAnnotations() mcpgo.ToolOption {
+	return mcpgo.WithToolAnnotation(mcpgo.ToolAnnotation{
+		ReadOnlyHint:    boolPtr(false),
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(true),
 	})
@@ -79,7 +91,10 @@ var toolReadIdxDisclosure = mcpgo.NewTool("read_idx_disclosure",
 var toolFetchDisclosurePDF = mcpgo.NewTool("fetch_disclosure_pdf",
 	mcpgo.WithDescription("Fetches and extracts a single Disclosure's PDF on demand. If the text is already cached (extraction status ok), returns it immediately. Otherwise enqueues an async extraction job and returns immediately with status pending and text null. Poll read_idx_disclosure with the same disclosure_id every few seconds: status stays pending while the job runs (self-retries twice, 30s and 2m), then returns ok with text, or failed with error. Use when read_idx_disclosure reports pending/failed/evicted or the text is missing."),
 	mcpgo.WithString("disclosure_id", mcpgo.Description("Postgres surrogate ID from get_market_anomalies.disclosure_ids or list_idx_disclosures."), mcpgo.Required()),
-	readOnlyAnnotations(),
+	// A write: enqueues an extraction job whose worker persists raw_files and
+	// updates the disclosure's extraction status. Declared with
+	// writeAnnotations, not read-only.
+	writeAnnotations(),
 )
 
 // toolGetPipelineStatus — per-source pipeline health.
@@ -89,12 +104,16 @@ var toolGetPipelineStatus = mcpgo.NewTool("get_pipeline_status",
 )
 
 // toolGetStockBrokerSummary — per-stock broker summary via IPOT (the one tool
-// that makes an upstream call).
+// that makes an upstream call). IPOT lists only the top-10 each side; the
+// response's total_buy_value / total_sell_value / others_net cover the whole
+// market incl. the non-listed tail (issue 03).
 var toolGetStockBrokerSummary = mcpgo.NewTool("get_stock_broker_summary",
-	mcpgo.WithDescription("Per-stock top buyers/sellers for a ticker+day, fetched from IPOT on demand and persisted. Defaults to the ticker's latest trading day."),
+	mcpgo.WithDescription("Per-stock top buyers/sellers for a ticker+day, fetched from IPOT on demand and persisted. IPOT shows only the top-10 per side, so total_buy_value, total_sell_value, and others_net (= the unlisted tail's net) are included to keep sums market-accurate. Defaults to the ticker's latest trading day."),
 	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. RAJA or RAJA.JK)."), mcpgo.Required()),
 	mcpgo.WithString("date", mcpgo.Description("Trading day, YYYY-MM-DD. Defaults to the ticker's latest stored trading day.")),
-	readOnlyAnnotations(),
+	// A write: fetches from IPOT AND persists the day's rows. Declared with
+	// writeAnnotations, not read-only (the persist is the tool's contract).
+	writeAnnotations(),
 )
 
 // toolGetStockBrokerSummaryHistory — stored per-stock broker history.
@@ -103,6 +122,19 @@ var toolGetStockBrokerSummaryHistory = mcpgo.NewTool("get_stock_broker_summary_h
 	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. RAJA or RAJA.JK)."), mcpgo.Required()),
 	mcpgo.WithString("from", mcpgo.Description("Range start, YYYY-MM-DD."), mcpgo.Required()),
 	mcpgo.WithString("to", mcpgo.Description("Range end, YYYY-MM-DD."), mcpgo.Required()),
+	readOnlyAnnotations(),
+)
+
+// toolGetBrokerNetFlow — per-broker cumulative net flow over a window (issue
+// 04). Rows are aggregated from stored per-day top-10 lists; a broker below
+// top-10 on a day is not inferred (its flow sits in others_net), and coverage
+// (trade_days_in_window vs covered_days) declares how much of the window the
+// stored rows actually observe.
+var toolGetBrokerNetFlow = mcpgo.NewTool("get_broker_net_flow",
+	mcpgo.WithDescription("Per-broker cumulative net flow over a window, aggregated from stored per-stock broker summaries. Pass ticker for one stock's accumulation over the range; omit ticker for market-wide stance (every broker's net across all tickers with stored rows — population is anomaly-gated, tickers_covered declares it, and each broker row carries a by_ticker breakdown so you can see which stocks a broker accumulated). Each row carries buy/sell/net (net = buy − sell, positive = accumulation) plus days_shown in ticker mode or sessions/tickers/by_ticker in market mode. A broker below the top-10 on a day is never inferred — its flow sits in the window others_net tail. Coverage fields trade_days_in_window vs covered_days show how much of the window has stored rows; empty data returns empty rows with coverage 0, not an error. from/to default to the last 30 calendar days ending at the latest trading day; windows over 180 days are rejected."),
+	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. BBRI or BBRI.JK). Omit for market-wide mode.")),
+	mcpgo.WithString("from", mcpgo.Description("Range start, YYYY-MM-DD. Defaults to 30 calendar days before to.")),
+	mcpgo.WithString("to", mcpgo.Description("Range end, YYYY-MM-DD. Defaults to the latest trading day.")),
 	readOnlyAnnotations(),
 )
 
@@ -115,11 +147,66 @@ var toolGetDailyPrices = mcpgo.NewTool("get_daily_prices",
 	readOnlyAnnotations(),
 )
 
+// toolBackfillStockBrokerSummary — on-demand per-stock broker summary backfill
+// over a date range (issue 12). Async: enqueues an idx:broker_stock_summary_range
+// task and returns a pending envelope; the worker owns the fetch+persist loop
+// and the client polls get_stock_broker_summary_history until the range's days
+// are covered. A write tool — declared with writeAnnotations, not read-only.
+var toolBackfillStockBrokerSummary = mcpgo.NewTool("backfill_stock_broker_summary",
+	mcpgo.WithDescription("Backfill per-stock broker summaries for a ticker over a date range. Enqueues an async backfill task and returns immediately with status pending; the worker fetches + persists each trading day in the range (IPOT on-demand). Poll get_stock_broker_summary_history with the same ticker/from/to until the days are covered. Use to fill gaps get_broker_net_flow or get_stock_broker_summary_history reveal (e.g. days the anomaly gate missed, or pre-others_net rows)."),
+	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. RAJA or RAJA.JK)."), mcpgo.Required()),
+	mcpgo.WithString("from", mcpgo.Description("Range start, YYYY-MM-DD."), mcpgo.Required()),
+	mcpgo.WithString("to", mcpgo.Description("Range end, YYYY-MM-DD."), mcpgo.Required()),
+	writeAnnotations(),
+)
+
 // toolGetFinancials — live financial statements from IPOT (temporary route,
 // issue 07: nothing persisted; the persisted pipeline is issue 07b).
 var toolGetFinancials = mcpgo.NewTool("get_financials",
 	mcpgo.WithDescription("Normalized financial statements for a ticker, fetched live from IPOT on demand — nothing is persisted. Periods are cumulative year-to-date as IDX reports them (3M = Jan–Mar, 6M = Jan–Jun, 9M = Jan–Sep, 12M = full year): compare only columns of the same duration. period selects which columns: \"recent\" (default) — the latest ~2 years, one column per report type, plus the analyst-consensus forecast (is_forecast) and the latest unaudited interim report (is_interim); \"quarterly\" — reported Q1 (Jan–Mar) columns for ~6 years; \"annual\" — audited full-year columns for ~6 years. YoY comparison for Q2/Q3 individually is not available — derive direction from recent or annual. Money values are raw IDR; ratios keep the source's units (ROE/ROA in percent, PER/PBV/DebtToEquity as plain multiples); line items without a dedicated field ride in extra keyed by the source label."),
 	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. BBRI or TLKM)."), mcpgo.Required()),
 	mcpgo.WithString("period", mcpgo.Description("\"recent\" (default), \"quarterly\", or \"annual\".")),
+	readOnlyAnnotations(),
+)
+
+// toolGetCorporateActions — corporate-actions calendar for a date range (issue
+// 09). Pure DB read over the corporate_actions table, which the daily
+// idx:corporate_actions task refreshes (one GetIssuedHistory request per day —
+// the MCP request path never touches the nodriver sidecar, Heroku H12
+// constraint ADR-0009). Read-only annotations are honest here: no fetch, no
+// persist on the tool path.
+var toolGetCorporateActions = mcpgo.NewTool("get_corporate_actions",
+	mcpgo.WithDescription("Stored corporate-actions calendar for an inclusive date range (dividends, stock splits, rights issues, warrants, ...), refreshed daily by the pipeline. Pure DB read — no upstream call. Event dates are the listing/action dates; coverage is bounded by the daily fetch window (recent past through ~90 days ahead), so events outside it return empty. Pass ticker (e.g. BBRI or BBRI.JK) for one issuer; omit for all. Each event carries event_date, ticker, type (the IDX Indonesian label, e.g. Waran, Stock Split), and detail with jumlah_saham and jumlah_saham_setelah_tindakan — either may be 0. Events ascend by event date; source coverage shows in data_stale / last_good_date."),
+	mcpgo.WithString("date_from", mcpgo.Description("Range start, YYYY-MM-DD. Inclusive."), mcpgo.Required()),
+	mcpgo.WithString("date_to", mcpgo.Description("Range end, YYYY-MM-DD. Inclusive."), mcpgo.Required()),
+	mcpgo.WithString("ticker", mcpgo.Description("Optional ticker filter (e.g. BBRI or BBRI.JK).")),
+	readOnlyAnnotations(),
+)
+
+// toolGetSuspensions — BEI UMA/suspension list for a date range (issue 10).
+// Pure DB read over the suspensions table, which the daily idx:suspensions
+// task refreshes (two IDX requests per day — GetSuspension + GetUma — the MCP
+// request path never touches the nodriver sidecar, Heroku H12 constraint
+// ADR-0009). Read-only annotations are honest here: no fetch, no persist on the
+// tool path.
+var toolGetSuspensions = mcpgo.NewTool("get_suspensions",
+	mcpgo.WithDescription("Stored BEI UMA/suspension events for an inclusive date range, refreshed daily by the pipeline. Pure DB read — no upstream call. type is the raw IDX discriminator: SPT (suspension), UPT (trading resumed after suspension), or UMA (unusual market activity warning). A ticker present on a given date means it was suspended or UMA'd that day — the source of truth instead of RSS headline matches. Pass ticker (e.g. BBRI or BBRI.JK) for one issuer; omit for all. Each event carries event_date, ticker, type, and reason (the announcement title). Events ascend by event date; source coverage shows in data_stale / last_good_date."),
+	mcpgo.WithString("date_from", mcpgo.Description("Range start, YYYY-MM-DD. Inclusive."), mcpgo.Required()),
+	mcpgo.WithString("date_to", mcpgo.Description("Range end, YYYY-MM-DD. Inclusive."), mcpgo.Required()),
+	mcpgo.WithString("ticker", mcpgo.Description("Optional ticker filter (e.g. BBRI or BBRI.JK).")),
+	readOnlyAnnotations(),
+)
+
+// toolGetShareholderComposition — KSEI monthly shareholder composition for one
+// ticker (issue 08). Pure DB read over the shareholder_composition table,
+// which the ksei:balancepos task refreshes (one zip download per month — the
+// MCP request path never touches an upstream host, Heroku H12 constraint
+// ADR-0009). Read-only annotations are honest here: no fetch, no persist on
+// the tool path.
+var toolGetShareholderComposition = mcpgo.NewTool("get_shareholder_composition",
+	mcpgo.WithDescription("Stored monthly shareholder composition for one ticker from KSEI's balance-position archive (Lokal-Asing), ingested monthly by the pipeline. Pure DB read — no upstream call. Each row is a month-end position: sec_num (registered shares), price, and local/foreign breakdowns across nine KSEI investor-type codes (is=Insurance, cp=Corporate, pf=Pension Fund, ib=Financial Institution, id=Individu, mf=Mutual Fund, sc=Securities Company, fd=Foundation, ot=Others) plus local_total/foreign_total/total share counts. Counts are scripless (SID-held) positions — large registered (warkat) blocks are absent, so local totals can understate vs a company's LBE report; foreign holdings are scripless in practice and match it. Rows ascend by position date; source coverage shows in data_stale / last_good_date. For named ≥5% holders or pengendali, use search_disclosures (title 'Laporan Bulanan Registrasi Pemegang Efek') then fetch_disclosure_pdf and read the extracted text on demand."),
+	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. BBCA or BBCA.JK)."), mcpgo.Required()),
+	mcpgo.WithString("date_from", mcpgo.Description("Range start, YYYY-MM-DD. Inclusive."), mcpgo.Required()),
+	mcpgo.WithString("date_to", mcpgo.Description("Range end, YYYY-MM-DD. Inclusive."), mcpgo.Required()),
 	readOnlyAnnotations(),
 )

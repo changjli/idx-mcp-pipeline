@@ -21,6 +21,9 @@ const (
 	sourceIdxAnnouncements   = "idx:announcements"
 	sourceRSS                = "rss"
 	sourceBrokerStockSummary = "idx:broker_stock_summary"
+	sourceCorporateActions   = "idx:corporate_actions"
+	sourceSuspensions        = "idx:suspensions"
+	sourceKSEIBalancepos     = "ksei:balancepos"
 )
 
 // defaultLimit is the default row cap for tools with a limit argument.
@@ -367,6 +370,80 @@ func (s *Server) handleGetStockBrokerSummaryHistory(ctx context.Context, req mcp
 	}), nil
 }
 
+// handleBackfillStockBrokerSummary validates the range and enqueues the async
+// backfill task (issue 12). The response is the pending envelope — the worker
+// owns the fetch+persist loop, the client polls get_stock_broker_summary_history.
+func (s *Server) handleBackfillStockBrokerSummary(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	ticker, _ := req.GetArguments()["ticker"].(string)
+	fromStr, _ := req.GetArguments()["from"].(string)
+	toStr, _ := req.GetArguments()["to"].(string)
+
+	norm, ok := s.tickers.Normalize(ticker)
+	if !ok {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+	}
+	from, err := time.Parse("2006-01-02", fromStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid from date: "+fromStr, false)), nil
+	}
+	to, err := time.Parse("2006-01-02", toStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid to date: "+toStr, false)), nil
+	}
+
+	data, err := s.brokerSummaryBackfillUC.BackfillStockBrokerSummary(ctx, norm, from, to)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(data), nil
+}
+
+// brokerNetFlowResponse wraps the usecase data with staleness metadata.
+type brokerNetFlowResponse struct {
+	*usecase.BrokerNetFlowResponse
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleGetBrokerNetFlow(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	args := req.GetArguments()
+	ticker, _ := args["ticker"].(string)
+	fromStr, _ := args["from"].(string)
+	toStr, _ := args["to"].(string)
+
+	var tickerPtr *string
+	if ticker != "" {
+		norm, ok := s.tickers.Normalize(ticker)
+		if !ok {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+		}
+		tickerPtr = &norm
+	}
+	var fromPtr, toPtr *time.Time
+	if fromStr != "" {
+		t, err := time.Parse("2006-01-02", fromStr)
+		if err != nil {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid from date: "+fromStr, false)), nil
+		}
+		fromPtr = &t
+	}
+	if toStr != "" {
+		t, err := time.Parse("2006-01-02", toStr)
+		if err != nil {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid to date: "+toStr, false)), nil
+		}
+		toPtr = &t
+	}
+
+	data, err := s.brokerStockSummaryUC.GetBrokerNetFlow(ctx, tickerPtr, fromPtr, toPtr)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(brokerNetFlowResponse{
+		BrokerNetFlowResponse: data,
+		StalenessMetadata:     stalenessFor(s.db, s.sourceStatusRepo, sourceBrokerStockSummary, time.Now()),
+	}), nil
+}
+
 // dailyPricesResponse wraps the usecase data with staleness metadata.
 type dailyPricesResponse struct {
 	*usecase.DailyPricesData
@@ -428,5 +505,125 @@ func (s *Server) handleGetFinancials(ctx context.Context, req mcpgo.CallToolRequ
 		StalenessMetadata: mcp.StalenessMetadata{
 			LastGoodDate: data.LatestPeriodEnd,
 		},
+	}), nil
+}
+
+// corporateActionsResponse wraps the usecase data with staleness metadata from
+// the idx:corporate_actions source_status row, which the on-demand fetch
+// updates on every call.
+type corporateActionsResponse struct {
+	*usecase.CorporateActionsResponse
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleGetCorporateActions(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	fromStr, _ := req.GetArguments()["date_from"].(string)
+	toStr, _ := req.GetArguments()["date_to"].(string)
+	ticker, _ := req.GetArguments()["ticker"].(string)
+
+	from, err := time.Parse("2006-01-02", fromStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date_from: "+fromStr, false)), nil
+	}
+	to, err := time.Parse("2006-01-02", toStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date_to: "+toStr, false)), nil
+	}
+
+	var tickerPtr *string
+	if ticker != "" {
+		norm, ok := s.tickers.Normalize(ticker)
+		if !ok {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+		}
+		tickerPtr = &norm
+	}
+
+	data, err := s.corporateActionsUC.GetCorporateActions(ctx, from, to, tickerPtr)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(corporateActionsResponse{
+		CorporateActionsResponse: data,
+		StalenessMetadata:        stalenessFor(s.db, s.sourceStatusRepo, sourceCorporateActions, time.Now()),
+	}), nil
+}
+
+// suspensionsResponse wraps the usecase data with staleness metadata from the
+// idx:suspensions source_status row, which the daily task updates on every run.
+type suspensionsResponse struct {
+	*usecase.SuspensionsResponse
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleGetSuspensions(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	fromStr, _ := req.GetArguments()["date_from"].(string)
+	toStr, _ := req.GetArguments()["date_to"].(string)
+	ticker, _ := req.GetArguments()["ticker"].(string)
+
+	from, err := time.Parse("2006-01-02", fromStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date_from: "+fromStr, false)), nil
+	}
+	to, err := time.Parse("2006-01-02", toStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date_to: "+toStr, false)), nil
+	}
+
+	var tickerPtr *string
+	if ticker != "" {
+		norm, ok := s.tickers.Normalize(ticker)
+		if !ok {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+		}
+		tickerPtr = &norm
+	}
+
+	data, err := s.suspensionsUC.GetSuspensions(ctx, from, to, tickerPtr)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(suspensionsResponse{
+		SuspensionsResponse: data,
+		StalenessMetadata:   stalenessFor(s.db, s.sourceStatusRepo, sourceSuspensions, time.Now()),
+	}), nil
+}
+
+// shareholderCompositionResponse wraps the usecase data with staleness
+// metadata from the ksei:balancepos source_status row, which the monthly task
+// updates on every run (including no-ops).
+type shareholderCompositionResponse struct {
+	*usecase.ShareholderCompositionResponse
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleGetShareholderComposition(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	ticker, _ := req.GetArguments()["ticker"].(string)
+	fromStr, _ := req.GetArguments()["date_from"].(string)
+	toStr, _ := req.GetArguments()["date_to"].(string)
+
+	if ticker == "" {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "ticker is required", false)), nil
+	}
+	norm, ok := s.tickers.Normalize(ticker)
+	if !ok {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+	}
+	from, err := time.Parse("2006-01-02", fromStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date_from: "+fromStr, false)), nil
+	}
+	to, err := time.Parse("2006-01-02", toStr)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date_to: "+toStr, false)), nil
+	}
+
+	data, err := s.shareholderCompositionUC.GetShareholderComposition(ctx, norm, from, to)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(shareholderCompositionResponse{
+		ShareholderCompositionResponse: data,
+		StalenessMetadata:              stalenessFor(s.db, s.sourceStatusRepo, sourceKSEIBalancepos, time.Now()),
 	}), nil
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/config"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/extract"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ksei"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/mcpserver"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/middleware"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
@@ -50,6 +51,9 @@ func main() {
 	alertRepo := repository.NewAlertRepository(log)
 	rawFileRepo := repository.NewRawFileRepository(log)
 	brokerStockSummaryRepo := repository.NewBrokerStockSummaryRepository(log)
+	corporateActionRepo := repository.NewCorporateActionRepository(log)
+	suspensionRepo := repository.NewSuspensionRepository(log)
+	shareholderCompositionRepo := repository.NewShareholderCompositionRepository(log)
 
 	// source_status + alerts recorder: one shared instance every ingest stage
 	// reports its success/failure through (ADR-0006).
@@ -70,6 +74,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to init IDX client: %v", err)
 	}
+
+	// KSEI HTTP client (issue 08): plain HTTPS to web.ksei.co.id — the
+	// balance-position archive needs no browser transport and no sidecar.
+	kseiClient := ksei.NewClient("", nil)
 	defer idxClient.Close()
 
 	// Task mux: route task types to handlers
@@ -95,6 +103,41 @@ func main() {
 	mux.Handle(tasks.TypeAnnouncements, tasks.NewAnnouncementsHandler(
 		log, idxClient, db,
 		recorder, disclosureIngest, lookback,
+	))
+	// idx:corporate_actions (issue 09): daily calendar fetch over a rolling
+	// window; the MCP tool reads the stored rows (no sidecar on the request
+	// path — Heroku H12 constraint, ADR-0009).
+	caLookback := vip.GetInt("idx.corporate_actions_lookback_days")
+	if caLookback <= 0 {
+		caLookback = tasks.DefaultCorporateActionsLookbackDays
+	}
+	caLookahead := vip.GetInt("idx.corporate_actions_lookahead_days")
+	if caLookahead <= 0 {
+		caLookahead = tasks.DefaultCorporateActionsLookaheadDays
+	}
+	mux.Handle(tasks.TypeCorporateActions, tasks.NewCorporateActionsHandler(
+		log, idxClient, db, corporateActionRepo, recorder, caLookback, caLookahead,
+	))
+	// idx:suspensions (issue 10): daily BEI UMA/suspension list fetch (two IDX
+	// requests — GetSuspension + GetUma) over a rolling window; the MCP tool
+	// reads the stored rows (no sidecar on the request path — Heroku H12
+	// constraint, ADR-0009).
+	suspLookback := vip.GetInt("idx.suspensions_lookback_days")
+	if suspLookback <= 0 {
+		suspLookback = tasks.DefaultSuspensionsLookbackDays
+	}
+	suspLookahead := vip.GetInt("idx.suspensions_lookahead_days")
+	if suspLookahead <= 0 {
+		suspLookahead = tasks.DefaultSuspensionsLookaheadDays
+	}
+	mux.Handle(tasks.TypeSuspensions, tasks.NewSuspensionsHandler(
+		log, idxClient, db, suspensionRepo, recorder, suspLookback, suspLookahead,
+	))
+	// ksei:balancepos (issue 08): monthly KSEI balance-position ingestion —
+	// the handler no-ops once the latest month-end file is stored; the MCP
+	// tool reads the stored rows.
+	mux.Handle(tasks.TypeKSEIBalancepos, tasks.NewKSEIBalanceposHandler(
+		log, kseiClient, db, shareholderCompositionRepo, recorder,
 	))
 	minADTV := vip.GetInt64("anomaly.min_adtv_value") // <= 0 → DefaultADTVMinValue in the constructor
 	anomalyDetector := pipeline.NewAnomalyDetector(
@@ -168,6 +211,19 @@ func main() {
 	mux.Handle(tasks.TypeBrokerStockSummary, tasks.NewBrokerStockSummaryHandler(
 		log, brokerStockSummaryUC, recorder,
 	))
+	// Range backfill (issue 12): the MCP backfill tool enqueues this task; the
+	// worker runs the same GetStockBrokerSummaryRange loop the CLI bulk mode
+	// calls synchronously.
+	mux.Handle(tasks.TypeBrokerStockSummaryRange, tasks.NewBrokerStockSummaryRangeHandler(
+		log, brokerStockSummaryUC, recorder,
+	))
+	// Weekly ADTV-gated sweep (issue 14b): backfill broker summaries for
+	// liquid tickers over the trailing window, skipping days the anomaly gate
+	// already covered. Scheduled Saturday after the week's pipeline wave; the
+	// ADTV floor is the anomaly detector's own bar (minADTV above).
+	mux.Handle(tasks.TypeBrokerStockSummarySweep, tasks.NewBrokerSummarySweepHandler(
+		log, db, brokerStockSummaryUC, dailyPriceRepo, recorder, minADTV,
+	))
 
 	// Start asynq server in background goroutine
 	go func() {
@@ -233,6 +289,21 @@ func main() {
 	// get_financials (issue 07): temporary live-fetch route over the shared
 	// IPOT client — nothing persisted (persisted pipeline is issue 07b).
 	financialsUC := usecase.NewFinancialsUseCase(db, log, ipotClient)
+	// backfill_stock_broker_summary (issue 12): async enqueue seam over the
+	// in-process asynq server; the worker consumes the range task.
+	brokerSummaryBackfillUC := usecase.NewBrokerSummaryBackfillUseCase(
+		log, validate, tasks.NewBrokerStockSummaryRangeEnqueuer(asynqClient),
+	)
+	// get_corporate_actions (issue 09): pure DB read over the corporate_actions
+	// table, populated by the daily idx:corporate_actions task.
+	corporateActionsUC := usecase.NewCorporateActionsUseCase(db, log, corporateActionRepo)
+	// get_suspensions (issue 10): pure DB read over the suspensions table,
+	// populated by the daily idx:suspensions task.
+	suspensionsUC := usecase.NewSuspensionsUseCase(db, log, suspensionRepo)
+	// get_shareholder_composition (issue 08): pure DB read over the
+	// shareholder_composition table, populated by the monthly ksei:balancepos
+	// task.
+	shareholderCompositionUC := usecase.NewShareholderCompositionUseCase(db, log, shareholderCompositionRepo)
 
 	// ─── HTTP router ────────────────────────────────────────────
 
@@ -270,19 +341,23 @@ func main() {
 	// MCP server over streamable HTTP (tickets 10 + 12): 8 tools, bearer-token
 	// auth on every request, structured error envelopes, staleness metadata.
 	mcpSrv := mcpserver.NewServer(mcpserver.Deps{
-		Log:                  log,
-		DB:                   db,
-		AnomalyUC:            anomalyUC,
-		DisclosureUC:         disclosureUC,
-		FetchDisclosureUC:    fetchDisclosureUC,
-		BrokerUC:             brokerUC,
-		NewsUC:               newsUC,
-		PipelineUC:           pipelineUC,
-		BrokerStockSummaryUC: brokerStockSummaryUC,
-		DailyPriceUC:         dailyPriceUC,
-		FinancialsUC:         financialsUC,
-		SourceStatusRepo:     sourceStatusRepo,
-		TickerRepo:           tickerRepo,
+		Log:                     log,
+		DB:                      db,
+		AnomalyUC:               anomalyUC,
+		DisclosureUC:            disclosureUC,
+		FetchDisclosureUC:       fetchDisclosureUC,
+		BrokerUC:                brokerUC,
+		NewsUC:                  newsUC,
+		PipelineUC:              pipelineUC,
+		BrokerStockSummaryUC:    brokerStockSummaryUC,
+		BrokerSummaryBackfillUC: brokerSummaryBackfillUC,
+		DailyPriceUC:            dailyPriceUC,
+		FinancialsUC:            financialsUC,
+		CorporateActionsUC:      corporateActionsUC,
+		SuspensionsUC:           suspensionsUC,
+		ShareholderCompUC:       shareholderCompositionUC,
+		SourceStatusRepo:        sourceStatusRepo,
+		TickerRepo:              tickerRepo,
 	})
 	router.Mount("/mcp", authMW.Authenticate(mcpSrv.Handler()))
 

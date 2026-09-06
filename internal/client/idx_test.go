@@ -37,9 +37,9 @@ func (s *stubBrowser) FetchBinary(url string, headers map[string]string) ([]byte
 
 func (s *stubBrowser) Close() {}
 
-// newTestClient builds a Client wired to a stub browser (browser mode is the
+// newTestClient builds a Client wired to a browser stub (browser mode is the
 // only production transport).
-func newTestClient(stub *stubBrowser) *Client {
+func newTestClient(stub browserFetcher) *Client {
 	return &Client{
 		config:  Config{BaseURL: "https://idx.example"},
 		fetcher: &browserFetcherAdapter{browser: stub},

@@ -202,6 +202,44 @@ var Graph = NewRegistry(
 		SelfHeal: true,
 	},
 	&Node{
+		Name: "corporate-actions",
+		Type: TypeCorporateActions,
+		Key:  dateKey(TypeCorporateActions),
+		Day:  dateDay(TypeCorporateActions),
+		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+			dateKey := day.Format("2006-01-02")
+			stage := pipeline.NewIngestStage(TypeCorporateActions, nil, enq, 3)
+			return stage.EnqueueWithOpts(TaskKey(TypeCorporateActions, dateKey), CorporateActionsPayload{Date: dateKey}, opts...)
+		},
+		SelfHeal: true,
+	},
+	&Node{
+		Name: "suspensions",
+		Type: TypeSuspensions,
+		Key:  dateKey(TypeSuspensions),
+		Day:  dateDay(TypeSuspensions),
+		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+			dateKey := day.Format("2006-01-02")
+			stage := pipeline.NewIngestStage(TypeSuspensions, nil, enq, 3)
+			return stage.EnqueueWithOpts(TaskKey(TypeSuspensions, dateKey), SuspensionsPayload{Date: dateKey}, opts...)
+		},
+		SelfHeal: true,
+	},
+	&Node{
+		Name: "ksei-balancepos",
+		Type: TypeKSEIBalancepos,
+		Key:  dateKey(TypeKSEIBalancepos),
+		Day:  dateDay(TypeKSEIBalancepos),
+		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+			dateKey := day.Format("2006-01-02")
+			stage := pipeline.NewIngestStage(TypeKSEIBalancepos, nil, enq, 3)
+			return stage.EnqueueWithOpts(TaskKey(TypeKSEIBalancepos, dateKey), KSEIBalanceposPayload{Date: dateKey}, opts...)
+		},
+		// Monthly source behind a daily schedule: the handler no-ops once the
+		// latest month-end file is stored, so a daily wave slot is cheap.
+		SelfHeal: true,
+	},
+	&Node{
 		Name: "cleanup",
 		Type: TypeCleanup,
 		Key:  dateKey(TypeCleanup),
@@ -268,6 +306,34 @@ var Graph = NewRegistry(
 		},
 	},
 	&Node{
+		Name: "broker-summary-range",
+		Type: TypeBrokerStockSummaryRange,
+		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+			ticker := argValue(args, "ticker")
+			from := argValue(args, "from")
+			to := argValue(args, "to")
+			if ticker == "" || from == "" || to == "" {
+				return nil, errors.New("idx:broker_stock_summary_range requires --arg ticker=<ticker> --arg from=<date> --arg to=<date>")
+			}
+			stage := pipeline.NewIngestStage(TypeBrokerStockSummaryRange, nil, enq, 3)
+			return stage.Enqueue(TaskKey(TypeBrokerStockSummaryRange, ticker+":"+from+":"+to), BrokerStockSummaryRangePayload{Ticker: ticker, From: from, To: to})
+		},
+	},
+	&Node{
+		Name: "broker-summary-sweep",
+		Type: TypeBrokerStockSummarySweep,
+		Key:  dateKey(TypeBrokerStockSummarySweep),
+		Day:  dateDay(TypeBrokerStockSummarySweep),
+		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+			dateKey := day.Format("2006-01-02")
+			stage := pipeline.NewIngestStage(TypeBrokerStockSummarySweep, nil, enq, 3)
+			// Task-level timeout override: at the shared 2s IPOT pacing a
+			// fresh catch-up sweep exceeds the 30m server default.
+			opts = append(opts, asynq.Timeout(SweepTaskTimeout))
+			return stage.EnqueueWithOpts(TaskKey(TypeBrokerStockSummarySweep, dateKey), BrokerSummarySweepPayload{Date: dateKey}, opts...)
+		},
+	},
+	&Node{
 		Name: "pipeline",
 		Type: TypePipelineDaily,
 		Key:  dateKey(TypePipelineDaily),
@@ -278,6 +344,6 @@ var Graph = NewRegistry(
 			task := asynq.NewTask(TypePipelineDaily, nil)
 			return enq.Enqueue(task, asynq.TaskID(taskKey), asynq.Queue("default"))
 		},
-		Wave: []string{TypeStockSummary, TypeAnnouncements, TypeRSS, TypeCleanup},
+		Wave: []string{TypeStockSummary, TypeAnnouncements, TypeRSS, TypeCorporateActions, TypeSuspensions, TypeKSEIBalancepos, TypeCleanup},
 	},
 )

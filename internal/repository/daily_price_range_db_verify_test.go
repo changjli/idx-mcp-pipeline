@@ -85,4 +85,72 @@ func TestDailyPriceRepository_DateRange(t *testing.T) {
 	}
 }
 
+// TestDailyPriceRepository_ADTVEligibleTickers verifies the sweep's universe
+// filter: tickers clearing the min-days + min-ADTV floor over a window, with
+// illiquid and sparse names excluded. Skipped unless IDX_MCP_DB_DSN is set.
+func TestDailyPriceRepository_ADTVEligibleTickers(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+
+	db := sqlx.MustConnect("pgx", dsn)
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+	repo := NewDailyPriceRepository(log)
+
+	// Window: 2099-01-05 (Mon) .. 2099-01-15 (Fri) — 9 trading days, no real
+	// market data on these dates, so the test is isolated on a shared DB.
+	from := time.Date(2099, 1, 5, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2099, 1, 15, 0, 0, 0, 0, time.UTC)
+	days := []time.Time{
+		time.Date(2099, 1, 5, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 1, 6, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 1, 7, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 1, 8, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 1, 9, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 1, 12, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 1, 13, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 1, 14, 0, 0, 0, 0, time.UTC),
+		time.Date(2099, 1, 15, 0, 0, 0, 0, time.UTC),
+	}
+	// LIQA: 9 days × 10B value → passes. LIQB: 9 days × 1B → fails ADTV.
+	// LIQC: 3 days × 10B → fails min-days.
+	seed := func(tk string, value int64, n int) {
+		db.MustExec("DELETE FROM daily_prices WHERE ticker = $1", tk)
+		db.MustExec("DELETE FROM tickers WHERE code = $1", tk)
+		db.MustExec("INSERT INTO tickers (code, name, active) VALUES ($1, $2, true)", tk, tk)
+		for i := 0; i < n; i++ {
+			db.MustExec(`INSERT INTO daily_prices (ticker, trading_day, open, high, low, close, volume, value, frequency, source)
+				VALUES ($1, $2, 100, 101, 99, 100, 1000, $3, 10, 'idx')`, tk, days[i], value)
+		}
+	}
+	seed("LIQA", 10_000_000_000, 9)
+	seed("LIQB", 1_000_000_000, 9)
+	seed("LIQC", 10_000_000_000, 3)
+	t.Cleanup(func() {
+		for _, tk := range []string{"LIQA", "LIQB", "LIQC"} {
+			db.MustExec("DELETE FROM daily_prices WHERE ticker = $1", tk)
+			db.MustExec("DELETE FROM tickers WHERE code = $1", tk)
+		}
+	})
+
+	got, err := repo.ADTVEligibleTickers(db, from, to, 8, 5_000_000_000)
+	if err != nil {
+		t.Fatalf("ADTVEligibleTickers: %v", err)
+	}
+	if len(got) != 1 || got[0] != "LIQA" {
+		t.Errorf("eligible = %v, want [LIQA] (LIQB below ADTV, LIQC below min-days)", got)
+	}
+
+	// Lower the floor → LIQB joins.
+	got2, err := repo.ADTVEligibleTickers(db, from, to, 8, 500_000_000)
+	if err != nil {
+		t.Fatalf("ADTVEligibleTickers low floor: %v", err)
+	}
+	if len(got2) != 2 {
+		t.Errorf("eligible at 500M = %v, want [LIQA LIQB]", got2)
+	}
+}
+
 func f64(v float64) *float64 { return &v }

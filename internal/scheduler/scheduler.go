@@ -18,6 +18,15 @@ const (
 	// 8 PM gives a few hours for the data to land before the pipeline fetches it.
 	DailyCronSpec = "CRON_TZ=Asia/Jakarta 5 20 * * *"
 
+	// SweepCronSpec fires the weekly ADTV-gated broker-summary sweep (issue
+	// 14b) at 9:00 PM WIB every Saturday. IDX is closed weekends, so Friday's
+	// data is fully settled and the weekday pipeline wave + anomaly gate have
+	// drained — the sweep skips those days (HasStoredDay) and only fetches the
+	// quiet liquid names the anomaly gate missed. The date-keyed TaskID dedups
+	// a same-day re-fire; a missed Saturday self-heals on the next run (the
+	// trailing-21-day window still covers the gap).
+	SweepCronSpec = "CRON_TZ=Asia/Jakarta 0 21 * * 6"
+
 	// archivedRequeueDelay is how long a recovered archived task waits before
 	// firing — gives transient upstream blocks (e.g. Cloudflare 403) time to
 	// lift. Shared by every self-heal-eligible node.
@@ -49,16 +58,29 @@ func NewScheduler(vip *viper.Viper, log *logrus.Logger) *asynq.Scheduler {
 	return sched
 }
 
-// RegisterDailyTasks registers the daily pipeline task on the scheduler.
-// It logs the next fire time of each registered entry.
+// RegisterDailyTasks registers the daily pipeline task and the weekly
+// ADTV-gated broker-summary sweep (issue 14b) on the scheduler. It logs the next fire time
+// of each registered entry. The sweep task carries no payload — the handler
+// derives the sweep date from time.Now() at fire time (same convention as
+// pipeline:daily), so the cron fires on the current trading day.
 func RegisterDailyTasks(sched *asynq.Scheduler, log *logrus.Logger) {
 	task := asynq.NewTask(tasks.TypePipelineDaily, nil)
 	entryID, err := sched.Register(DailyCronSpec, task)
 	if err != nil {
 		log.Fatalf("failed to register daily pipeline task: %v", err)
 	}
-
 	log.Infof("daily pipeline task registered: entry=%s cron=%s", entryID, DailyCronSpec)
+
+	// The sweep task must carry the same task-level timeout the graph node
+	// applies: a fresh catch-up run exceeds asynq's 30m default at the IPOT
+	// client's 2s pacing. The scheduler registers the task directly (not via
+	// the node), so the override is applied here.
+	sweepTask := asynq.NewTask(tasks.TypeBrokerStockSummarySweep, nil, asynq.Timeout(tasks.SweepTaskTimeout))
+	sweepEntryID, err := sched.Register(SweepCronSpec, sweepTask)
+	if err != nil {
+		log.Fatalf("failed to register broker summary sweep task: %v", err)
+	}
+	log.Infof("broker summary sweep task registered: entry=%s cron=%s", sweepEntryID, SweepCronSpec)
 }
 
 // LogNextFireTime logs the next fire time for all scheduler entries.

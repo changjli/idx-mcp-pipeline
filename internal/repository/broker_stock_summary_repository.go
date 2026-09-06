@@ -68,13 +68,14 @@ func (r *BrokerStockSummaryRepository) UpsertDay(db *sqlx.DB, rows []entity.Brok
 
 	if totals != nil {
 		if _, err := tx.NamedExec(`
-			INSERT INTO broker_stock_summary_totals (ticker, trading_day, t_val, f_nval, t_lot, avg)
-			VALUES (:ticker, :trading_day, :t_val, :f_nval, :t_lot, :avg)
+			INSERT INTO broker_stock_summary_totals (ticker, trading_day, t_val, f_nval, t_lot, avg, others_net)
+			VALUES (:ticker, :trading_day, :t_val, :f_nval, :t_lot, :avg, :others_net)
 			ON CONFLICT (ticker, trading_day) DO UPDATE SET
 				t_val = EXCLUDED.t_val,
 				f_nval = EXCLUDED.f_nval,
 				t_lot = EXCLUDED.t_lot,
-				avg = EXCLUDED.avg
+				avg = EXCLUDED.avg,
+				others_net = EXCLUDED.others_net
 		`, totals); err != nil {
 			return err
 		}
@@ -109,6 +110,20 @@ func buildMultiRowUpsert(rows []entity.BrokerStockSummary) (string, []interface{
 	return query, args, nil
 }
 
+// HasStoredDay reports whether any broker_stock_summaries rows exist for a
+// ticker+day. Cheap EXISTS check — the weekly sweep's skip-if-stored
+// guard. Idempotency note: rows present means the day is already covered, so
+// the sweep skips the ticker entirely (no IPOT call); a race between sweep and
+// an anomaly-gated refetch is harmless because UpsertDay replaces wholesale.
+func (r *BrokerStockSummaryRepository) HasStoredDay(db *sqlx.DB, ticker string, day time.Time) (bool, error) {
+	var exists bool
+	err := db.Get(&exists,
+		"SELECT EXISTS(SELECT 1 FROM broker_stock_summaries WHERE ticker = $1 AND trading_day = $2)",
+		ticker, day,
+	)
+	return exists, err
+}
+
 // FindByTickerAndDay returns the stored broker rows for a ticker+day,
 // ordered by side then rank.
 func (r *BrokerStockSummaryRepository) FindByTickerAndDay(db *sqlx.DB, ticker string, day time.Time) ([]entity.BrokerStockSummary, error) {
@@ -141,6 +156,18 @@ func (r *BrokerStockSummaryRepository) FindByTickerAndDateRange(db *sqlx.DB, tic
 	err := db.Select(&rows,
 		"SELECT * FROM broker_stock_summaries WHERE ticker = $1 AND trading_day BETWEEN $2 AND $3 ORDER BY trading_day, side, rank",
 		ticker, from, to,
+	)
+	return rows, err
+}
+
+// FindByDateRangeAll returns the stored broker rows for every ticker between
+// two trading days (inclusive), ordered by trading day then ticker. Feeds
+// get_broker_net_flow's market-wide mode.
+func (r *BrokerStockSummaryRepository) FindByDateRangeAll(db *sqlx.DB, from, to time.Time) ([]entity.BrokerStockSummary, error) {
+	var rows []entity.BrokerStockSummary
+	err := db.Select(&rows,
+		"SELECT * FROM broker_stock_summaries WHERE trading_day BETWEEN $1 AND $2 ORDER BY trading_day, ticker, side, rank",
+		from, to,
 	)
 	return rows, err
 }

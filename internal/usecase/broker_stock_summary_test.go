@@ -100,6 +100,18 @@ func TestGetStockBrokerSummary_FetchPersistReturn(t *testing.T) {
 		t.Errorf("Totals.TVal = %d, want 71200000000", res.Totals.TVal)
 	}
 
+	// Issue 03 aggregates: total buy/sell = footer t_val; others_net = the
+	// unlisted tail (Σ sellers − Σ buyers = 12.3B − 18.6B = −6.3B).
+	if res.TotalBuyValue != 71_200_000_000 {
+		t.Errorf("TotalBuyValue = %d, want 71200000000 (footer t_val)", res.TotalBuyValue)
+	}
+	if res.TotalSellValue != 71_200_000_000 {
+		t.Errorf("TotalSellValue = %d, want 71200000000 (footer t_val)", res.TotalSellValue)
+	}
+	if res.OthersNet != -6_300_000_000 {
+		t.Errorf("OthersNet = %d, want -6300000000 (12.3B sellers − 18.6B buyers)", res.OthersNet)
+	}
+
 	// Persisted: rows present in DB.
 	stored, err := uc.Repo.FindByTickerAndDay(db, ticker, day)
 	if err != nil {
@@ -107,6 +119,60 @@ func TestGetStockBrokerSummary_FetchPersistReturn(t *testing.T) {
 	}
 	if len(stored) != 3 {
 		t.Errorf("expected 3 persisted rows, got %d", len(stored))
+	}
+
+	// Persisted: others_net written to the totals row.
+	ptotals, err := uc.Repo.FindTotalsByTickerAndDay(db, ticker, day)
+	if err != nil {
+		t.Fatalf("FindTotalsByTickerAndDay: %v", err)
+	}
+	if ptotals.OthersNet == nil || *ptotals.OthersNet != -6_300_000_000 {
+		t.Errorf("persisted others_net = %v, want -6300000000", ptotals.OthersNet)
+	}
+}
+
+// TestGetStockBrokerSummary_AllTopN — the listed top-N covers the whole market
+// (Σ buyers = Σ sellers = t_val), so the tail is empty and others_net = 0.
+func TestGetStockBrokerSummary_AllTopN(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
+	uc, f := newTestUC(t, db)
+
+	ticker := "TESTW"
+	day := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+	db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	t.Cleanup(func() {
+		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	})
+
+	f.res = &ipot.Result{
+		Buyers: []ipot.Row{
+			{BrokerCode: "AK", Lot: 100000, Value: 10_000_000_000, AvgPrice: 100, Rank: 1},
+			{BrokerCode: "YP", Lot: 10000, Value: 1_000_000_000, AvgPrice: 100, Rank: 2},
+		},
+		Sellers: []ipot.Row{
+			{BrokerCode: "XL", Lot: 80000, Value: 8_000_000_000, AvgPrice: 100, Rank: 1},
+			{BrokerCode: "MG", Lot: 30000, Value: 3_000_000_000, AvgPrice: 100, Rank: 2},
+		},
+		Totals: ipot.Totals{TVal: 11_000_000_000, FNVal: 2_000_000_000, TLot: 220000, Avg: 100},
+	}
+
+	res, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day)
+	if err != nil {
+		t.Fatalf("GetStockBrokerSummary: %v", err)
+	}
+
+	// Σ buyers = Σ sellers = t_val = 11B → nothing unlisted → tail nets to zero.
+	if res.OthersNet != 0 {
+		t.Errorf("OthersNet = %d, want 0 (top-N covers the whole market)", res.OthersNet)
+	}
+	if res.TotalBuyValue != 11_000_000_000 || res.TotalSellValue != 11_000_000_000 {
+		t.Errorf("totals = %d/%d, want 11000000000/11000000000", res.TotalBuyValue, res.TotalSellValue)
 	}
 }
 
