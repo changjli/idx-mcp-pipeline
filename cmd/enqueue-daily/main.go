@@ -66,6 +66,17 @@ func main() {
 		return
 	}
 
+	// One-time profile seeder (issue 11b): a full-table backfill with no dates
+	// and no asynq — intercepted before the single-date enqueue path. Mirrors
+	// the bulk modes' synchronous direct DB+client loop.
+	if *taskName == "ticker-profile" {
+		if *startDateStr != "" || *endDateStr != "" {
+			log.Fatalf("--task ticker-profile does not take --start-date/--end-date")
+		}
+		runBulkTickerProfiles(vip, log)
+		return
+	}
+
 	// Single-date mode.
 	client := config.NewAsynqClient(vip, log)
 
@@ -259,4 +270,33 @@ func argValue(args argList, key string) string {
 		}
 	}
 	return ""
+}
+
+// runBulkTickerProfiles seeds the tickers table with company-profile data
+// (issue 11b): wires the TickerProfileUseCase and runs it. One-time backfill —
+// no asynq, no scheduler; re-run manually to pick up new IPOs. Mirrors the
+// other runBulk* functions: synchronous, local egress, direct DB + client loop.
+func runBulkTickerProfiles(vip *viper.Viper, log *logrus.Logger) {
+	db := config.NewDatabase(vip, log)
+	defer db.Close()
+
+	idxClient, err := client.NewDefaultClient(vip, log)
+	if err != nil {
+		log.Fatalf("failed to init IDX client: %v", err)
+	}
+	defer idxClient.Close()
+
+	// Alerts are a worker concern; the bulk CLIs wire a nil AlertStore.
+	recorder := pipeline.NewSourceStatusRecorder(
+		pipeline.NewSQLSourceStatusStore(repository.NewSourceStatusRepository(log), db), nil, log,
+	)
+	uc := usecase.NewTickerProfileUseCase(
+		db, log, idxClient, repository.NewTickerRepository(log), recorder,
+	)
+
+	n, err := uc.SeedTickerProfiles(context.Background())
+	if err != nil {
+		log.Fatalf("ticker profile seeder: %v", err)
+	}
+	log.Infof("ticker profile seeder: upserted %d profile(s)", n)
 }
