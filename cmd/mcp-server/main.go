@@ -54,6 +54,7 @@ func main() {
 	corporateActionRepo := repository.NewCorporateActionRepository(log)
 	suspensionRepo := repository.NewSuspensionRepository(log)
 	shareholderCompositionRepo := repository.NewShareholderCompositionRepository(log)
+	indexSummaryRepo := repository.NewIndexSummaryRepository(log)
 
 	// source_status + alerts recorder: one shared instance every ingest stage
 	// reports its success/failure through (ADR-0006).
@@ -147,6 +148,14 @@ func main() {
 		log, usecase.NewSectorIndexUseCase(
 			db, log, idxClient, tickerRepo, repository.NewTickerIndexRepository(log), recorder,
 		),
+	))
+	// idx:index_summary (issue 18): daily index/sector summary ingestion — one
+	// GetIndexSummary call (all 45 indices incl. the 11 sector indices),
+	// upserted to index_summaries. Fired in the pipeline:daily Wave; feeds the
+	// screening flow's Stage-0 sector-rotation trend. Pure ingestion — no MCP
+	// tool reads these rows yet.
+	mux.Handle(tasks.TypeIndexSummary, tasks.NewIndexSummaryHandler(
+		log, idxClient, db, indexSummaryRepo, recorder,
 	))
 	minADTV := vip.GetInt64("anomaly.min_adtv_value") // <= 0 → DefaultADTVMinValue in the constructor
 	anomalyDetector := pipeline.NewAnomalyDetector(

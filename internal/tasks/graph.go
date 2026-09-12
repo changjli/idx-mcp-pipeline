@@ -240,6 +240,22 @@ var Graph = NewRegistry(
 		SelfHeal: true,
 	},
 	&Node{
+		Name: "index-summary",
+		Type: TypeIndexSummary,
+		Key:  dateKey(TypeIndexSummary),
+		Day:  dateDay(TypeIndexSummary),
+		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+			dateKey := day.Format("2006-01-02")
+			stage := pipeline.NewIngestStage(TypeIndexSummary, nil, enq, 3)
+			return stage.EnqueueWithOpts(TaskKey(TypeIndexSummary, dateKey), IndexSummaryPayload{Date: dateKey}, opts...)
+		},
+		// Daily index/sector summary (issue 18): one GetIndexSummary call,
+		// upserted keyed by the wire trading date. The screening flow's Stage-0
+		// sector-rotation reads the stored rows — no live fetch on the request
+		// path.
+		SelfHeal: true,
+	},
+	&Node{
 		Name: "cleanup",
 		Type: TypeCleanup,
 		Key:  dateKey(TypeCleanup),
@@ -344,6 +360,6 @@ var Graph = NewRegistry(
 			task := asynq.NewTask(TypePipelineDaily, nil)
 			return enq.Enqueue(task, asynq.TaskID(taskKey), asynq.Queue("default"))
 		},
-		Wave: []string{TypeStockSummary, TypeAnnouncements, TypeRSS, TypeCorporateActions, TypeSuspensions, TypeKSEIBalancepos, TypeCleanup},
+		Wave: []string{TypeStockSummary, TypeAnnouncements, TypeRSS, TypeCorporateActions, TypeSuspensions, TypeIndexSummary, TypeKSEIBalancepos, TypeCleanup},
 	},
 )
