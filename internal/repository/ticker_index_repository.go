@@ -51,6 +51,40 @@ func (r *TickerIndexRepository) ReplaceMembership(db *sqlx.DB, effectiveDate tim
 	return tx.Commit()
 }
 
+// MembershipSnapshot is one point-in-time read result: the membership rows of
+// the effective snapshot plus the snapshot date the read resolved to.
+type MembershipSnapshot struct {
+	SnapshotDate time.Time
+	Rows         []entity.TickerIndex
+}
+
+// FindMembershipAt reads the effective index membership at a point in time:
+// the rows of the latest snapshot whose effective_date is <= asOf (the latest
+// snapshot overall when asOf is nil), optionally narrowed to one ticker. The
+// seeder (issue 15b) replaces the whole snapshot per run date, so one date
+// selects the complete set. A date before the first snapshot (or an empty
+// table) returns zero rows and a zero SnapshotDate.
+func (r *TickerIndexRepository) FindMembershipAt(db *sqlx.DB, tickerCode *string, asOf *time.Time) (MembershipSnapshot, error) {
+	var rows []entity.TickerIndex
+	err := db.Select(&rows, `
+		SELECT ticker_code, index_code, effective_date
+		FROM ticker_indices
+		WHERE effective_date = (
+			SELECT MAX(effective_date) FROM ticker_indices
+			WHERE ($1::date IS NULL OR effective_date <= $1::date)
+		)
+		AND ($2::text IS NULL OR ticker_code = $2::text)
+		ORDER BY ticker_code, index_code
+	`, asOf, tickerCode)
+	if err != nil {
+		return MembershipSnapshot{}, err
+	}
+	if len(rows) == 0 {
+		return MembershipSnapshot{}, nil
+	}
+	return MembershipSnapshot{SnapshotDate: rows[0].EffectiveDate, Rows: rows}, nil
+}
+
 // buildTickerIndexInsert builds a single multi-row INSERT for a membership
 // batch (one round trip instead of one per row). ON CONFLICT DO NOTHING is a
 // safety net for a concurrent same-day run — the delete above already cleared

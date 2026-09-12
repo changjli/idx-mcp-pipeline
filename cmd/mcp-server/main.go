@@ -322,6 +322,9 @@ func main() {
 	// shareholder_composition table, populated by the monthly ksei:balancepos
 	// task.
 	shareholderCompositionUC := usecase.NewShareholderCompositionUseCase(db, log, shareholderCompositionRepo)
+	// get_ticker_metadata (issue 16): pure DB read over the 15b seeder's
+	// sector columns + point-in-time ticker_indices membership.
+	tickerMetadataUC := usecase.NewTickerMetadataUseCase(db, log, tickerRepo, repository.NewTickerIndexRepository(log))
 
 	// ─── HTTP router ────────────────────────────────────────────
 
@@ -374,6 +377,7 @@ func main() {
 		CorporateActionsUC:      corporateActionsUC,
 		SuspensionsUC:           suspensionsUC,
 		ShareholderCompUC:       shareholderCompositionUC,
+		TickerMetadataUC:        tickerMetadataUC,
 		SourceStatusRepo:        sourceStatusRepo,
 		TickerRepo:              tickerRepo,
 	})
