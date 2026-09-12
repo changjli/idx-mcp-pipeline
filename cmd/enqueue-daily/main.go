@@ -32,7 +32,7 @@ func (a *argList) Set(v string) error {
 }
 
 func main() {
-	taskName := flag.String("task", "stock-summary", "task to enqueue (registry node name): stock-summary, announcements, rss, cleanup, detect, filter, extract, broker-summary, broker-summary-range, broker-summary-sweep, pipeline (default: stock-summary)")
+	taskName := flag.String("task", "stock-summary", "task to enqueue (registry node name): stock-summary, announcements, rss, cleanup, detect, filter, extract, broker-summary, broker-summary-range, broker-summary-sweep, sector-index, ticker-profile, pipeline (default: stock-summary)")
 	dateStr := flag.String("date", "", "trading date in YYYY-MM-DD format (default: today)")
 	startDateStr := flag.String("start-date", "", "bulk backfill start date in YYYY-MM-DD format")
 	endDateStr := flag.String("end-date", "", "bulk backfill end date in YYYY-MM-DD format")
@@ -74,6 +74,18 @@ func main() {
 			log.Fatalf("--task ticker-profile does not take --start-date/--end-date")
 		}
 		runBulkTickerProfiles(vip, log)
+		return
+	}
+
+	// Sector/index seeder (issue 15b): a full-table snapshot with no dates and
+	// no asynq — intercepted before the single-date enqueue path. Mirrors the
+	// bulk modes' synchronous direct DB+client loop; the scheduler fires the
+	// same usecase every 6 months.
+	if *taskName == "sector-index" {
+		if *startDateStr != "" || *endDateStr != "" {
+			log.Fatalf("--task sector-index does not take --start-date/--end-date")
+		}
+		runBulkSectorIndex(vip, log)
 		return
 	}
 
@@ -299,4 +311,34 @@ func runBulkTickerProfiles(vip *viper.Viper, log *logrus.Logger) {
 		log.Fatalf("ticker profile seeder: %v", err)
 	}
 	log.Infof("ticker profile seeder: upserted %d profile(s)", n)
+}
+
+// runBulkSectorIndex seeds the sector/industry taxonomy + index membership
+// (issue 15b): wires the SectorIndexUseCase and runs it with today as the
+// snapshot's effective_date. One-time backfill — no asynq; the scheduler fires
+// the same usecase every 6 months. Mirrors the other runBulk* functions:
+// synchronous, local egress, direct DB + client loop.
+func runBulkSectorIndex(vip *viper.Viper, log *logrus.Logger) {
+	db := config.NewDatabase(vip, log)
+	defer db.Close()
+
+	idxClient, err := client.NewDefaultClient(vip, log)
+	if err != nil {
+		log.Fatalf("failed to init IDX client: %v", err)
+	}
+	defer idxClient.Close()
+
+	// Alerts are a worker concern; the bulk CLIs wire a nil AlertStore.
+	recorder := pipeline.NewSourceStatusRecorder(
+		pipeline.NewSQLSourceStatusStore(repository.NewSourceStatusRepository(log), db), nil, log,
+	)
+	uc := usecase.NewSectorIndexUseCase(
+		db, log, idxClient, repository.NewTickerRepository(log), repository.NewTickerIndexRepository(log), recorder,
+	)
+
+	n, m, err := uc.SeedSectorIndex(context.Background(), time.Now())
+	if err != nil {
+		log.Fatalf("sector/index seeder: %v", err)
+	}
+	log.Infof("sector/index seeder: upserted %d ticker(s), %d membership row(s)", n, m)
 }

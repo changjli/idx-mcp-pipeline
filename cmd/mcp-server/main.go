@@ -139,6 +139,15 @@ func main() {
 	mux.Handle(tasks.TypeKSEIBalancepos, tasks.NewKSEIBalanceposHandler(
 		log, kseiClient, db, shareholderCompositionRepo, recorder,
 	))
+	// idx:sector_index (issue 15b): 6-monthly sector/industry + index-membership
+	// seeder — one stock-screener/get call, sector taxonomy upserted into
+	// tickers, index membership replaced for the run date (point-in-time).
+	// Scheduled Feb+Jul; the MCP tools read the stored rows.
+	mux.Handle(tasks.TypeSectorIndex, tasks.NewSectorIndexHandler(
+		log, usecase.NewSectorIndexUseCase(
+			db, log, idxClient, tickerRepo, repository.NewTickerIndexRepository(log), recorder,
+		),
+	))
 	minADTV := vip.GetInt64("anomaly.min_adtv_value") // <= 0 → DefaultADTVMinValue in the constructor
 	anomalyDetector := pipeline.NewAnomalyDetector(
 		pipeline.NewSQLDailyPriceSource(dailyPriceRepo, db),
