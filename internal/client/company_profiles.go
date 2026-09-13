@@ -13,18 +13,20 @@ const (
 	// companyProfilesPathFormat is the IDX GetCompanyProfiles endpoint: the
 	// listed-companies (perusahaan-tercatut) data. emitenType=s filters to
 	// saham (equities); start/length are the DataTables page window. The
-	// endpoint caps at 10 rows/page (confirmed by probe 2026-09-09), so a full
-	// fetch is ~97 pages.
+	// endpoint accepts 100 rows/page (re-probed 2026-09-12 — an earlier probe
+	// 2026-09-09 measured a 10-row cap, no longer true), so a full fetch is
+	// ~10 pages.
 	companyProfilesPathFormat = "/primary/ListedCompany/GetCompanyProfiles?emitenType=s&start=%d&length=%d"
 	// companyProfilesReferer matches the IDX page hosting the listed-companies
 	// list (the Cloudflare JS-gate expects a same-site referrer). Confirmed by
 	// live probe for the corporate-action page; this one still needs a live check.
 	companyProfilesReferer = "https://www.idx.co.id/en/listed-companies/"
-	// companyProfilesLength is the row window per request; the endpoint caps
-	// at 10 rows/page, so start advances by this amount.
-	companyProfilesLength = 10
+	// companyProfilesLength is the row window per request; 100 rows/page keeps
+	// a full fetch at ~10 pages (each page is a flaky Cloudflare-gated fetch,
+	// so fewer pages is directly more reliable).
+	companyProfilesLength = 100
 	// companyProfilesMaxPages caps the pagination loop defensively (962 rows /
-	// 10 per page = 97 pages; 200 leaves headroom for IPO growth).
+	// 100 per page = 10 pages; 200 leaves headroom for IPO growth).
 	companyProfilesMaxPages = 200
 )
 

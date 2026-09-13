@@ -35,8 +35,8 @@ func TestFetchCompanyProfiles_parsesWrapper(t *testing.T) {
 	if !p.Active {
 		t.Errorf("Status 0 should map to active=true, got %+v", p)
 	}
-	if !strings.Contains(stub.gotURL, "emitenType=s") || !strings.Contains(stub.gotURL, "start=0") || !strings.Contains(stub.gotURL, "length=10") {
-		t.Errorf("expected emitenType=s and start=0/length=10 in URL, got %q", stub.gotURL)
+	if !strings.Contains(stub.gotURL, "emitenType=s") || !strings.Contains(stub.gotURL, "start=0") || !strings.Contains(stub.gotURL, "length=100") {
+		t.Errorf("expected emitenType=s and start=0/length=100 in URL, got %q", stub.gotURL)
 	}
 	if stub.gotHeaders["Referer"] != companyProfilesReferer {
 		t.Errorf("expected referer %q, got %q", companyProfilesReferer, stub.gotHeaders["Referer"])
@@ -123,8 +123,8 @@ func TestFetchCompanyProfiles_paginates(t *testing.T) {
 	if !strings.Contains(stub.gotURLs[0], "start=0") {
 		t.Errorf("first call should start at 0, got %q", stub.gotURLs[0])
 	}
-	if !strings.Contains(stub.gotURLs[1], "start=10") {
-		t.Errorf("second call should advance start by 10, got %q", stub.gotURLs[1])
+	if !strings.Contains(stub.gotURLs[1], "start=100") {
+		t.Errorf("second call should advance start by the page length (100), got %q", stub.gotURLs[1])
 	}
 	if profiles[0].Ticker != "AAA1" || profiles[1].Ticker != "BBB2" {
 		t.Errorf("expected page-ordered profiles, got %+v", profiles)
