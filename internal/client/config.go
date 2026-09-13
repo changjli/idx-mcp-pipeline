@@ -25,6 +25,11 @@ type NodriverConfig struct {
 	Proxies        string        // HTTPS URL or file path to a JSON array of proxy URLs
 	ProxiesTTL     time.Duration // in-memory cache TTL for the proxy list
 	DeadRetryAfter time.Duration // how long a dead proxy stays out of rotation
+	// MaxProxyAttempts caps in-place retries of one proxy before rotation.
+	// Only transient sidecar failures (403 blocked / 503 challenge_not_cleared
+	// / 504 timeout — Cloudflare challenge solving is stochastic per attempt)
+	// are retried; only 502 proxy_dead bans a proxy.
+	MaxProxyAttempts int
 }
 
 // DefaultConfig returns sensible defaults.
@@ -32,10 +37,11 @@ func DefaultConfig() Config {
 	return Config{
 		BaseURL: "https://www.idx.co.id",
 		Nodriver: NodriverConfig{
-			Timeout:        20 * time.Second,
-			WakeTimeout:    60 * time.Second,
-			ProxiesTTL:     time.Hour,
-			DeadRetryAfter: 6 * time.Hour,
+			Timeout:          20 * time.Second,
+			WakeTimeout:      60 * time.Second,
+			ProxiesTTL:       time.Hour,
+			DeadRetryAfter:   6 * time.Hour,
+			MaxProxyAttempts: 3,
 		},
 	}
 }
@@ -69,6 +75,9 @@ func ConfigFromViper(vip *viper.Viper) Config {
 	}
 	if v := vip.GetDuration("nodriver.dead_retry_after"); v > 0 {
 		nd.DeadRetryAfter = v
+	}
+	if v := vip.GetInt("nodriver.proxy_attempts"); v > 0 {
+		nd.MaxProxyAttempts = v
 	}
 
 	return cfg

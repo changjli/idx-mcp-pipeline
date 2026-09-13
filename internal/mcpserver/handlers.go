@@ -24,6 +24,7 @@ const (
 	sourceCorporateActions   = "idx:corporate_actions"
 	sourceSuspensions        = "idx:suspensions"
 	sourceKSEIBalancepos     = "ksei:balancepos"
+	sourceSectorIndex        = "idx:sector_index"
 )
 
 // defaultLimit is the default row cap for tools with a limit argument.
@@ -444,6 +445,58 @@ func (s *Server) handleGetBrokerNetFlow(ctx context.Context, req mcpgo.CallToolR
 	}), nil
 }
 
+// sectorFlowResponse wraps the usecase data with staleness metadata from the
+// idx:broker_stock_summary row — the sector read is a pure DB aggregation over
+// broker rows, so its freshness is the broker flow's, not the taxonomy's.
+type sectorFlowResponse struct {
+	*usecase.SectorFlowResponse
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleGetSectorFlow(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	args := req.GetArguments()
+	fromStr, _ := args["from"].(string)
+	toStr, _ := args["to"].(string)
+	sectorArg, _ := args["sector"].(string)
+	groupByArg, _ := args["group_by"].(string)
+	breakdownArg, _ := args["breakdown"].(string)
+
+	var fromPtr, toPtr *time.Time
+	if fromStr != "" {
+		t, err := time.Parse("2006-01-02", fromStr)
+		if err != nil {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid from date: "+fromStr, false)), nil
+		}
+		fromPtr = &t
+	}
+	if toStr != "" {
+		t, err := time.Parse("2006-01-02", toStr)
+		if err != nil {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid to date: "+toStr, false)), nil
+		}
+		toPtr = &t
+	}
+	var sectorPtr *string
+	if sectorArg != "" {
+		sectorPtr = &sectorArg
+	}
+
+	data, err := s.sectorFlowUC.GetSectorFlow(ctx, usecase.SectorFlowRequest{
+		From:      fromPtr,
+		To:        toPtr,
+		Sector:    sectorPtr,
+		GroupBy:   groupByArg,
+		Breakdown: breakdownArg,
+	})
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(sectorFlowResponse{
+		SectorFlowResponse: data,
+		StalenessMetadata:  stalenessFor(s.db, s.sourceStatusRepo, sourceBrokerStockSummary, time.Now()),
+	}), nil
+}
+
 // dailyPricesResponse wraps the usecase data with staleness metadata.
 type dailyPricesResponse struct {
 	*usecase.DailyPricesData
@@ -625,5 +678,44 @@ func (s *Server) handleGetShareholderComposition(ctx context.Context, req mcpgo.
 	return textResult(shareholderCompositionResponse{
 		ShareholderCompositionResponse: data,
 		StalenessMetadata:              stalenessFor(s.db, s.sourceStatusRepo, sourceKSEIBalancepos, time.Now()),
+	}), nil
+}
+
+// tickerMetadataResponse wraps the usecase data with staleness metadata from
+// the idx:sector_index source_status row, which the 15b seeder updates on
+// every run (6-monthly Feb+Jul rebalance cadence).
+type tickerMetadataResponse struct {
+	*usecase.TickerMetadataResponse
+	mcp.StalenessMetadata
+}
+
+func (s *Server) handleGetTickerMetadata(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	tickerArg, _ := req.GetArguments()["ticker"].(string)
+	dateArg, _ := req.GetArguments()["date"].(string)
+
+	var tickerPtr *string
+	if tickerArg != "" {
+		norm, ok := s.tickers.Normalize(tickerArg)
+		if !ok {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+tickerArg, false)), nil
+		}
+		tickerPtr = &norm
+	}
+	var asOf *time.Time
+	if dateArg != "" {
+		d, err := time.Parse("2006-01-02", dateArg)
+		if err != nil {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid date: "+dateArg, false)), nil
+		}
+		asOf = &d
+	}
+
+	data, err := s.tickerMetadataUC.GetTickerMetadata(ctx, tickerPtr, asOf)
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(tickerMetadataResponse{
+		TickerMetadataResponse: data,
+		StalenessMetadata:      stalenessFor(s.db, s.sourceStatusRepo, sourceSectorIndex, time.Now()),
 	}), nil
 }

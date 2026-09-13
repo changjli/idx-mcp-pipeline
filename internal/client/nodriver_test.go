@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +24,17 @@ type nodriverStub struct {
 	proxyStatus map[string]int
 	proxyBody   map[string]string
 	proxyError  map[string]string
+	// proxySeq drives per-proxy sequential replies, consumed in order; the
+	// last entry repeats. A zero status maps to 200. Falls back to the static
+	// maps when absent.
+	proxySeq map[string][]stubReply
+}
+
+// stubReply is one scripted /fetch response for proxySeq.
+type stubReply struct {
+	status int
+	body   string
+	errMsg string
 }
 
 func newNodriverStub() *nodriverStub {
@@ -31,6 +43,7 @@ func newNodriverStub() *nodriverStub {
 		proxyStatus: map[string]int{},
 		proxyBody:   map[string]string{},
 		proxyError:  map[string]string{},
+		proxySeq:    map[string][]stubReply{},
 	}
 }
 
@@ -65,6 +78,13 @@ func (s *nodriverStub) handler() http.Handler {
 		status := s.proxyStatus[req.Proxy]
 		body := s.proxyBody[req.Proxy]
 		errMsg := s.proxyError[req.Proxy]
+		if seq := s.proxySeq[req.Proxy]; len(seq) > 0 {
+			reply := seq[0]
+			if len(seq) > 1 {
+				s.proxySeq[req.Proxy] = seq[1:]
+			}
+			status, body, errMsg = reply.status, reply.body, reply.errMsg
+		}
 		s.mu.Unlock()
 		if status == 0 {
 			status = http.StatusOK
@@ -170,6 +190,104 @@ func TestNodriver_Fetch_503ChallengeRotates(t *testing.T) {
 	}
 }
 
+// TestNodriver_Fetch_TransientRetriesInPlace verifies the new rotation
+// semantics: a 503 challenge flake is retried on the SAME proxy up to
+// MaxProxyAttempts times before rotating, and a flake that clears on a
+// re-attempt succeeds without touching other proxies.
+func TestNodriver_Fetch_TransientRetriesInPlace(t *testing.T) {
+	stub := newNodriverStub()
+	stub.proxySeq["http://a:1"] = []stubReply{
+		{status: http.StatusServiceUnavailable, errMsg: "challenge_not_cleared"},
+		{status: http.StatusServiceUnavailable, errMsg: "challenge_not_cleared"},
+		{status: http.StatusOK, body: `{"ok":true}`},
+	}
+	nc := newTestNodriver(t, stub, []string{"http://a:1", "http://b:2"})
+
+	if _, status, err := nc.Fetch("https://idx.example/api", nil); err != nil || status != http.StatusOK {
+		t.Fatalf("expected 200 after in-place retry, got status=%d err=%v", status, err)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.requests) != 3 {
+		t.Fatalf("expected 3 sidecar requests (2 flakes + 1 success), got %d", len(stub.requests))
+	}
+	for i, req := range stub.requests {
+		if req.Proxy != "http://a:1" {
+			t.Errorf("request %d should retry proxy a in place, got %s", i, req.Proxy)
+		}
+	}
+}
+
+// TestNodriver_Fetch_TransientRotatesWithoutBan verifies that a proxy whose
+// transient attempts are spent rotates on WITHOUT being marked dead —
+// Cloudflare flakiness is not a proxy property, so the proxy stays in
+// rotation for later fetches.
+func TestNodriver_Fetch_TransientRotatesWithoutBan(t *testing.T) {
+	stub := newNodriverStub()
+	stub.proxyStatus["http://a:1"] = http.StatusServiceUnavailable
+	stub.proxyError["http://a:1"] = "challenge_not_cleared"
+	stub.proxyBody["http://b:2"] = `{"ok":true}`
+	nc := newTestNodriver(t, stub, []string{"http://a:1", "http://b:2"})
+
+	if _, status, err := nc.Fetch("https://idx.example/api", nil); err != nil || status != http.StatusOK {
+		t.Fatalf("expected 200 after rotating off spent transient proxy, got status=%d err=%v", status, err)
+	}
+	if got := nc.pool.live(); got != 2 {
+		t.Errorf("expected both proxies still live (no ban on transient), got %d", got)
+	}
+}
+
+// TestNodriver_Fetch_TargetStatusSurfaces verifies that a deterministic
+// passthrough failure (target 404) surfaces to the caller immediately —
+// one request, no rotation, no ban.
+func TestNodriver_Fetch_TargetStatusSurfaces(t *testing.T) {
+	stub := newNodriverStub()
+	stub.proxyStatus["http://a:1"] = http.StatusNotFound // target passthrough, not a sidecar class
+	stub.proxyBody["http://b:2"] = `{"ok":true}`
+	nc := newTestNodriver(t, stub, []string{"http://a:1", "http://b:2"})
+
+	_, _, err := nc.Fetch("https://idx.example/api", nil)
+	if err == nil {
+		t.Fatal("expected error on target 404")
+	}
+	if !strings.Contains(err.Error(), "status 404") {
+		t.Errorf("expected surfaced 404, got %v", err)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.requests) != 1 {
+		t.Fatalf("expected 1 sidecar request (no rotation on deterministic failure), got %d", len(stub.requests))
+	}
+	if got := nc.pool.live(); got != 2 {
+		t.Errorf("expected both proxies still live (no ban on target status), got %d", got)
+	}
+}
+
+// TestNodriver_Fetch_AttemptBudgetExhausts verifies the loop terminates when
+// every proxy keeps failing transiently: 2 proxies x MaxProxyAttempts (3)
+// = 6 requests, then an exhausted error.
+func TestNodriver_Fetch_AttemptBudgetExhausts(t *testing.T) {
+	stub := newNodriverStub()
+	for _, p := range []string{"http://a:1", "http://b:2"} {
+		stub.proxyStatus[p] = http.StatusServiceUnavailable
+		stub.proxyError[p] = "challenge_not_cleared"
+	}
+	nc := newTestNodriver(t, stub, []string{"http://a:1", "http://b:2"})
+
+	_, _, err := nc.Fetch("https://idx.example/api", nil)
+	if err == nil {
+		t.Fatal("expected exhausted error when every attempt fails transiently")
+	}
+	if !strings.Contains(err.Error(), "all proxies exhausted after 6 attempts") {
+		t.Errorf("expected budget-exhausted error, got %v", err)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.requests) != 6 {
+		t.Fatalf("expected 6 sidecar attempts (2 proxies x 3), got %d", len(stub.requests))
+	}
+}
+
 func TestNodriver_Fetch_AllDeadExhausts(t *testing.T) {
 	stub := newNodriverStub()
 	stub.proxyStatus["http://a:1"] = http.StatusBadGateway
@@ -213,7 +331,9 @@ func TestNodriver_Wake(t *testing.T) {
 	}
 }
 
-func TestNodriver_Fetch_EmptyBodyExhausts(t *testing.T) {
+// TestNodriver_Fetch_EmptyBodyRetriesThenRotates verifies an empty body is
+// treated as transient: retried in place, then rotated off to a healthy proxy.
+func TestNodriver_Fetch_EmptyBodyRetriesThenRotates(t *testing.T) {
 	stub := newNodriverStub()
 	stub.proxyStatus["http://a:1"] = http.StatusOK
 	stub.proxyBody["http://a:1"] = "" // empty body => treat as failure, rotate

@@ -38,6 +38,17 @@ const (
 	// shareholder_composition. The task runs daily but no-ops once the latest
 	// file is stored (watermark-gated). The MCP tool is a pure DB read.
 	TypeKSEIBalancepos = "ksei:balancepos"
+	// TypeSectorIndex is the 6-monthly sector/industry + index-membership
+	// seeder (issue 15b): one stock-screener/get call, sector taxonomy upserted
+	// into tickers, index membership replaced for the run date (point-in-time).
+	// Scheduled Feb+Jul to match the LQ45/Kompas100/IDX80/IDX30 rebalance
+	// cadence; the MCP tools read the stored rows.
+	TypeSectorIndex = "idx:sector_index"
+	// TypeIndexSummary is the daily index/sector summary ingestion (issue 18):
+	// one GetIndexSummary call (all 45 indices incl. the 11 sector indices),
+	// upserted to index_summaries keyed by (index_code, trading date). Fired in
+	// the pipeline:daily Wave; feeds Stage-0 sector-rotation + market regime.
+	TypeIndexSummary = "idx:index_summary"
 )
 
 // TaskKey returns a dedup key for a task type and date.

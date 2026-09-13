@@ -264,13 +264,10 @@ func (uc *BrokerStockSummaryUseCase) netFlowAnchor(ticker string, market bool, t
 	if to != nil {
 		return *to, nil
 	}
-	var latest *time.Time
-	var err error
 	if market {
-		latest, err = uc.DailyPriceRepo.LatestTradingDayAll(uc.DB)
-	} else {
-		latest, err = uc.DailyPriceRepo.LatestTradingDay(uc.DB, ticker)
+		return latestMarketTradingDay(uc.DB, uc.DailyPriceRepo)
 	}
+	latest, err := uc.DailyPriceRepo.LatestTradingDay(uc.DB, ticker)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return time.Time{}, ErrNoTradingDay
@@ -287,13 +284,10 @@ func windowTooLong(from, to time.Time) bool {
 // netFlowTradeDays counts the distinct trading days in the window per the
 // daily_prices calendar (the coverage denominator).
 func (uc *BrokerStockSummaryUseCase) netFlowTradeDays(market bool, ticker string, from, to time.Time) (int, error) {
-	var days []time.Time
-	var err error
 	if market {
-		days, err = uc.DailyPriceRepo.TradingDaysInRangeAll(uc.DB, from, to)
-	} else {
-		days, err = uc.DailyPriceRepo.TradingDaysInRange(uc.DB, ticker, from, to)
+		return marketTradingDayCount(uc.DB, uc.DailyPriceRepo, from, to)
 	}
+	days, err := uc.DailyPriceRepo.TradingDaysInRange(uc.DB, ticker, from, to)
 	if err != nil {
 		return 0, fmt.Errorf("resolve trading days: %w", err)
 	}

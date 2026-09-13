@@ -54,6 +54,7 @@ func main() {
 	corporateActionRepo := repository.NewCorporateActionRepository(log)
 	suspensionRepo := repository.NewSuspensionRepository(log)
 	shareholderCompositionRepo := repository.NewShareholderCompositionRepository(log)
+	indexSummaryRepo := repository.NewIndexSummaryRepository(log)
 
 	// source_status + alerts recorder: one shared instance every ingest stage
 	// reports its success/failure through (ADR-0006).
@@ -138,6 +139,23 @@ func main() {
 	// tool reads the stored rows.
 	mux.Handle(tasks.TypeKSEIBalancepos, tasks.NewKSEIBalanceposHandler(
 		log, kseiClient, db, shareholderCompositionRepo, recorder,
+	))
+	// idx:sector_index (issue 15b): 6-monthly sector/industry + index-membership
+	// seeder — one stock-screener/get call, sector taxonomy upserted into
+	// tickers, index membership replaced for the run date (point-in-time).
+	// Scheduled Feb+Jul; the MCP tools read the stored rows.
+	mux.Handle(tasks.TypeSectorIndex, tasks.NewSectorIndexHandler(
+		log, usecase.NewSectorIndexUseCase(
+			db, log, idxClient, tickerRepo, repository.NewTickerIndexRepository(log), recorder,
+		),
+	))
+	// idx:index_summary (issue 18): daily index/sector summary ingestion — one
+	// GetIndexSummary call (all 45 indices incl. the 11 sector indices),
+	// upserted to index_summaries. Fired in the pipeline:daily Wave; feeds the
+	// screening flow's Stage-0 sector-rotation trend. Pure ingestion — no MCP
+	// tool reads these rows yet.
+	mux.Handle(tasks.TypeIndexSummary, tasks.NewIndexSummaryHandler(
+		log, idxClient, db, indexSummaryRepo, recorder,
 	))
 	minADTV := vip.GetInt64("anomaly.min_adtv_value") // <= 0 → DefaultADTVMinValue in the constructor
 	anomalyDetector := pipeline.NewAnomalyDetector(
@@ -304,6 +322,12 @@ func main() {
 	// shareholder_composition table, populated by the monthly ksei:balancepos
 	// task.
 	shareholderCompositionUC := usecase.NewShareholderCompositionUseCase(db, log, shareholderCompositionRepo)
+	// get_ticker_metadata (issue 16): pure DB read over the 15b seeder's
+	// sector columns + point-in-time ticker_indices membership.
+	tickerMetadataUC := usecase.NewTickerMetadataUseCase(db, log, tickerRepo, repository.NewTickerIndexRepository(log))
+	// get_sector_flow (issue 17): read-time aggregation of the stored broker
+	// rows joined to the 15b seeder's taxonomy — no new ingestion.
+	sectorFlowUC := usecase.NewSectorFlowUseCase(db, log, brokerStockSummaryRepo, repository.NewDailyPriceRepository(log), tickerRepo)
 
 	// ─── HTTP router ────────────────────────────────────────────
 
@@ -356,6 +380,8 @@ func main() {
 		CorporateActionsUC:      corporateActionsUC,
 		SuspensionsUC:           suspensionsUC,
 		ShareholderCompUC:       shareholderCompositionUC,
+		TickerMetadataUC:        tickerMetadataUC,
+		SectorFlowUC:            sectorFlowUC,
 		SourceStatusRepo:        sourceStatusRepo,
 		TickerRepo:              tickerRepo,
 	})

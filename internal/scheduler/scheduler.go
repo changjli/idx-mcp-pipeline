@@ -27,6 +27,16 @@ const (
 	// trailing-21-day window still covers the gap).
 	SweepCronSpec = "CRON_TZ=Asia/Jakarta 0 21 * * 6"
 
+	// SectorIndexCronSpec fires the 6-monthly sector/industry + index-membership
+	// seeder (issue 15b) at 10:00 PM WIB on Mar 1 and Aug 1 — the month after
+	// each IDX index review (LQ45/Kompas100/IDX80/IDX30 rebalance in Feb+Jul,
+	// effective at month-end), so the snapshot captures the post-rebalance
+	// constituents, not the stale list. A same-month fire would label the old
+	// set with the rebalance month for the next 5 months. The daily pipeline
+	// wave (8:05 PM) has drained by then; a missed fire is caught by the next
+	// scheduled run (the snapshot is point-in-time, not incremental).
+	SectorIndexCronSpec = "CRON_TZ=Asia/Jakarta 0 22 1 3,8 *"
+
 	// archivedRequeueDelay is how long a recovered archived task waits before
 	// firing — gives transient upstream blocks (e.g. Cloudflare 403) time to
 	// lift. Shared by every self-heal-eligible node.
@@ -81,6 +91,16 @@ func RegisterDailyTasks(sched *asynq.Scheduler, log *logrus.Logger) {
 		log.Fatalf("failed to register broker summary sweep task: %v", err)
 	}
 	log.Infof("broker summary sweep task registered: entry=%s cron=%s", sweepEntryID, SweepCronSpec)
+
+	// The sector/index seeder (issue 15b) fires every 6 months; the handler
+	// derives the run date from time.Now() at fire time (nil payload, same
+	// convention as pipeline:daily and the sweep).
+	sectorIndexTask := asynq.NewTask(tasks.TypeSectorIndex, nil)
+	sectorIndexEntryID, err := sched.Register(SectorIndexCronSpec, sectorIndexTask)
+	if err != nil {
+		log.Fatalf("failed to register sector/index seeder task: %v", err)
+	}
+	log.Infof("sector/index seeder task registered: entry=%s cron=%s", sectorIndexEntryID, SectorIndexCronSpec)
 }
 
 // LogNextFireTime logs the next fire time for all scheduler entries.

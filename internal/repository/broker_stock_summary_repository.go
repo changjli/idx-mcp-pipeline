@@ -172,6 +172,19 @@ func (r *BrokerStockSummaryRepository) FindByDateRangeAll(db *sqlx.DB, from, to 
 	return rows, err
 }
 
+// FindTotalsByDateRangeAll returns the stored footer summaries for every
+// ticker between two trading days (inclusive), ordered by trading day then
+// ticker. Feeds get_sector_flow's per-sector tail (others_net) and foreign net
+// — the market-completeness the listed top-10 rows alone can't give.
+func (r *BrokerStockSummaryRepository) FindTotalsByDateRangeAll(db *sqlx.DB, from, to time.Time) ([]entity.BrokerStockSummaryTotals, error) {
+	var totals []entity.BrokerStockSummaryTotals
+	err := db.Select(&totals,
+		"SELECT * FROM broker_stock_summary_totals WHERE trading_day BETWEEN $1 AND $2 ORDER BY trading_day, ticker",
+		from, to,
+	)
+	return totals, err
+}
+
 // FindTotalsByTickerAndDateRange returns the stored footer summaries for a
 // ticker between two trading days (inclusive), ordered by trading day.
 func (r *BrokerStockSummaryRepository) FindTotalsByTickerAndDateRange(db *sqlx.DB, ticker string, from, to time.Time) ([]entity.BrokerStockSummaryTotals, error) {

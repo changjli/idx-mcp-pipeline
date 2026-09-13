@@ -23,6 +23,8 @@ var allTools = []mcpgo.Tool{
 	toolGetCorporateActions,
 	toolGetSuspensions,
 	toolGetShareholderComposition,
+	toolGetTickerMetadata,
+	toolGetSectorFlow,
 }
 
 // writeTools is the write-tool registry: tools that mutate state must declare
@@ -102,6 +104,8 @@ func TestToolRequiredArguments(t *testing.T) {
 		"get_corporate_actions":            {"date_from", "date_to"},
 		"get_suspensions":                  {"date_from", "date_to"},
 		"get_shareholder_composition":      {"ticker", "date_from", "date_to"},
+		"get_ticker_metadata":              {},
+		"get_sector_flow":                  {},
 	}
 
 	for _, tool := range everyTool {
