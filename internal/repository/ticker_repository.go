@@ -37,6 +37,18 @@ func (r *TickerRepository) FindByCode(db *sqlx.DB, code string) (*entity.Ticker,
 	return &ticker, nil
 }
 
+// FindClassifications returns every ticker's taxonomy columns (code + the 15b
+// seeder's sector labels), active or not — a stored flow row for a delisted
+// ticker still needs its sector when get_sector_flow groups by it. Only the
+// taxonomy columns are selected: the caller maps code → label, nothing else.
+func (r *TickerRepository) FindClassifications(db *sqlx.DB) ([]entity.Ticker, error) {
+	var tickers []entity.Ticker
+	err := db.Select(&tickers, `
+		SELECT code, name, sektor, industri, sub_sektor, sub_industry, sub_industry_code, active
+		FROM tickers ORDER BY code`)
+	return tickers, err
+}
+
 // InsertIfAbsent inserts a minimal ticker row (code, name) only when the code
 // is not already present. Unlike Upsert it never updates an existing row, so a
 // light-touch caller (e.g. the news matcher seeding an FK) can't wipe the

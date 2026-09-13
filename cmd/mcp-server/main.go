@@ -325,6 +325,9 @@ func main() {
 	// get_ticker_metadata (issue 16): pure DB read over the 15b seeder's
 	// sector columns + point-in-time ticker_indices membership.
 	tickerMetadataUC := usecase.NewTickerMetadataUseCase(db, log, tickerRepo, repository.NewTickerIndexRepository(log))
+	// get_sector_flow (issue 17): read-time aggregation of the stored broker
+	// rows joined to the 15b seeder's taxonomy — no new ingestion.
+	sectorFlowUC := usecase.NewSectorFlowUseCase(db, log, brokerStockSummaryRepo, repository.NewDailyPriceRepository(log), tickerRepo)
 
 	// ─── HTTP router ────────────────────────────────────────────
 
@@ -378,6 +381,7 @@ func main() {
 		SuspensionsUC:           suspensionsUC,
 		ShareholderCompUC:       shareholderCompositionUC,
 		TickerMetadataUC:        tickerMetadataUC,
+		SectorFlowUC:            sectorFlowUC,
 		SourceStatusRepo:        sourceStatusRepo,
 		TickerRepo:              tickerRepo,
 	})
