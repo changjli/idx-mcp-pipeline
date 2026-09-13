@@ -86,6 +86,21 @@ func (p *proxyPool) markDead(proxy string) {
 	p.log.Warnf("proxy marked dead until %s: %s", p.dead[proxy].Format(time.RFC3339), proxy)
 }
 
+// live returns how many proxies are currently in rotation (not marked dead).
+// Call after a successful next() so the list is loaded.
+func (p *proxyPool) live() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	n := 0
+	for _, proxy := range p.proxies {
+		if until, dead := p.dead[proxy]; !dead || !until.After(now) {
+			n++
+		}
+	}
+	return n
+}
+
 // refreshLocked reloads the proxy list if the cache is stale. Caller holds mu.
 func (p *proxyPool) refreshLocked() error {
 	if len(p.proxies) > 0 && time.Since(p.lastFetch) < p.ttl {
