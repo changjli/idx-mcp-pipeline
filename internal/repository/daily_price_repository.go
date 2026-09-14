@@ -131,6 +131,27 @@ func (r *DailyPriceRepository) FindByTickerAndDateRange(db *sqlx.DB, ticker stri
 	return prices, err
 }
 
+// FindByTickerUpTo returns the most recent `limit` OHLCV rows for a ticker at
+// or before `to`, ascending by trading day — the window the indicator registry
+// reads. Anchoring on stored rows (not a calendar span) means an indicator's
+// warm-up is counted in trading days, so a short window is never padded by
+// weekends or IDX holidays; the inner ORDER BY DESC uses the
+// (ticker, trading_day DESC) index.
+func (r *DailyPriceRepository) FindByTickerUpTo(db *sqlx.DB, ticker string, to time.Time, limit int) ([]entity.DailyPrice, error) {
+	var prices []entity.DailyPrice
+	err := db.Select(&prices, `
+		SELECT * FROM (
+			SELECT * FROM daily_prices
+			WHERE ticker = $1 AND trading_day <= $2
+			ORDER BY trading_day DESC
+			LIMIT $3
+		) recent
+		ORDER BY trading_day`,
+		ticker, to, limit,
+	)
+	return prices, err
+}
+
 // DeleteOlderThan deletes daily_prices rows whose trading_day is older than
 // the retention window. Returns the number of rows deleted (0 on a re-run —
 // the delete is idempotent).

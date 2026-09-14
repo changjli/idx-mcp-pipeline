@@ -328,6 +328,9 @@ func main() {
 	// get_sector_flow (issue 17): read-time aggregation of the stored broker
 	// rows joined to the 15b seeder's taxonomy — no new ingestion.
 	sectorFlowUC := usecase.NewSectorFlowUseCase(db, log, brokerStockSummaryRepo, repository.NewDailyPriceRepository(log), tickerRepo)
+	// compute_indicators (screener ticket 01): registry-driven indicator engine
+	// over stored Daily Price rows — computed on demand, nothing persisted.
+	computeIndicatorsUC := usecase.NewComputeIndicatorsUseCase(db, log, dailyPriceRepo)
 
 	// ─── HTTP router ────────────────────────────────────────────
 
@@ -382,6 +385,7 @@ func main() {
 		ShareholderCompUC:       shareholderCompositionUC,
 		TickerMetadataUC:        tickerMetadataUC,
 		SectorFlowUC:            sectorFlowUC,
+		ComputeIndicatorsUC:     computeIndicatorsUC,
 		SourceStatusRepo:        sourceStatusRepo,
 		TickerRepo:              tickerRepo,
 	})

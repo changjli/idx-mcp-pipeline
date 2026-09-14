@@ -91,6 +91,23 @@ func argLimit(args map[string]any) int {
 	return n
 }
 
+// argStrings extracts a string-array argument, dropping non-string elements.
+// An absent or wrongly-typed argument yields nil, which the usecase rejects as
+// a missing required list.
+func argStrings(args map[string]any, key string) []string {
+	raw, ok := args[key].([]any)
+	if !ok {
+		return nil
+	}
+	values := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			values = append(values, s)
+		}
+	}
+	return values
+}
+
 // marketAnomaliesResponse wraps the usecase data with staleness metadata.
 type marketAnomaliesResponse struct {
 	*usecase.MarketAnomaliesData
@@ -528,6 +545,60 @@ func (s *Server) handleGetDailyPrices(ctx context.Context, req mcpgo.CallToolReq
 	return textResult(dailyPricesResponse{
 		DailyPricesData:   data,
 		StalenessMetadata: stalenessFor(s.db, s.sourceStatusRepo, sourceIdxStockSummary, time.Now()),
+	}), nil
+}
+
+// computeIndicatorsResponse wraps the registry read with staleness metadata.
+type computeIndicatorsResponse struct {
+	*usecase.ComputeIndicatorsResponse
+	mcp.StalenessMetadata
+}
+
+// handleComputeIndicators validates the call shape (mode, ticker list, as_of)
+// and delegates the registry/period validation to the usecase, so a bad name
+// or an over-cap list returns the same structured error whether it arrives over
+// MCP or from another caller.
+func (s *Server) handleComputeIndicators(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	args := req.GetArguments()
+	mode, _ := args["mode"].(string)
+	asOfStr, _ := args["as_of"].(string)
+	window, _ := args["window"].(float64)
+
+	tickers := argStrings(args, "tickers")
+	if len(tickers) == 0 {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "tickers must list at least one ticker", false)), nil
+	}
+	normalized := make([]string, 0, len(tickers))
+	for _, ticker := range tickers {
+		norm, ok := s.tickers.Normalize(ticker)
+		if !ok {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+		}
+		normalized = append(normalized, norm)
+	}
+
+	var asOfPtr *time.Time
+	if asOfStr != "" {
+		t, err := time.Parse("2006-01-02", asOfStr)
+		if err != nil {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid as_of date: "+asOfStr, false)), nil
+		}
+		asOfPtr = &t
+	}
+
+	data, err := s.computeIndicatorsUC.ComputeIndicators(ctx, usecase.ComputeIndicatorsRequest{
+		Mode:       mode,
+		Tickers:    normalized,
+		Indicators: argStrings(args, "indicators"),
+		AsOf:       asOfPtr,
+		Window:     int(window),
+	})
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(computeIndicatorsResponse{
+		ComputeIndicatorsResponse: data,
+		StalenessMetadata:         stalenessFor(s.db, s.sourceStatusRepo, sourceIdxStockSummary, time.Now()),
 	}), nil
 }
 
