@@ -59,10 +59,33 @@ type Entry struct {
 	// RequiredRows is the number of usable rows a value needs before it is
 	// reported at all. Below it the value is null plus an insufficient flag.
 	RequiredRows func(periods []int) int
-	// Compute returns the value at the end of the series, which is fully
-	// warmed because the caller checked RequiredRows first.
-	Compute func(periods []int, s Series) float64
+	// Compute returns the values over the series, ascending and parallel to it:
+	// element i belongs to row i, and the last element is the latest value.
+	// Positions the formula cannot value yet may hold the library's short-window
+	// head values; the registry masks everything below RequiredRows, which is
+	// what a caller reads as no value.
+	Compute func(periods []int, s Series) []float64
 }
+
+// Values is one request's computed array over a series, ascending by trading day
+// and parallel to it, plus the warm-up basis behind it: UsableRows is the number
+// of rows the formula could read (the series narrowed to the columns the entry
+// declares) and RequiredRows the bar those rows must clear.
+//
+// The two together are what a caller declares as the warm-up basis. A row whose
+// columns the entry needs were never stored narrows the series, so an indicator
+// can be short of its bar on history the ticker does have — which is why
+// Sufficient reads the usable count, not the series length.
+type Values struct {
+	Array        []float64
+	UsableRows   int
+	RequiredRows int
+}
+
+// Sufficient reports whether the series cleared the entry's warm-up bar. An
+// unknown name — no array at all — is never sufficient, so a caller maps it to
+// the same "nothing to report" path as short history.
+func (v Values) Sufficient() bool { return len(v.Array) > 0 && v.UsableRows >= v.RequiredRows }
 
 // Request is a parsed, validated indicator request.
 type Request struct {
@@ -203,20 +226,71 @@ func parsePeriods(entry Entry, rest string) ([]int, error) {
 // history — the caller flags it rather than reporting a short-window value),
 // when the needed columns are missing on too many rows, or when the computation
 // yields a non-finite value (a zero denominator, say).
+//
+// It reads the last element of Evaluate's array, so a screen row and a series
+// read of the same ticker can never disagree about the latest value.
 func Value(req Request, s Series) (float64, bool) {
-	entry, ok := registry[req.Name]
-	if !ok {
+	evaluated := Evaluate(req, s)
+	if len(evaluated.Array) == 0 {
 		return 0, false
 	}
-	usable := s.Rows(entry.Needs)
-	if usable.Len() < entry.RequiredRows(req.Periods) {
-		return 0, false
-	}
-	value := entry.Compute(req.Periods, usable)
+	value := last(evaluated.Array)
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0, false
 	}
 	return value, true
+}
+
+// Evaluate computes a request's values over an ascending series, one per row
+// (see Values for the shape). The array is parallel to the series the caller
+// passed, so it zips directly against that series' trading days: a row the
+// entry could not read, a row inside its warm-up, and a row where the formula
+// itself yields a non-finite number (a flat range, a zero base) are all NaN,
+// never a zero that would read as a real observation.
+//
+// An unknown name evaluates to nothing at all, which a caller reports the same
+// way as insufficient history.
+func Evaluate(req Request, s Series) Values {
+	entry, ok := registry[req.Name]
+	if !ok {
+		return Values{}
+	}
+
+	required := entry.RequiredRows(req.Periods)
+	usable := s.Rows(entry.Needs)
+	evaluated := Values{
+		Array:        make([]float64, s.Len()),
+		UsableRows:   usable.Len(),
+		RequiredRows: required,
+	}
+	for i := range evaluated.Array {
+		evaluated.Array[i] = math.NaN()
+	}
+	if usable.Len() < required {
+		return evaluated
+	}
+
+	values := entry.Compute(req.Periods, usable)
+	// An entry returning the wrong length would silently shift every value onto
+	// the wrong day, so a misaligned array is reported as no values at all.
+	if len(values) != usable.Len() {
+		return evaluated
+	}
+	for i, row := range s.keptRows(entry.Needs) {
+		evaluated.Array[row] = values[i]
+	}
+	maskWarmup(evaluated.Array, required)
+	return evaluated
+}
+
+// maskWarmup clears the rows below an indicator's warm-up bar. The library
+// emits a value for every row from the first — an SMA as a running average, an
+// EMA seeded at the head — and those would read as fully warmed; RequiredRows
+// is the bar, so everything under it is NaN instead.
+func maskWarmup(values []float64, required int) {
+	for i := 0; i < required-1 && i < len(values); i++ {
+		values[i] = math.NaN()
+	}
 }
 
 // RequiredRows is the warm-up bar for a request, so the caller can report the

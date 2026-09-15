@@ -4,10 +4,19 @@ import (
 	cinar "github.com/cinar/indicator"
 )
 
-// The v1 registry (spec: ~13 entries; 14 registered). Every entry reports a
-// single number in the units its Summary declares, so the screener's filter DSL
-// can compare it against a caller threshold. ADX, Stochastic, and Supertrend
-// are deliberately absent — deferred follow-up registry entries, not v1 scope.
+// The v1 registry (spec: ~13 entries; 14 registered). Every entry computes one
+// number per row, in the units its Summary declares, so the screener's filter
+// DSL can compare the latest value against a caller threshold and a deep-dive
+// can read the same numbers as a trajectory (Evaluate). ADX, Stochastic, and
+// Supertrend are deliberately absent — deferred follow-up registry entries, not
+// v1 scope.
+//
+// Compute returns the array over the series it is handed, ascending and
+// parallel to it; the registry masks the rows below RequiredRows and the last
+// element is therefore exactly the value Value reports. Entries leave positions
+// they have no value for at zero or a garbage head value — the mask covers
+// them — but must never emit a plausible number where there is none: a zero
+// volume would read as a real, maximally bearish observation.
 //
 // Library-sourced: sma, ema, rsi, macd, atr, obv, volume_ma, range_position's
 // window extremes. In-package (library gap or hardcoded parameters): roc,
@@ -19,8 +28,8 @@ var registry = map[string]Entry{
 		Summary:        "simple moving average of close, in IDR",
 		DefaultPeriods: []int{20},
 		RequiredRows:   func(periods []int) int { return periods[0] },
-		Compute: func(periods []int, s Series) float64 {
-			return last(cinar.Sma(periods[0], s.Close))
+		Compute: func(periods []int, s Series) []float64 {
+			return cinar.Sma(periods[0], s.Close)
 		},
 	},
 	"ema": {
@@ -31,8 +40,8 @@ var registry = map[string]Entry{
 		// exist numerically but are still mostly the seed. One period is the
 		// conventional "settled" bar.
 		RequiredRows: func(periods []int) int { return periods[0] },
-		Compute: func(periods []int, s Series) float64 {
-			return last(cinar.Ema(periods[0], s.Close))
+		Compute: func(periods []int, s Series) []float64 {
+			return cinar.Ema(periods[0], s.Close)
 		},
 	},
 	"rsi": {
@@ -42,9 +51,9 @@ var registry = map[string]Entry{
 		// Period price changes need period+1 closes; the library's RMA seed
 		// window is the first period of those changes.
 		RequiredRows: func(periods []int) int { return periods[0] + 1 },
-		Compute: func(periods []int, s Series) float64 {
+		Compute: func(periods []int, s Series) []float64 {
 			_, rsi := cinar.RsiPeriod(periods[0], s.Close)
-			return last(rsi)
+			return rsi
 		},
 	},
 	"macd": {
@@ -60,9 +69,9 @@ var registry = map[string]Entry{
 		// The slow EMA is settled after 26 rows; the signal is a 9-period EMA
 		// of that line, so the first settled histogram is at row 26+9-1.
 		RequiredRows: func([]int) int { return macdWarmup },
-		Compute: func(_ []int, s Series) float64 {
+		Compute: func(_ []int, s Series) []float64 {
 			macd, signal := cinar.Macd(s.Close)
-			return last(macd) - last(signal)
+			return subtractElements(macd, signal)
 		},
 	},
 	"bb_width": {
@@ -75,11 +84,15 @@ var registry = map[string]Entry{
 		// = 4*std/middle over a trailing window (population std, as the
 		// library's Std computes it).
 		RequiredRows: func(periods []int) int { return periods[0] },
-		Compute: func(periods []int, s Series) float64 {
+		Compute: func(periods []int, s Series) []float64 {
 			period := periods[0]
-			std := last(cinar.Std(period, s.Close))
-			middle := last(cinar.Sma(period, s.Close))
-			return 4 * std / middle * 100
+			std := cinar.Std(period, s.Close)
+			middle := cinar.Sma(period, s.Close)
+			width := make([]float64, len(std))
+			for i := range std {
+				width[i] = 4 * std[i] / middle[i] * 100
+			}
+			return width
 		},
 	},
 	"atr": {
@@ -90,9 +103,9 @@ var registry = map[string]Entry{
 		// TR is a same-bar range (no previous close), so ATR is a plain
 		// period-SMA of it and needs exactly period rows.
 		RequiredRows: func(periods []int) int { return periods[0] },
-		Compute: func(periods []int, s Series) float64 {
+		Compute: func(periods []int, s Series) []float64 {
 			_, atr := cinar.Atr(periods[0], s.High, s.Low, s.Close)
-			return last(atr)
+			return atr
 		},
 	},
 	"obv": {
@@ -106,8 +119,8 @@ var registry = map[string]Entry{
 		// OBV[0] is the seed (0) and needs no volume; the first signed row is
 		// the second, so a value needs two rows.
 		RequiredRows: func([]int) int { return 2 },
-		Compute: func(_ []int, s Series) float64 {
-			return last(cinar.Obv(s.Close, s.Volume))
+		Compute: func(_ []int, s Series) []float64 {
+			return cinar.Obv(s.Close, s.Volume)
 		},
 	},
 	"volume_ma": {
@@ -116,8 +129,8 @@ var registry = map[string]Entry{
 		DefaultPeriods: []int{20},
 		Needs:          UsesVolume,
 		RequiredRows:   func(periods []int) int { return periods[0] },
-		Compute: func(periods []int, s Series) float64 {
-			return last(cinar.Sma(periods[0], s.Volume))
+		Compute: func(periods []int, s Series) []float64 {
+			return cinar.Sma(periods[0], s.Volume)
 		},
 	},
 	"volume_ratio": {
@@ -128,9 +141,9 @@ var registry = map[string]Entry{
 		// The average includes the latest row, so the ratio is exactly the
 		// ratio of the last volume to the trailing period average.
 		RequiredRows: func(periods []int) int { return periods[0] },
-		Compute: func(periods []int, s Series) float64 {
-			average := last(cinar.Sma(periods[0], s.Volume))
-			return last(s.Volume) / average
+		Compute: func(periods []int, s Series) []float64 {
+			average := cinar.Sma(periods[0], s.Volume)
+			return divideElements(s.Volume, average)
 		},
 	},
 	"range_position": {
@@ -139,13 +152,17 @@ var registry = map[string]Entry{
 		DefaultPeriods: []int{60},
 		Needs:          UsesHighLow,
 		RequiredRows:   func(periods []int) int { return periods[0] },
-		Compute: func(periods []int, s Series) float64 {
+		Compute: func(periods []int, s Series) []float64 {
 			period := periods[0]
-			highest := last(cinar.Max(period, s.High))
-			lowest := last(cinar.Min(period, s.Low))
-			// A flat range has no position to report: 0/0 is NaN and the
-			// caller reads it as no value rather than as "at the low".
-			return (last(s.Close) - lowest) / (highest - lowest)
+			highest := cinar.Max(period, s.High)
+			lowest := cinar.Min(period, s.Low)
+			positions := make([]float64, len(s.Close))
+			for i := range s.Close {
+				// A flat range has no position to report: 0/0 is NaN and the
+				// caller reads it as no value rather than as "at the low".
+				positions[i] = (s.Close[i] - lowest[i]) / (highest[i] - lowest[i])
+			}
+			return positions
 		},
 	},
 	"roc": {
@@ -157,9 +174,13 @@ var registry = map[string]Entry{
 		// Comparing the latest close against the one period rows back needs
 		// period+1 rows.
 		RequiredRows: func(periods []int) int { return periods[0] + 1 },
-		Compute: func(periods []int, s Series) float64 {
+		Compute: func(periods []int, s Series) []float64 {
 			period := periods[0]
-			return percentChange(s.Close[len(s.Close)-1-period], last(s.Close))
+			changes := make([]float64, len(s.Close))
+			for i := period; i < len(s.Close); i++ {
+				changes[i] = percentChange(s.Close[i-period], s.Close[i])
+			}
+			return changes
 		},
 	},
 	"ma_slope": {
@@ -169,10 +190,14 @@ var registry = map[string]Entry{
 		// Both MA endpoints must be settled: the MA one period back is only
 		// fully warmed once the series holds two full periods.
 		RequiredRows: func(periods []int) int { return 2 * periods[0] },
-		Compute: func(periods []int, s Series) float64 {
+		Compute: func(periods []int, s Series) []float64 {
 			period := periods[0]
 			ma := cinar.Sma(period, s.Close)
-			return percentChange(ma[len(ma)-1-period], last(ma))
+			slopes := make([]float64, len(ma))
+			for i := 2*period - 1; i < len(ma); i++ {
+				slopes[i] = percentChange(ma[i-period], ma[i])
+			}
+			return slopes
 		},
 	},
 	"ma_distance": {
@@ -186,9 +211,8 @@ var registry = map[string]Entry{
 		// second half, carried so `ma_distance` and `ma_spread` name the same
 		// two periods.
 		RequiredRows: func(periods []int) int { return periods[0] },
-		Compute: func(periods []int, s Series) float64 {
-			ma := last(cinar.Sma(periods[0], s.Close))
-			return percentChange(ma, last(s.Close))
+		Compute: func(periods []int, s Series) []float64 {
+			return percentChanges(cinar.Sma(periods[0], s.Close), s.Close)
 		},
 	},
 	"ma_spread": {
@@ -199,10 +223,10 @@ var registry = map[string]Entry{
 		DefaultPeriods: []int{20, 50},
 		// The fast MA is settled by the time the slow one is.
 		RequiredRows: func(periods []int) int { return periods[1] },
-		Compute: func(periods []int, s Series) float64 {
-			fast := last(cinar.Sma(periods[0], s.Close))
-			slow := last(cinar.Sma(periods[1], s.Close))
-			return percentChange(slow, fast)
+		Compute: func(periods []int, s Series) []float64 {
+			fast := cinar.Sma(periods[0], s.Close)
+			slow := cinar.Sma(periods[1], s.Close)
+			return percentChanges(slow, fast)
 		},
 	},
 }
@@ -213,7 +237,36 @@ var registry = map[string]Entry{
 const macdWarmup = 26 + 9 - 1
 
 // percentChange reports to's change from, in percent: (to/from - 1) * 100. A
-// zero base yields an infinity, which Value reports as no value.
+// zero base yields an infinity, which the caller reports as no value.
 func percentChange(from, to float64) float64 {
 	return (to/from - 1) * 100
+}
+
+// percentChanges is percentChange element-wise over parallel arrays, so a value
+// stays aligned with the row it belongs to.
+func percentChanges(from, to []float64) []float64 {
+	changes := make([]float64, len(to))
+	for i := range to {
+		changes[i] = percentChange(from[i], to[i])
+	}
+	return changes
+}
+
+// subtractElements is a - b element-wise.
+func subtractElements(a, b []float64) []float64 {
+	differences := make([]float64, len(a))
+	for i := range a {
+		differences[i] = a[i] - b[i]
+	}
+	return differences
+}
+
+// divideElements is a / b element-wise. A zero denominator yields an infinity,
+// which the caller reports as no value.
+func divideElements(a, b []float64) []float64 {
+	quotients := make([]float64, len(a))
+	for i := range a {
+		quotients[i] = a[i] / b[i]
+	}
+	return quotients
 }

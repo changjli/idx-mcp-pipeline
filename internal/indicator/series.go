@@ -45,21 +45,12 @@ func (s Series) Rows(needs Columns) Series {
 		return s
 	}
 
-	kept := 0
-	for i := range s.Close {
-		if s.rowUsable(i, needs) {
-			kept++
-		}
-	}
-
-	highs := make([]float64, 0, kept)
-	lows := make([]float64, 0, kept)
-	closes := make([]float64, 0, kept)
-	volumes := make([]float64, 0, kept)
-	for i := range s.Close {
-		if !s.rowUsable(i, needs) {
-			continue
-		}
+	kept := s.keptRows(needs)
+	highs := make([]float64, 0, len(kept))
+	lows := make([]float64, 0, len(kept))
+	closes := make([]float64, 0, len(kept))
+	volumes := make([]float64, 0, len(kept))
+	for _, i := range kept {
 		highs = append(highs, s.High[i])
 		lows = append(lows, s.Low[i])
 		closes = append(closes, s.Close[i])
@@ -67,6 +58,23 @@ func (s Series) Rows(needs Columns) Series {
 	}
 
 	return Series{High: highs, Low: lows, Close: closes, Volume: volumes}
+}
+
+// keptRows returns the indexes of the rows carrying every column listed in
+// needs, ascending. Rows narrows to exactly these, so a caller holding values
+// computed over the narrowed series can map them back onto the full row axis
+// instead of onto a series whose gaps have shifted every index.
+func (s Series) keptRows(needs Columns) []int {
+	if !s.wellFormed() {
+		return nil
+	}
+	kept := make([]int, 0, len(s.Close))
+	for i := range s.Close {
+		if s.rowUsable(i, needs) {
+			kept = append(kept, i)
+		}
+	}
+	return kept
 }
 
 // wellFormed reports whether the columns are parallel, the invariant every
