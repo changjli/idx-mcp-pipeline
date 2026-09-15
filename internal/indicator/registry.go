@@ -1,11 +1,14 @@
 // Package indicator is the screener's indicator registry (spec
 // .scratch/screener-tool/spec.md): one entry per indicator, so growing the set
 // is one registry entry plus fixtures and the MCP tool definition never
-// changes. Computation runs over stored Daily Price closes — nothing is
+// changes. Computation runs over stored Daily Price columns — nothing is
 // persisted, no upstream call (Heroku H12 constraint, ADR-0009).
 //
 // Library-sourced formulas come from github.com/cinar/indicator, pinned to the
-// v1.x line (MIT). The v2 line is AGPLv3 and must not be used.
+// v1.x line (MIT). The v2 line is AGPLv3 and must not be used. An entry
+// computes in-package when the library has no such indicator (ROC) or hardcodes
+// parameters the registry exposes (Bollinger width, MACD's fixed periods,
+// volume ratio, range position, MA slope, and the derived MA indicators).
 //
 // Warm-up: the library emits a value for every input row, averaging a short
 // window at the head of the series (SMA as a running average, EMA seeded at
@@ -22,8 +25,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-
-	cinar "github.com/cinar/indicator"
 )
 
 // ErrInvalid marks a bad indicator request: an unknown name, an unparsable
@@ -38,71 +39,50 @@ const (
 	maxPeriod = 400
 )
 
-// Entry is one registered indicator. Every v1 entry takes a single optional
-// `period` parameter; an indicator needing more (or no) parameters gets its
-// own fields here when it lands.
+// Entry is one registered indicator. A v1 entry takes periods (one for a
+// single-window indicator, two for a pair) and nothing else; an indicator
+// needing more parameters gets its own fields here when it lands.
 type Entry struct {
 	// Name is the registry key the caller names, e.g. "sma".
 	Name string
 	// Summary is the one-line description used in error enumeration and the
-	// tool description.
+	// tool description. It carries the units of the value, since the screener
+	// compares the value against caller thresholds.
 	Summary string
-	// DefaultPeriod applies when the spec carries no ":period" suffix.
-	DefaultPeriod int
-	// RequiredRows is the number of usable price rows a value needs before it
-	// is reported at all. Below it the value is null plus an insufficient flag.
-	RequiredRows func(period int) int
+	// DefaultPeriods are the periods a bare spec gets: one value for a
+	// single-window indicator (sma), fast-then-slow for a pair (ma_distance),
+	// and empty for a fixed-parameter indicator (`macd`, `obv`), which accepts
+	// no period at all.
+	DefaultPeriods []int
+	// Needs is the set of stored columns the formula reads beyond close.
+	Needs Columns
+	// RequiredRows is the number of usable rows a value needs before it is
+	// reported at all. Below it the value is null plus an insufficient flag.
+	RequiredRows func(periods []int) int
 	// Compute returns the value at the end of the series, which is fully
 	// warmed because the caller checked RequiredRows first.
-	Compute func(period int, closes []float64) float64
+	Compute func(periods []int, s Series) float64
 }
 
 // Request is a parsed, validated indicator request.
 type Request struct {
-	Name   string
-	Period int
+	Name    string
+	Periods []int
 }
 
-// Key is the canonical response key, e.g. "sma:20". The period is always
-// present so a row's value is self-describing without a schema lookup.
+// Key is the canonical response key: "sma:20", "ma_distance:20:50", or a bare
+// "macd" for a fixed-parameter entry. Periods are always present when the entry
+// has them, so a row's value is self-describing without a schema lookup.
 func (r Request) Key() string {
-	return r.Name + ":" + strconv.Itoa(r.Period)
-}
-
-var registry = map[string]Entry{
-	"sma": {
-		Name:          "sma",
-		Summary:       "simple moving average of close",
-		DefaultPeriod: 20,
-		RequiredRows:  func(period int) int { return period },
-		Compute: func(period int, closes []float64) float64 {
-			return last(cinar.Sma(period, closes))
-		},
-	},
-	"ema": {
-		Name:          "ema",
-		Summary:       "exponential moving average of close",
-		DefaultPeriod: 20,
-		// The library seeds the EMA at the first close, so shorter windows
-		// exist numerically but are still mostly the seed. One period is the
-		// conventional "settled" bar.
-		RequiredRows: func(period int) int { return period },
-		Compute: func(period int, closes []float64) float64 {
-			return last(cinar.Ema(period, closes))
-		},
-	},
-	"rsi": {
-		Name:          "rsi",
-		Summary:       "relative strength index (Wilder smoothing)",
-		DefaultPeriod: 14,
-		// Period price changes need period+1 closes; the library's RMA seed
-		// window is the first period of those changes.
-		RequiredRows: func(period int) int { return period + 1 },
-		Compute: func(period int, closes []float64) float64 {
-			_, rsi := cinar.RsiPeriod(period, closes)
-			return last(rsi)
-		},
-	},
+	if len(r.Periods) == 0 {
+		return r.Name
+	}
+	parts := make([]string, 0, len(r.Periods)+1)
+	parts = append(parts, r.Name)
+	for _, period := range r.Periods {
+		parts = append(parts, strconv.Itoa(period))
+	}
+	return strings.Join(parts, ":")
 }
 
 // last returns the final element, the latest value in an ascending series.
@@ -121,14 +101,23 @@ func Names() []string {
 	return names
 }
 
-// Catalog returns "name (param summary)" lines for the tool description.
+// Catalog returns "name:defaults — summary" lines for the tool description, so
+// registry growth never edits the tool definition.
 func Catalog() string {
 	parts := make([]string, 0, len(registry))
 	for _, name := range Names() {
 		entry := registry[name]
-		parts = append(parts, fmt.Sprintf("%s:%d — %s", name, entry.DefaultPeriod, entry.Summary))
+		parts = append(parts, fmt.Sprintf("%s — %s", entry.spec(), entry.Summary))
 	}
 	return strings.Join(parts, "; ")
+}
+
+// spec renders the entry's bare spec: "sma:20", "ma_distance:20:50", "macd".
+func (e Entry) spec() string {
+	if len(e.DefaultPeriods) == 0 {
+		return e.Name
+	}
+	return Request{Name: e.Name, Periods: e.DefaultPeriods}.Key()
 }
 
 // Lookup resolves a name (case-insensitive, trimmed) or returns an ErrInvalid
@@ -143,7 +132,8 @@ func Lookup(name string) (Entry, error) {
 	return entry, nil
 }
 
-// Parse parses one spec: "sma" (the entry's default period) or "sma:50".
+// Parse parses one spec: "sma" (the entry's default periods), "sma:50", or
+// "ma_distance:10:30" for a pair. A fixed-parameter entry takes no period.
 func Parse(spec string) (Request, error) {
 	raw := strings.TrimSpace(spec)
 	if raw == "" {
@@ -151,40 +141,78 @@ func Parse(spec string) (Request, error) {
 			ErrInvalid, strings.Join(Names(), ", "))
 	}
 
-	name, periodStr, hasPeriod := strings.Cut(raw, ":")
+	name, rest, hasPeriods := strings.Cut(raw, ":")
 	entry, err := Lookup(name)
 	if err != nil {
 		return Request{}, err
 	}
 
-	period := entry.DefaultPeriod
-	if hasPeriod {
-		period, err = strconv.Atoi(strings.TrimSpace(periodStr))
+	// Defaults are copied rather than aliased: the registry map is
+	// process-global, and a caller that wrote into a request's periods would
+	// otherwise rewrite every later request's defaults.
+	periods := append([]int(nil), entry.DefaultPeriods...)
+	if hasPeriods {
+		periods, err = parsePeriods(entry, rest)
 		if err != nil {
-			return Request{}, fmt.Errorf("%w: %s period %q is not an integer",
-				ErrInvalid, entry.Name, strings.TrimSpace(periodStr))
+			return Request{}, err
 		}
 	}
-	if period < minPeriod || period > maxPeriod {
-		return Request{}, fmt.Errorf("%w: %s period must be %d..%d, got %d",
-			ErrInvalid, entry.Name, minPeriod, maxPeriod, period)
-	}
-	return Request{Name: entry.Name, Period: period}, nil
+	return Request{Name: entry.Name, Periods: periods}, nil
 }
 
-// Value computes a request's latest value over an ascending close series.
-// ok is false when the series is shorter than the entry's warm-up requirement
-// (insufficient history — the caller flags it rather than reporting a
-// short-window value) or when the library returns a non-finite value.
-func Value(req Request, closes []float64) (float64, bool) {
+// parsePeriods validates the caller's periods against the entry's arity. An
+// override names every period the entry has or none: a half-specified pair
+// ("ma_distance:10") would silently keep a default the caller did not name and
+// report a value under a key they did not ask for.
+func parsePeriods(entry Entry, rest string) ([]int, error) {
+	if len(entry.DefaultPeriods) == 0 {
+		return nil, fmt.Errorf("%w: %s takes no period — write %q", ErrInvalid, entry.Name, entry.Name)
+	}
+
+	given := strings.Split(rest, ":")
+	if len(given) != len(entry.DefaultPeriods) {
+		return nil, fmt.Errorf("%w: %s takes %d period(s) — write %q",
+			ErrInvalid, entry.Name, len(entry.DefaultPeriods), entry.spec())
+	}
+
+	periods := make([]int, 0, len(given))
+	for _, raw := range given {
+		period, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s period %q is not an integer",
+				ErrInvalid, entry.Name, strings.TrimSpace(raw))
+		}
+		if period < minPeriod || period > maxPeriod {
+			return nil, fmt.Errorf("%w: %s period must be %d..%d, got %d",
+				ErrInvalid, entry.Name, minPeriod, maxPeriod, period)
+		}
+		periods = append(periods, period)
+	}
+
+	// A pair is fast-then-slow: the reverse order would flip the sign of every
+	// spread or distance the screener filters on.
+	if len(periods) == 2 && periods[0] >= periods[1] {
+		return nil, fmt.Errorf("%w: %s needs the fast period shorter than the slow one, got %d:%d",
+			ErrInvalid, entry.Name, periods[0], periods[1])
+	}
+	return periods, nil
+}
+
+// Value computes a request's latest value over an ascending series. ok is false
+// when the series is shorter than the entry's warm-up requirement (insufficient
+// history — the caller flags it rather than reporting a short-window value),
+// when the needed columns are missing on too many rows, or when the computation
+// yields a non-finite value (a zero denominator, say).
+func Value(req Request, s Series) (float64, bool) {
 	entry, ok := registry[req.Name]
 	if !ok {
 		return 0, false
 	}
-	if len(closes) < entry.RequiredRows(req.Period) {
+	usable := s.Rows(entry.Needs)
+	if usable.Len() < entry.RequiredRows(req.Periods) {
 		return 0, false
 	}
-	value := entry.Compute(req.Period, closes)
+	value := entry.Compute(req.Periods, usable)
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0, false
 	}
@@ -198,5 +226,5 @@ func RequiredRows(req Request) int {
 	if !ok {
 		return 0
 	}
-	return entry.RequiredRows(req.Period)
+	return entry.RequiredRows(req.Periods)
 }

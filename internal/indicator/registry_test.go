@@ -7,6 +7,17 @@ import (
 	"testing"
 )
 
+// closeSeries is the close-only series the pure-close entries compute over:
+// high, low, and volume carry the NaN that stands for a row which did not
+// store them.
+func closeSeries(closes []float64) Series {
+	missing := make([]float64, len(closes))
+	for i := range missing {
+		missing[i] = math.NaN()
+	}
+	return Series{High: missing, Low: missing, Close: closes, Volume: missing}
+}
+
 // Fixtures are hand-computed from the pinned library's documented formulas
 // (github.com/cinar/indicator v1.3.0), not copied from a run — so a library
 // formula change surfaces here as a failure rather than as a silently
@@ -31,6 +42,9 @@ func TestValue_HandComputedFixtures(t *testing.T) {
 	//     (0.1481481*2+1)/3 = 0.4814815
 	//   RS  = 0.6419753/0.4814815 = 1.3333333
 	//   RSI = 100 - 100/(1+1.3333333) = 57.142857
+	// Wilder smoothing is the point of the exact-value check: the plain average
+	// of the same gains and losses is 100 - 100/(1+ (3/3)/(1/3)) = 50, so an
+	// SMA-smoothed implementation fails here.
 	rsiCloses := []float64{10, 11, 12, 11, 13, 12}
 
 	cases := []struct {
@@ -75,7 +89,7 @@ func TestValue_HandComputedFixtures(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Parse(%q) error: %v", tc.spec, err)
 			}
-			got, ok := Value(req, tc.closes)
+			got, ok := Value(req, closeSeries(tc.closes))
 			if !ok {
 				t.Fatalf("Value(%q) reported insufficient history for %d rows", tc.spec, len(tc.closes))
 			}
@@ -101,6 +115,14 @@ func TestValue_InsufficientWarmup(t *testing.T) {
 		{name: "rsi exactly at the bar (period+1)", spec: "rsi:3", closes: []float64{10, 11, 12, 11}, wantOK: true},
 		{name: "rsi one row short", spec: "rsi:3", closes: []float64{10, 11, 12}, wantOK: false},
 		{name: "ema one row short", spec: "ema:3", closes: []float64{1, 2}, wantOK: false},
+		{name: "roc exactly at the bar (period+1)", spec: "roc:3", closes: []float64{10, 11, 12, 11}, wantOK: true},
+		{name: "roc one row short", spec: "roc:3", closes: []float64{10, 11, 12}, wantOK: false},
+		{name: "ma_slope needs two full periods", spec: "ma_slope:3", closes: []float64{10, 11, 12, 11, 13, 12}, wantOK: true},
+		{name: "ma_slope one row short of two periods", spec: "ma_slope:3", closes: []float64{10, 11, 12, 11, 13}, wantOK: false},
+		{name: "ma_distance needs only the fast MA", spec: "ma_distance:5:50", closes: []float64{10, 11, 12, 11, 13}, wantOK: true},
+		{name: "ma_spread needs the slow MA", spec: "ma_spread:5:50", closes: []float64{10, 11, 12, 11, 13}, wantOK: false},
+		{name: "macd one row short of the signal warm-up", spec: "macd", closes: make([]float64, macdWarmup-1), wantOK: false},
+		{name: "macd exactly at the signal warm-up", spec: "macd", closes: make([]float64, macdWarmup), wantOK: true},
 	}
 
 	for _, tc := range cases {
@@ -109,7 +131,7 @@ func TestValue_InsufficientWarmup(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Parse(%q) error: %v", tc.spec, err)
 			}
-			if _, ok := Value(req, tc.closes); ok != tc.wantOK {
+			if _, ok := Value(req, closeSeries(tc.closes)); ok != tc.wantOK {
 				t.Errorf("Value(%q) ok = %v, want %v (%d rows)", tc.spec, ok, tc.wantOK, len(tc.closes))
 			}
 		})
@@ -118,23 +140,37 @@ func TestValue_InsufficientWarmup(t *testing.T) {
 
 func TestParse(t *testing.T) {
 	cases := []struct {
-		spec       string
-		wantName   string
-		wantPeriod int
-		wantErr    bool
+		spec        string
+		wantName    string
+		wantPeriods []int
+		wantErr     bool
 	}{
-		{spec: "sma", wantName: "sma", wantPeriod: 20},
-		{spec: "sma:50", wantName: "sma", wantPeriod: 50},
-		{spec: "  EMA:200  ", wantName: "ema", wantPeriod: 200},
-		{spec: "rsi:14", wantName: "rsi", wantPeriod: 14},
-		{spec: "rsi", wantName: "rsi", wantPeriod: 14},
+		{spec: "sma", wantName: "sma", wantPeriods: []int{20}},
+		{spec: "sma:50", wantName: "sma", wantPeriods: []int{50}},
+		{spec: "  EMA:200  ", wantName: "ema", wantPeriods: []int{200}},
+		{spec: "rsi:14", wantName: "rsi", wantPeriods: []int{14}},
+		{spec: "rsi", wantName: "rsi", wantPeriods: []int{14}},
+		{spec: "ma_distance", wantName: "ma_distance", wantPeriods: []int{20, 50}},
+		{spec: "ma_distance:10:30", wantName: "ma_distance", wantPeriods: []int{10, 30}},
+		{spec: "MA_SPREAD:5:10", wantName: "ma_spread", wantPeriods: []int{5, 10}},
+		{spec: "macd", wantName: "macd"},
+		{spec: "obv", wantName: "obv"},
 		{spec: "sma:1", wantErr: true},
 		{spec: "sma:0", wantErr: true},
 		{spec: "sma:401", wantErr: true},
 		{spec: "sma:x", wantErr: true},
 		{spec: "sma:", wantErr: true},
+		{spec: "sma:20:50", wantErr: true}, // single-period entry, two given
+		{spec: "ma_distance:10", wantErr: true},
+		{spec: "ma_distance:30:10", wantErr: true}, // slow must be the longer one
+		{spec: "ma_distance:20:20", wantErr: true},
+		{spec: "ma_distance:10:30:50", wantErr: true},
+		{spec: "macd:12", wantErr: true}, // fixed-parameter entry
+		{spec: "obv:20", wantErr: true},
 		{spec: "", wantErr: true},
-		{spec: "macd", wantErr: true}, // ticket 02 grows the registry
+		{spec: "adx:14", wantErr: true},        // deferred follow-up, not v1
+		{spec: "stochastic:14", wantErr: true}, // deferred follow-up, not v1
+		{spec: "supertrend:10", wantErr: true}, // deferred follow-up, not v1
 		{spec: "nope:20", wantErr: true},
 	}
 
@@ -150,12 +186,24 @@ func TestParse(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Parse(%q) error: %v", tc.spec, err)
 			}
-			if req.Name != tc.wantName || req.Period != tc.wantPeriod {
-				t.Errorf("Parse(%q) = %s:%d, want %s:%d",
-					tc.spec, req.Name, req.Period, tc.wantName, tc.wantPeriod)
+			if req.Name != tc.wantName || !sameInts(req.Periods, tc.wantPeriods) {
+				t.Errorf("Parse(%q) = %s/%v, want %s/%v",
+					tc.spec, req.Name, req.Periods, tc.wantName, tc.wantPeriods)
 			}
 		})
 	}
+}
+
+func sameInts(got, want []int) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // The unknown-name error must enumerate the valid names — a typo has to be
@@ -172,13 +220,30 @@ func TestLookup_UnknownNameEnumeratesValidNames(t *testing.T) {
 	}
 }
 
-func TestRequestKey_AlwaysCarriesPeriod(t *testing.T) {
-	req, err := Parse("sma")
-	if err != nil {
-		t.Fatalf("Parse error: %v", err)
+// The key is how a caller reads a value back out of a row, so it must name
+// every period the value was computed with — and a fixed-parameter entry has
+// none to name.
+func TestRequestKey_CarriesEveryPeriod(t *testing.T) {
+	cases := []struct {
+		spec string
+		want string
+	}{
+		{spec: "sma", want: "sma:20"},
+		{spec: "ma_distance", want: "ma_distance:20:50"},
+		{spec: "ma_distance:10:30", want: "ma_distance:10:30"},
+		{spec: "macd", want: "macd"},
+		{spec: "obv", want: "obv"},
 	}
-	if got, want := req.Key(), "sma:20"; got != want {
-		t.Errorf("Key() = %q, want %q", got, want)
+	for _, tc := range cases {
+		t.Run(tc.spec, func(t *testing.T) {
+			req, err := Parse(tc.spec)
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			if got := req.Key(); got != tc.want {
+				t.Errorf("Key() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -190,6 +255,14 @@ func TestRequiredRows(t *testing.T) {
 		{spec: "sma:20", want: 20},
 		{spec: "ema:50", want: 50},
 		{spec: "rsi:14", want: 15},
+		{spec: "roc:20", want: 21},
+		{spec: "ma_slope:20", want: 40},
+		{spec: "bb_width:20", want: 20},
+		{spec: "atr:14", want: 14},
+		{spec: "obv", want: 2},
+		{spec: "macd", want: macdWarmup},
+		{spec: "ma_distance:20:50", want: 20},
+		{spec: "ma_spread:20:50", want: 50},
 	}
 	for _, tc := range cases {
 		t.Run(tc.spec, func(t *testing.T) {
@@ -204,11 +277,24 @@ func TestRequiredRows(t *testing.T) {
 	}
 }
 
+// The catalog is what the tool description is generated from, so every entry
+// must appear with the spec a caller can type — and the deferred indicators
+// must not.
 func TestCatalog_ListsEveryRegisteredName(t *testing.T) {
 	catalog := Catalog()
 	for _, name := range Names() {
 		if !strings.Contains(catalog, name) {
 			t.Errorf("catalog %q is missing registered name %q", catalog, name)
+		}
+	}
+	for _, deferred := range []string{"adx", "stochastic", "supertrend"} {
+		if strings.Contains(catalog, deferred) {
+			t.Errorf("catalog %q advertises deferred indicator %q", catalog, deferred)
+		}
+	}
+	for _, spec := range []string{"sma:20", "ma_distance:20:50", "macd —"} {
+		if !strings.Contains(catalog, spec) {
+			t.Errorf("catalog %q is missing %q", catalog, spec)
 		}
 	}
 }

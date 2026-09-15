@@ -51,6 +51,25 @@ func priceRows(closes []float64) []entity.DailyPrice {
 	return rows
 }
 
+// ohlcvRows builds an ascending OHLCV series from parallel columns, the shape
+// the column-reading registry entries need.
+func ohlcvRows(highs, lows, closes []float64, volumes []int64) []entity.DailyPrice {
+	rows := make([]entity.DailyPrice, 0, len(closes))
+	day := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	for i, c := range closes {
+		rows = append(rows, entity.DailyPrice{
+			Ticker:     "TEST",
+			TradingDay: day,
+			High:       f64p(highs[i]),
+			Low:        f64p(lows[i]),
+			Close:      f64p(c),
+			Volume:     i64p(volumes[i]),
+		})
+		day = day.AddDate(0, 0, 1)
+	}
+	return rows
+}
+
 func newComputeTestUseCase(series *fakePriceSeries) *ComputeIndicatorsUseCase {
 	return NewComputeIndicatorsUseCase(nil, logrus.New(), series)
 }
@@ -253,6 +272,61 @@ func TestComputeIndicators_InsufficientWarmupPerIndicator(t *testing.T) {
 	}
 	if row.RequiredRows != 15 { // rsi:14 is the binding constraint
 		t.Errorf("required_rows = %d, want 15", row.RequiredRows)
+	}
+}
+
+// OHLCV entries read the columns they declare, and a row missing one of those
+// columns is dropped rather than read as a zero — the registry test covers the
+// arithmetic, this covers the seam that feeds it from stored rows.
+func TestComputeIndicators_OHLCVEntriesReadTheirColumns(t *testing.T) {
+	// The ticket-02 fixture bars: H 12,16,12,16,14 / L 8,10,10,11,11 /
+	// C 10,11,11,12,12 / V 100,200,300,400,500 → atr:3 = (2+5+3)/3,
+	// volume_ratio:3 = 500/400, range_position:3 = (12-10)/(16-10).
+	series := &fakePriceSeries{
+		latest: f64pDay(testAnchor()),
+		rows: map[string][]entity.DailyPrice{
+			"BBRI": ohlcvRows(
+				[]float64{12, 16, 12, 16, 14},
+				[]float64{8, 10, 10, 11, 11},
+				[]float64{10, 11, 11, 12, 12},
+				[]int64{100, 200, 300, 400, 500},
+			),
+			// The same closes with no high/low/volume stored: the close-only
+			// entries still report, the column-reading ones do not.
+			"TLKM": priceRows([]float64{10, 11, 11, 12, 12}),
+		},
+	}
+	uc := newComputeTestUseCase(series)
+
+	resp, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Tickers:    []string{"BBRI", "TLKM"},
+		Indicators: []string{"atr:3", "volume_ratio:3", "range_position:3", "sma:3"},
+	})
+	if err != nil {
+		t.Fatalf("ComputeIndicators error: %v", err)
+	}
+
+	bbri := resp.Rows[0]
+	assertValue(t, bbri, "atr:3", 3.3333333)
+	assertValue(t, bbri, "volume_ratio:3", 1.25)
+	assertValue(t, bbri, "range_position:3", 0.3333333)
+	assertValue(t, bbri, "sma:3", 11.6666667)
+	if bbri.HistoryRows != 5 {
+		t.Errorf("BBRI history_rows = %d, want 5", bbri.HistoryRows)
+	}
+	if len(bbri.Insufficient) != 0 {
+		t.Errorf("BBRI insufficient = %v, want empty", bbri.Insufficient)
+	}
+
+	tlkm := resp.Rows[1]
+	assertValue(t, tlkm, "sma:3", 11.6666667)
+	for _, key := range []string{"atr:3", "volume_ratio:3", "range_position:3"} {
+		if v := tlkm.Values[key]; v != nil {
+			t.Errorf("TLKM %s = %v, want null (the column was not stored)", key, *v)
+		}
+	}
+	if got, want := strings.Join(tlkm.Insufficient, ","), "atr:3,volume_ratio:3,range_position:3"; got != want {
+		t.Errorf("TLKM insufficient = %q, want %q", got, want)
 	}
 }
 

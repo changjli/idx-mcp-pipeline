@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -144,12 +145,12 @@ func (uc *ComputeIndicatorsUseCase) ComputeIndicators(ctx context.Context, req C
 		if err != nil {
 			return nil, fmt.Errorf("read daily prices for %s: %w", ticker, err)
 		}
-		closes := usableCloses(prices)
+		series := usableSeries(prices)
 
 		values := make(map[string]*float64, len(requests))
 		insufficient := []string{}
 		for _, r := range requests {
-			value, ok := indicator.Value(r, closes)
+			value, ok := indicator.Value(r, series)
 			if !ok {
 				values[r.Key()] = nil
 				insufficient = append(insufficient, r.Key())
@@ -163,7 +164,7 @@ func (uc *ComputeIndicatorsUseCase) ComputeIndicators(ctx context.Context, req C
 			Ticker:       ticker,
 			Values:       values,
 			Insufficient: insufficient,
-			HistoryRows:  len(closes),
+			HistoryRows:  series.Len(),
 			RequiredRows: required,
 		})
 	}
@@ -286,19 +287,44 @@ func bindingRequiredRows(requests []indicator.Request) int {
 	return required
 }
 
-// usableCloses extracts the closes the registry computes over, dropping rows
-// with no stored close (the column is nullable). A gap therefore shortens the
-// series rather than poisoning it with a zero, and the short series surfaces as
-// insufficient warm-up.
-func usableCloses(prices []entity.DailyPrice) []float64 {
+// usableSeries builds the registry's compute input from stored rows, ascending.
+// A row with no stored close is dropped — every registry entry reads close, so
+// such a row can carry no value — which also keeps history_rows counting the
+// same usable closes it always has. A missing high, low, or volume rides as NaN
+// rather than as a zero: a zero would read as a real (and maximally bearish)
+// observation, whereas the registry drops that row for the entries that need
+// the column, leaving a shorter series and an insufficient flag.
+func usableSeries(prices []entity.DailyPrice) indicator.Series {
+	highs := make([]float64, 0, len(prices))
+	lows := make([]float64, 0, len(prices))
 	closes := make([]float64, 0, len(prices))
+	volumes := make([]float64, 0, len(prices))
 	for _, p := range prices {
 		if p.Close == nil {
 			continue
 		}
+		highs = append(highs, missingPrice(p.High))
+		lows = append(lows, missingPrice(p.Low))
 		closes = append(closes, *p.Close)
+		volumes = append(volumes, missingVolume(p.Volume))
 	}
-	return closes
+	return indicator.Series{High: highs, Low: lows, Close: closes, Volume: volumes}
+}
+
+// missingPrice is the NaN a price column carries when the row did not store it.
+func missingPrice(value *float64) float64 {
+	if value == nil {
+		return math.NaN()
+	}
+	return *value
+}
+
+// missingVolume is the same for volume, which is stored as an integer count.
+func missingVolume(value *int64) float64 {
+	if value == nil {
+		return math.NaN()
+	}
+	return float64(*value)
 }
 
 // compile-time check: the concrete repository satisfies the series seam.
