@@ -77,15 +77,18 @@ func (f *fakeScreenerSource) LatestTradingDayAll(db *sqlx.DB) (*time.Time, error
 }
 
 // screenSeries builds an ascending OHLCV series long enough for the default
-// column set: a gentle uptrend with a volume that grows with the price, so every
-// default indicator has a value.
+// column set: a gentle uptrend on volume that fades day by day — the shipped
+// default filter set's breakout-zone shape (price above its fast MA, high in its
+// range, volume not above its own average), so a test that expects rows back is
+// screening a shape the default filters actually admit.
 func screenSeries(ticker string, days int) []entity.DailyPrice {
 	return screenSeriesStep(ticker, days, 1)
 }
 
 // screenSeriesStep is screenSeries with a caller-chosen daily close step, so a
 // test can give two tickers different momentum (and therefore different RSI)
-// while keeping everything else identical.
+// while keeping everything else identical. Volume always fades, and every series
+// these helpers build is far shorter than 1000 rows, so it never reaches zero.
 func screenSeriesStep(ticker string, days int, step float64) []entity.DailyPrice {
 	rows := make([]entity.DailyPrice, 0, days)
 	day := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
@@ -97,7 +100,7 @@ func screenSeriesStep(ticker string, days int, step float64) []entity.DailyPrice
 			High:       f64p(close + 10),
 			Low:        f64p(close - 10),
 			Close:      f64p(close),
-			Volume:     i64p(1_000_000 + int64(i)*1000),
+			Volume:     i64p(1_000_000 - int64(i)*1000),
 		})
 		day = day.AddDate(0, 0, 1)
 	}
@@ -168,13 +171,35 @@ func TestScreenStocks_PureValidation(t *testing.T) {
 			wantErr: ErrInvalidArgument,
 		},
 		{
-			name:    "sort key that is not a requested column",
-			req:     ScreenStocksRequest{Indicators: []string{"rsi:14"}, Sort: "ma_distance:20:50"},
+			// A filter column is computed, so it is sortable; a column the call
+			// computes nowhere is not.
+			name:    "sort key that no column computes",
+			req:     ScreenStocksRequest{Indicators: []string{"rsi:14"}, Sort: "bb_width:20"},
 			wantErr: ErrInvalidArgument,
 		},
 		{
 			name:    "unknown sort key",
 			req:     ScreenStocksRequest{Sort: "foreign_net"},
+			wantErr: ErrInvalidArgument,
+		},
+		{
+			name:    "filter on an unknown indicator",
+			req:     ScreenStocksRequest{Filters: &[]ScreenStocksFilter{filter("smma:20", filterOpGt, 0)}},
+			wantErr: ErrInvalidArgument,
+		},
+		{
+			name:    "filter with an unknown operator",
+			req:     ScreenStocksRequest{Filters: &[]ScreenStocksFilter{filter("rsi:14", "above", 40)}},
+			wantErr: ErrInvalidArgument,
+		},
+		{
+			name:    "filter with a band on a scalar operator",
+			req:     ScreenStocksRequest{Filters: &[]ScreenStocksFilter{filter("rsi:14", filterOpGt, 40, 60)}},
+			wantErr: ErrInvalidArgument,
+		},
+		{
+			name:    "filter band reversed",
+			req:     ScreenStocksRequest{Filters: &[]ScreenStocksFilter{filter("range_position:60", filterOpBetween, 0.95, 0.70)}},
 			wantErr: ErrInvalidArgument,
 		},
 		{
@@ -226,8 +251,11 @@ func TestScreenStocks_Defaults(t *testing.T) {
 	if strings.Join(res.Indicators, ",") != strings.Join(ScreenerDefaultIndicators, ",") {
 		t.Fatalf("indicators = %v, want the stage-1 default set %v", res.Indicators, ScreenerDefaultIndicators)
 	}
-	if res.Funnel.Universe != 900 || res.Funnel.AfterValue != 1 {
-		t.Fatalf("funnel = %+v, want universe 900 / after_value 1", res.Funnel)
+	if res.Funnel.Universe != 900 || res.Funnel.AfterValue != 1 || res.Funnel.AfterStructure != 1 {
+		t.Fatalf("funnel = %+v, want universe 900 / after_value 1 / after_structure 1", res.Funnel)
+	}
+	if len(res.Filters) != len(ScreenerDefaultFilters) {
+		t.Fatalf("filters = %v, want the shipped default set echoed", res.Filters)
 	}
 	if res.TotalMatches != 1 || res.Count != 1 || len(res.Rows) != 1 {
 		t.Fatalf("counts = total %d / count %d / rows %d, want 1/1/1", res.TotalMatches, res.Count, len(res.Rows))
@@ -298,7 +326,8 @@ func TestScreenStocks_IndicatorsOnlyForSurvivors(t *testing.T) {
 
 // TestScreenStocks_RanksBySortKey — ranking follows the requested column and
 // direction, and a row with no value for that column ranks last either way: it
-// cannot compete in a ranking it has no number for.
+// cannot compete in a ranking it has no number for. Structural filters are
+// switched off here so the short-history row survives to be ranked.
 func TestScreenStocks_RanksBySortKey(t *testing.T) {
 	source := &fakeScreenerSource{
 		universe: 3,
@@ -315,7 +344,7 @@ func TestScreenStocks_RanksBySortKey(t *testing.T) {
 	}
 	uc := newScreenTestUseCase(source)
 
-	desc, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Sort: "rsi:14"})
+	desc, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Sort: "rsi:14", Filters: noFilters()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -323,7 +352,7 @@ func TestScreenStocks_RanksBySortKey(t *testing.T) {
 		t.Fatalf("desc by rsi = %s, want AAA,BBB,CCC (unobserved last)", got)
 	}
 
-	asc, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Sort: "rsi:14", Order: "asc"})
+	asc, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Sort: "rsi:14", Order: "asc", Filters: noFilters()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -335,7 +364,7 @@ func TestScreenStocks_RanksBySortKey(t *testing.T) {
 	}
 
 	// The case-insensitive match resolves to the canonical registry key.
-	upper, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Sort: "RSI:14"})
+	upper, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Sort: "RSI:14", Filters: noFilters()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -397,8 +426,9 @@ func TestScreenStocks_CapsRowsAndReportsTheCut(t *testing.T) {
 	if got := rowTickers(res.Rows); got != "AAAA,BBBB" {
 		t.Fatalf("rows = %s, want the two largest values AAAA,BBBB", got)
 	}
-	if res.Funnel.AfterValue != 4 {
-		t.Fatalf("after_value = %d, want 4 (the cap is not a filter)", res.Funnel.AfterValue)
+	if res.Funnel.AfterValue != 4 || res.Funnel.AfterStructure != 4 {
+		t.Fatalf("funnel after_value/after_structure = %d/%d, want 4/4 (the cap is not a filter)",
+			res.Funnel.AfterValue, res.Funnel.AfterStructure)
 	}
 	if res.Limit != 2 {
 		t.Fatalf("limit echoed = %d, want 2", res.Limit)
@@ -407,8 +437,9 @@ func TestScreenStocks_CapsRowsAndReportsTheCut(t *testing.T) {
 
 // TestScreenStocks_ShortHistoryIsFlaggedNotFiltered — a survivor whose stored
 // history is shorter than a column's warm-up keeps its row, with a null value
-// and the key named in insufficient: warm-up is a per-column flag, and ticket
-// 05's structural filters (not the hard filters) are what drop such rows.
+// and the key named in insufficient: warm-up is a per-column flag, and it is the
+// structural filters (not the hard filters) that drop such a row. The filter
+// list is empty here so the row reaches the response for the flags to be read.
 func TestScreenStocks_ShortHistoryIsFlaggedNotFiltered(t *testing.T) {
 	source := &fakeScreenerSource{
 		universe:   1,
@@ -417,7 +448,7 @@ func TestScreenStocks_ShortHistoryIsFlaggedNotFiltered(t *testing.T) {
 	}
 	uc := newScreenTestUseCase(source)
 
-	res, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{})
+	res, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Filters: noFilters()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -539,4 +570,255 @@ func rowTickers(rows []ScreenStocksRow) string {
 		tickers = append(tickers, row.Ticker)
 	}
 	return strings.Join(tickers, ",")
+}
+
+// screenRisingVolumeSeries is screenSeries with volume climbing into the anchor
+// day: the price shape clears the default filters, the volume-contraction bound
+// does not, so a drop is attributable to the volume filter alone.
+func screenRisingVolumeSeries(ticker string, days int) []entity.DailyPrice {
+	rows := screenSeries(ticker, days)
+	for i := range rows {
+		rows[i].Volume = i64p(1_000_000 + int64(i)*1000)
+	}
+	return rows
+}
+
+// screenRangeSeries builds a series whose final close sits at a chosen position
+// in a flat period range: every row spans 100..200, so range_position is exactly
+// (lastClose-100)/100 and a band filter can be tested on its edge rather than
+// near it.
+func screenRangeSeries(ticker string, days int, lastClose float64) []entity.DailyPrice {
+	rows := make([]entity.DailyPrice, 0, days)
+	day := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < days; i++ {
+		close := 150.0
+		if i == days-1 {
+			close = lastClose
+		}
+		rows = append(rows, entity.DailyPrice{
+			Ticker:     ticker,
+			TradingDay: day,
+			High:       f64p(200),
+			Low:        f64p(100),
+			Close:      f64p(close),
+			Volume:     i64p(1_000_000 - int64(i)*1000),
+		})
+		day = day.AddDate(0, 0, 1)
+	}
+	return rows
+}
+
+// TestScreenStocks_DefaultFiltersShapeTheFunnel — stage 3 runs the shipped set
+// unless told otherwise, and after_structure is what it removed. Each ticker
+// here fails a different filter, so the single survivor is attributable.
+func TestScreenStocks_DefaultFiltersShapeTheFunnel(t *testing.T) {
+	source := &fakeScreenerSource{
+		universe: 900,
+		candidates: []repository.ScreenCandidate{
+			screenCandidate("BREAKOUT", 300_000_000_000), // passes all three
+			screenCandidate("HEAVY", 200_000_000_000),    // volume above its average
+			screenCandidate("FALLING", 100_000_000_000),  // below its MA, low in range
+		},
+		prices: map[string][]entity.DailyPrice{
+			"BREAKOUT": screenSeries("BREAKOUT", 250),
+			"HEAVY":    screenRisingVolumeSeries("HEAVY", 250),
+			"FALLING":  screenSeriesStep("FALLING", 250, -1),
+		},
+	}
+	uc := newScreenTestUseCase(source)
+
+	res, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if res.Funnel.Universe != 900 || res.Funnel.AfterValue != 3 || res.Funnel.AfterStructure != 1 {
+		t.Fatalf("funnel = %+v, want universe 900 / after_value 3 / after_structure 1", res.Funnel)
+	}
+	if got := rowTickers(res.Rows); got != "BREAKOUT" {
+		t.Fatalf("rows = %s, want only the breakout shape", got)
+	}
+	// The cap never hides the cut: total_matches is the post-filter pre-cap count.
+	if res.TotalMatches != 1 || res.Count != 1 {
+		t.Fatalf("counts = %d/%d, want 1/1", res.TotalMatches, res.Count)
+	}
+}
+
+// TestScreenStocks_EmptyFilterListIsAPassthrough — an explicitly empty filter
+// list is a request for no structure, not for the defaults: stage 1 survives
+// intact and after_structure equals after_value.
+func TestScreenStocks_EmptyFilterListIsAPassthrough(t *testing.T) {
+	source := &fakeScreenerSource{
+		universe: 900,
+		candidates: []repository.ScreenCandidate{
+			screenCandidate("BREAKOUT", 300_000_000_000),
+			screenCandidate("FALLING", 100_000_000_000),
+		},
+		prices: map[string][]entity.DailyPrice{
+			"BREAKOUT": screenSeries("BREAKOUT", 250),
+			"FALLING":  screenSeriesStep("FALLING", 250, -1),
+		},
+	}
+	uc := newScreenTestUseCase(source)
+
+	res, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Filters: noFilters()})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if res.Funnel.AfterValue != 2 || res.Funnel.AfterStructure != 2 {
+		t.Fatalf("funnel = %+v, want after_value 2 / after_structure 2", res.Funnel)
+	}
+	if got := rowTickers(res.Rows); got != "BREAKOUT,FALLING" {
+		t.Fatalf("rows = %s, want both survivors ranked by value desc", got)
+	}
+	if res.Filters == nil || len(res.Filters) != 0 {
+		t.Fatalf("filters echoed = %v, want an empty list rather than the defaults", res.Filters)
+	}
+}
+
+// TestScreenStocks_FilterIndicatorsJoinTheColumns — a filter's indicator is
+// computed even when it was not requested as a column, the response echoes the
+// union so `indicators` states what was actually computed, and a filter column
+// is therefore sortable like any other.
+func TestScreenStocks_FilterIndicatorsJoinTheColumns(t *testing.T) {
+	source := &fakeScreenerSource{
+		universe: 2,
+		candidates: []repository.ScreenCandidate{
+			screenCandidate("HIGHER", 300_000_000_000),
+			screenCandidate("LOWER", 100_000_000_000),
+		},
+		// Same price shape, different final close: identical ma_distance and
+		// volume_ratio, different range_position — so the band ranks them.
+		prices: map[string][]entity.DailyPrice{
+			"HIGHER": screenSeries("HIGHER", 250),
+			"LOWER":  screenSeries("LOWER", 250),
+		},
+	}
+	uc := newScreenTestUseCase(source)
+
+	res, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{
+		Indicators: []string{"rsi:14"},
+		Sort:       "range_position:60",
+		Order:      "desc",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "rsi:14,ma_distance:20:50,range_position:60,volume_ratio:20"
+	if got := strings.Join(res.Indicators, ","); got != want {
+		t.Fatalf("indicators = %s, want the requested column plus the filter columns %s", got, want)
+	}
+	if res.Sort != "range_position:60" {
+		t.Fatalf("sort = %s, want the filter column to be sortable", res.Sort)
+	}
+	if len(res.Rows) == 0 {
+		t.Fatal("no rows; want the breakout shape to survive")
+	}
+	for _, key := range []string{"rsi:14", "ma_distance:20:50", "range_position:60", "volume_ratio:20"} {
+		if res.Rows[0].Values[key] == nil {
+			t.Fatalf("value for %s is null; want every computed column present", key)
+		}
+	}
+}
+
+// TestScreenStocks_NullFilterValueDropsTheRow — a survivor whose filter column
+// is below its warm-up is dropped by the structural stage, never assumed to
+// pass. The hard filters kept it, so the drop is stage 3's and the funnel says so.
+func TestScreenStocks_NullFilterValueDropsTheRow(t *testing.T) {
+	source := &fakeScreenerSource{
+		universe:   1,
+		candidates: []repository.ScreenCandidate{screenCandidate("NEWIPO", 90_000_000_000)},
+		prices:     map[string][]entity.DailyPrice{"NEWIPO": screenSeries("NEWIPO", 3)},
+	}
+	uc := newScreenTestUseCase(source)
+
+	res, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if res.Funnel.AfterValue != 1 || res.Funnel.AfterStructure != 0 {
+		t.Fatalf("funnel = %+v, want after_value 1 / after_structure 0", res.Funnel)
+	}
+	if res.TotalMatches != 0 || res.Count != 0 {
+		t.Fatalf("counts = %d/%d, want 0/0", res.TotalMatches, res.Count)
+	}
+	if res.Rows == nil {
+		t.Fatal("rows is nil; a funnel that filters everything must still marshal as []")
+	}
+}
+
+// TestScreenStocks_FilterBandEdgesAreInclusive — a value exactly on a band edge
+// passes; a hair outside does not. The fixture pins range_position exactly, so
+// this is the boundary and not a value near it.
+func TestScreenStocks_BandEdgesAreInclusive(t *testing.T) {
+	source := &fakeScreenerSource{
+		universe: 4,
+		candidates: []repository.ScreenCandidate{
+			screenCandidate("ATLOW", 400_000_000_000),  // position exactly 0.70
+			screenCandidate("ATHIGH", 300_000_000_000), // position exactly 0.95
+			screenCandidate("BELOW", 200_000_000_000),  // 0.69
+			screenCandidate("ABOVE", 100_000_000_000),  // 0.96
+		},
+		prices: map[string][]entity.DailyPrice{
+			"ATLOW":  screenRangeSeries("ATLOW", 60, 170),
+			"ATHIGH": screenRangeSeries("ATHIGH", 60, 195),
+			"BELOW":  screenRangeSeries("BELOW", 60, 169),
+			"ABOVE":  screenRangeSeries("ABOVE", 60, 196),
+		},
+	}
+	uc := newScreenTestUseCase(source)
+
+	band := []ScreenStocksFilter{filter("range_position:60", filterOpBetween, 0.70, 0.95)}
+	res, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Filters: &band})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if res.Funnel.AfterValue != 4 || res.Funnel.AfterStructure != 2 {
+		t.Fatalf("funnel = %+v, want after_value 4 / after_structure 2 (both edges inclusive)", res.Funnel)
+	}
+	if got := rowTickers(res.Rows); got != "ATLOW,ATHIGH" {
+		t.Fatalf("rows = %s, want ATLOW,ATHIGH (the values exactly on the edges)", got)
+	}
+
+	// The band's own number is visible per row, so the cut is explicable.
+	for _, row := range res.Rows {
+		position := row.Values["range_position:60"]
+		if position == nil {
+			t.Fatalf("row %s carries no range_position; want the filter column returned", row.Ticker)
+		}
+	}
+}
+
+// TestScreenStocks_CustomFiltersReplaceTheDefaults — a populated filter list is
+// the whole structural stage: the defaults do not also run.
+func TestScreenStocks_CustomFiltersReplaceTheDefaults(t *testing.T) {
+	source := &fakeScreenerSource{
+		universe: 2,
+		candidates: []repository.ScreenCandidate{
+			screenCandidate("BREAKOUT", 300_000_000_000),
+			screenCandidate("FALLING", 100_000_000_000),
+		},
+		prices: map[string][]entity.DailyPrice{
+			"BREAKOUT": screenSeries("BREAKOUT", 250),
+			"FALLING":  screenSeriesStep("FALLING", 250, -1),
+		},
+	}
+	uc := newScreenTestUseCase(source)
+
+	// A permissive filter the defaults would never allow: both shapes pass.
+	permissive := []ScreenStocksFilter{filter("rsi:14", filterOpGte, 0)}
+	res, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Filters: &permissive})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Funnel.AfterStructure != 2 {
+		t.Fatalf("after_structure = %d, want 2 (the defaults must not also run)", res.Funnel.AfterStructure)
+	}
+	if len(res.Filters) != 1 || res.Filters[0].Indicator != "rsi:14" || res.Filters[0].Op != filterOpGte {
+		t.Fatalf("filters echoed = %+v, want exactly the caller's filter", res.Filters)
+	}
 }

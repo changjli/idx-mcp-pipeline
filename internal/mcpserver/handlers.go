@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"strconv"
 	"strings"
@@ -628,6 +629,11 @@ func (s *Server) handleScreenStocks(ctx context.Context, req mcpgo.CallToolReque
 			"min_value must be a whole number of rupiah, 0 or more", false)), nil
 	}
 
+	filters, err := argFilters(args)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, err.Error(), false)), nil
+	}
+
 	var asOfPtr *time.Time
 	if asOfStr != "" {
 		t, err := time.Parse("2006-01-02", asOfStr)
@@ -644,6 +650,7 @@ func (s *Server) handleScreenStocks(ctx context.Context, req mcpgo.CallToolReque
 		Limit:                int(limit),
 		SuspensionWindowDays: int(suspensionDays),
 		Indicators:           argStrings(args, "indicators"),
+		Filters:              filters,
 		Sort:                 sortKey,
 		Order:                order,
 	})
@@ -654,6 +661,46 @@ func (s *Server) handleScreenStocks(ctx context.Context, req mcpgo.CallToolReque
 		ScreenStocksResponse: data,
 		StalenessMetadata:    stalenessFor(s.db, s.sourceStatusRepo, sourceIdxStockSummary, time.Now()),
 	}), nil
+}
+
+// argFilters extracts the optional structural filter list, preserving the three
+// states the DSL distinguishes: an absent argument stays nil so the usecase runs
+// the shipped default set, an explicit empty array is a pointer to an empty list
+// so no structural filters run, and a populated array decodes through the DSL's
+// own codec — so a value that is neither a number nor a [low, high] pair is an
+// argument error here rather than a zero reaching a comparison.
+func argFilters(args map[string]any) (*[]usecase.ScreenStocksFilter, error) {
+	raw, ok := args["filters"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, errors.New(filterShapeError)
+	}
+
+	filters := []usecase.ScreenStocksFilter{}
+	if err := json.Unmarshal(encoded, &filters); err != nil {
+		return nil, errors.New(filterShapeError + ": " + filterDetail(err))
+	}
+	return &filters, nil
+}
+
+// filterShapeError is the one sentence a malformed filter list is reported with,
+// so the caller learns the shape they must write.
+const filterShapeError = "filters must be an array of {indicator, op, value} objects"
+
+// filterDetail renders the decoder's complaint without leaking this package's
+// Go type names: a payload of the wrong shape gets the shape sentence, and a
+// filter whose value the DSL rejected (a string, a null, a nested array) keeps
+// the DSL's own wording, which names what to write instead.
+func filterDetail(err error) string {
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) || !errors.Is(err, usecase.ErrInvalidArgument) {
+		return filterShapeError
+	}
+	return strings.TrimPrefix(err.Error(), usecase.ErrInvalidArgument.Error()+": ")
 }
 
 // argMinValue extracts the optional min_value argument as whole rupiah. Absent

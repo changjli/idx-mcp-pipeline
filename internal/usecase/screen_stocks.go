@@ -91,6 +91,11 @@ type ScreenStocksRequest struct {
 	// Indicators are registry specs for the row columns; empty uses
 	// ScreenerDefaultIndicators.
 	Indicators []string
+	// Filters is the structural filter set (funnel stage 3). nil means the
+	// caller said nothing, so ScreenerDefaultFilters runs; a non-nil empty slice
+	// means the caller asked for no structural filters at all; a populated slice
+	// replaces the default set entirely. The filter indicators join the columns.
+	Filters *[]ScreenStocksFilter
 	// Sort is screenerSortValue (default) or one of the requested indicator keys.
 	Sort string
 	// Order is "desc" (default) or "asc".
@@ -104,9 +109,13 @@ type ScreenStocksFunnel struct {
 	// Universe is every ticker with a stored row inside the window.
 	Universe int `json:"universe"`
 	// AfterValue is how many cleared the hard filters — still trading on the
-	// anchor day, liquid enough, and not recently suspended. Ticket 05 adds the
-	// structural stage after this one.
+	// anchor day, liquid enough, and not recently suspended.
 	AfterValue int `json:"after_value"`
+	// AfterStructure is how many of those cleared the structural filters. The
+	// gap between it and AfterValue is exactly what the filter set removed, and
+	// a row whose filter column was unobserved counts here, never silently
+	// re-admitted.
+	AfterStructure int `json:"after_structure"`
 }
 
 // ScreenStocksRow is one survivor: the ticker, the anchor day's transaction
@@ -128,15 +137,16 @@ type ScreenStocksRow struct {
 // parameters are echoed so a shortlist is reproducible from its own response,
 // and the funnel says how much the filters cut.
 type ScreenStocksResponse struct {
-	AsOf                 string             `json:"as_of"`
-	Window               int                `json:"window"`
-	MinValue             int64              `json:"min_value"`
-	SuspensionWindowDays int                `json:"suspension_window_days"`
-	Indicators           []string           `json:"indicators"`
-	Sort                 string             `json:"sort"`
-	Order                string             `json:"order"`
-	Limit                int                `json:"limit"`
-	Funnel               ScreenStocksFunnel `json:"funnel"`
+	AsOf                 string               `json:"as_of"`
+	Window               int                  `json:"window"`
+	MinValue             int64                `json:"min_value"`
+	SuspensionWindowDays int                  `json:"suspension_window_days"`
+	Indicators           []string             `json:"indicators"`
+	Filters              []ScreenStocksFilter `json:"filters"`
+	Sort                 string               `json:"sort"`
+	Order                string               `json:"order"`
+	Limit                int                  `json:"limit"`
+	Funnel               ScreenStocksFunnel   `json:"funnel"`
 	// TotalMatches is how many tickers passed every filter; Count is how many
 	// are returned after the row cap. TotalMatches > Count is the cut.
 	TotalMatches int               `json:"total_matches"`
@@ -161,9 +171,10 @@ func NewScreenStocksUseCase(db *sqlx.DB, log *logrus.Logger, source ScreenerSour
 
 // ScreenStocks validates the request, then runs the funnel in order: SQL hard
 // filters over the whole universe, indicator computation on survivors only,
-// deterministic ranking, and a row cap. Validation happens before any read, so
-// a bad parameter costs one round trip and returns the same structured error
-// whether it arrived over MCP or from another caller.
+// the structural filter set, deterministic ranking, and a row cap. Validation —
+// including every filter's indicator, operator, and bounds — happens before any
+// read, so a bad parameter costs one round trip and returns the same structured
+// error whether it arrived over MCP or from another caller.
 func (uc *ScreenStocksUseCase) ScreenStocks(ctx context.Context, req ScreenStocksRequest) (*ScreenStocksResponse, error) {
 	window, err := resolveIndicatorWindow(req.Window)
 	if err != nil {
@@ -185,6 +196,15 @@ func (uc *ScreenStocksUseCase) ScreenStocks(ctx context.Context, req ScreenStock
 	if err != nil {
 		return nil, err
 	}
+	filters := resolveScreenerFilters(req.Filters)
+	compiled, err := compileScreenerFilters(filters)
+	if err != nil {
+		return nil, err
+	}
+	// The filters' indicators join the column set before the sort key is
+	// resolved, so a filter's column is sortable like any other — and so the row
+	// can show the number it was judged on.
+	requests = unionRequests(requests, compiled)
 	sortKey, err := resolveScreenerSort(req.Sort, requests)
 	if err != nil {
 		return nil, err
@@ -250,8 +270,13 @@ func (uc *ScreenStocksUseCase) ScreenStocks(ctx context.Context, req ScreenStock
 		})
 	}
 
+	// Funnel stage 3: the structural filters, AND-combined, applied to the
+	// computed columns. Everything below counts survivors of this stage.
+	rows = applyStructuralFilters(rows, compiled)
+
 	rankRows(rows, sortKey, order == sortOrderDesc)
-	totalMatches := len(rows)
+	afterStructure := len(rows)
+	totalMatches := afterStructure
 	if totalMatches > limit {
 		rows = rows[:limit]
 	}
@@ -267,12 +292,14 @@ func (uc *ScreenStocksUseCase) ScreenStocks(ctx context.Context, req ScreenStock
 		MinValue:             minValue,
 		SuspensionWindowDays: suspensionDays,
 		Indicators:           keys,
+		Filters:              filters,
 		Sort:                 sortKey,
 		Order:                order,
 		Limit:                limit,
 		Funnel: ScreenStocksFunnel{
-			Universe:   universe,
-			AfterValue: len(candidates),
+			Universe:       universe,
+			AfterValue:     len(candidates),
+			AfterStructure: afterStructure,
 		},
 		TotalMatches: totalMatches,
 		Count:        len(rows),
