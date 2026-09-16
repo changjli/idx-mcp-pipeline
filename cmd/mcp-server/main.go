@@ -333,8 +333,9 @@ func main() {
 	computeIndicatorsUC := usecase.NewComputeIndicatorsUseCase(db, log, dailyPriceRepo)
 	// screen_stocks (screener ticket 04): the whole-universe funnel screener —
 	// the hard filters are SQL over daily_prices + suspensions, and indicators
-	// are computed on the survivors only. Nothing persisted.
-	screenStocksUC := usecase.NewScreenStocksUseCase(db, log, dailyPriceRepo)
+	// and the ticket-06 foreign-net column are read for the survivors only.
+	// Nothing persisted.
+	screenStocksUC := usecase.NewScreenStocksUseCase(db, log, dailyPriceRepo, brokerStockSummaryRepo)
 
 	// ─── HTTP router ────────────────────────────────────────────
 

@@ -196,6 +196,108 @@ func (r *BrokerStockSummaryRepository) FindTotalsByTickerAndDateRange(db *sqlx.D
 	return totals, err
 }
 
+// TickerForeignNet is one ticker's stored foreign net over a flow window, with
+// the day count that makes it readable: Days is how many of the window's
+// trading days had a stored foreign net at all. A ticker with no stored broker
+// rows is absent from the result rather than present with a zero — "not
+// observed" and "net zero" are different answers, and the screener renders them
+// differently.
+type TickerForeignNet struct {
+	Ticker     string `db:"ticker"`
+	ForeignNet int64  `db:"foreign_net"`
+	Days       int    `db:"days"`
+}
+
+// ForeignNetWindow is the window a foreign-net read actually covered: its first
+// stored trading day and how many market-wide trading days it spans. The
+// denominator is what makes a row's day count interpretable ("7 of 20") instead
+// of an unanchored number, so a caller can tell a thin window from a thin
+// ticker.
+type ForeignNetWindow struct {
+	From      time.Time
+	TradeDays int
+	Rows      []TickerForeignNet
+}
+
+// SumForeignNetByTickers sums the stored foreign net (f_nval) of the footer
+// totals for each given ticker over the `tradingDays` most recent market-wide
+// trading days at or before `to`. It is the screener's broker-flow column: a
+// pure DB read, and deliberately the footer grain — f_nval covers the whole
+// day's foreign flow including brokers below IPOT's top-10, which the listed
+// rows alone cannot.
+//
+// The window walks the same market-wide stored day axis the screener's other
+// windows use, so weekends and holidays never shorten it, and it is bound as a
+// calendar date (`::date`) for the reason FindByTickersUpTo documents: a
+// timestamptz parameter would let the session timezone pick the day.
+//
+// The population is anomaly-gated and therefore sparse by design: a ticker with
+// no stored rows in the window is simply absent from Rows, and a stored footer
+// whose f_nval is null contributes no day — so a ticker whose every stored day
+// had a null foreign net is absent too, rather than reported as a zero net over
+// no days. Nothing here infers a missing day.
+func (r *BrokerStockSummaryRepository) SumForeignNetByTickers(db *sqlx.DB, tickers []string, to time.Time, tradingDays int) (*ForeignNetWindow, error) {
+	window := &ForeignNetWindow{Rows: []TickerForeignNet{}}
+
+	// The floor and the span come from the market-wide daily_prices calendar, so
+	// the denominator counts trading days the market actually had, not days the
+	// sparsely covered broker table happens to have.
+	var bounds struct {
+		From      *time.Time `db:"from_day"`
+		TradeDays int        `db:"trade_days"`
+	}
+	err := db.Get(&bounds, `
+		WITH window_days AS (
+			SELECT MIN(trading_day) AS day FROM (
+				SELECT DISTINCT trading_day FROM daily_prices
+				WHERE trading_day <= $1::date
+				ORDER BY trading_day DESC
+				LIMIT $2
+			) recent
+		)
+		SELECT w.day AS from_day,
+			(SELECT COUNT(DISTINCT trading_day) FROM daily_prices
+			 WHERE trading_day BETWEEN w.day AND $1::date) AS trade_days
+		FROM window_days w`,
+		to.Format("2006-01-02"), tradingDays)
+	if err != nil {
+		return nil, err
+	}
+	if bounds.From == nil {
+		// No stored trading day at or before `to` — nothing to sum over, and the
+		// caller's rows are all unobserved. Not an error: an empty market is a
+		// legitimate (if empty) answer.
+		return window, nil
+	}
+	window.From = *bounds.From
+	window.TradeDays = bounds.TradeDays
+
+	if len(tickers) == 0 {
+		return window, nil
+	}
+
+	// The ticker list rides as a comma-joined string split in SQL: ticker codes
+	// are 2-6 uppercase letters, so the delimiter can never appear in one, and an
+	// array parameter would depend on how the active driver binds []string (the
+	// pgx stdlib driver the server connects with differs from lib/pq) — the same
+	// reason FindByTickersUpTo does it this way.
+	err = db.Select(&window.Rows, `
+		SELECT t.ticker,
+			COALESCE(SUM(t.f_nval), 0)::bigint AS foreign_net,
+			COUNT(t.f_nval)::int AS days
+		FROM broker_stock_summary_totals t
+		WHERE t.ticker = ANY(string_to_array($1, ','))
+			AND t.trading_day BETWEEN $2::date AND $3::date
+		GROUP BY t.ticker
+		HAVING COUNT(t.f_nval) > 0
+		ORDER BY t.ticker`,
+		strings.Join(tickers, ","), window.From.Format("2006-01-02"), to.Format("2006-01-02"))
+	if err != nil {
+		return nil, err
+	}
+	return window, nil
+}
+
 // DeleteOlderThan deletes broker_stock_summaries rows whose trading_day is
 // older than the retention window. Returns rows deleted.
 func (r *BrokerStockSummaryRepository) DeleteOlderThan(db *sqlx.DB, days int) (int64, error) {

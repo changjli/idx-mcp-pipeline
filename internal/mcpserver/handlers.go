@@ -620,6 +620,7 @@ func (s *Server) handleScreenStocks(ctx context.Context, req mcpgo.CallToolReque
 	window, _ := args["window"].(float64)
 	limit, _ := args["limit"].(float64)
 	suspensionDays, _ := args["suspension_window_days"].(float64)
+	flowWindowDays, _ := args["flow_window_days"].(float64)
 	sortKey, _ := args["sort"].(string)
 	order, _ := args["order"].(string)
 
@@ -649,6 +650,7 @@ func (s *Server) handleScreenStocks(ctx context.Context, req mcpgo.CallToolReque
 		MinValue:             minValue,
 		Limit:                int(limit),
 		SuspensionWindowDays: int(suspensionDays),
+		FlowWindowDays:       int(flowWindowDays),
 		Indicators:           argStrings(args, "indicators"),
 		Filters:              filters,
 		Sort:                 sortKey,

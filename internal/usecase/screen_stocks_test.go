@@ -112,18 +112,62 @@ func screenCandidate(ticker string, value int64) repository.ScreenCandidate {
 	return repository.ScreenCandidate{Ticker: ticker, Value: i64p(value), Close: f64p(4850)}
 }
 
+// fakeScreenerFlow is the broker-flow seam: it returns a stored window (or an
+// error) and records what the usecase asked for, so the tests can assert the
+// flow read is scoped to survivors and carries the resolved window.
+type fakeScreenerFlow struct {
+	window *repository.ForeignNetWindow
+	err    error
+
+	gotTickers     []string
+	gotAnchor      time.Time
+	gotTradingDays int
+}
+
+func (f *fakeScreenerFlow) SumForeignNetByTickers(db *sqlx.DB, tickers []string, to time.Time, tradingDays int) (*repository.ForeignNetWindow, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.gotTickers = tickers
+	f.gotAnchor = to
+	f.gotTradingDays = tradingDays
+	if f.window != nil {
+		return f.window, nil
+	}
+	// The default: a window with the requested span and nothing stored — the
+	// honest answer for a market whose broker population is anomaly-gated and
+	// this test never seeded.
+	return &repository.ForeignNetWindow{Rows: []repository.TickerForeignNet{}}, nil
+}
+
+// flowWindow builds a stored flow window over the standard anchor.
+func flowWindow(tradeDays int, rows ...repository.TickerForeignNet) *repository.ForeignNetWindow {
+	return &repository.ForeignNetWindow{
+		From:      testAnchor().AddDate(0, 0, -(tradeDays - 1)),
+		TradeDays: tradeDays,
+		Rows:      rows,
+	}
+}
+
 // newScreenTestUseCase wires the fake with a full-history series for every
-// candidate and the standard anchor day.
+// candidate and the standard anchor day. The flow seam is wired empty: tests
+// that read the foreign-net column use newScreenTestUseCaseWithFlow.
 func newScreenTestUseCase(source *fakeScreenerSource) *ScreenStocksUseCase {
+	return newScreenTestUseCaseWithFlow(source, &fakeScreenerFlow{})
+}
+
+// newScreenTestUseCaseWithFlow is newScreenTestUseCase with a caller-supplied
+// broker-flow seam.
+func newScreenTestUseCaseWithFlow(source *fakeScreenerSource, flow *fakeScreenerFlow) *ScreenStocksUseCase {
 	anchor := testAnchor()
 	source.latest = &anchor
-	return NewScreenStocksUseCase(nil, logrus.New(), source)
+	return NewScreenStocksUseCase(nil, logrus.New(), source, flow)
 }
 
 // Validation must run before any read: with a nil DB and nil source these calls
 // can only pass if they never reach the SQL seam.
 func TestScreenStocks_PureValidation(t *testing.T) {
-	uc := NewScreenStocksUseCase(nil, logrus.New(), nil)
+	uc := NewScreenStocksUseCase(nil, logrus.New(), nil, nil)
 
 	cases := []struct {
 		name    string
@@ -178,13 +222,31 @@ func TestScreenStocks_PureValidation(t *testing.T) {
 			wantErr: ErrInvalidArgument,
 		},
 		{
-			name:    "unknown sort key",
-			req:     ScreenStocksRequest{Sort: "foreign_net"},
+			name:    "sort key neither a column nor an indicator",
+			req:     ScreenStocksRequest{Sort: "smart_money"},
+			wantErr: ErrInvalidArgument,
+		},
+		{
+			name:    "flow window above the retention ceiling",
+			req:     ScreenStocksRequest{FlowWindowDays: 61},
+			wantErr: ErrInvalidArgument,
+		},
+		{
+			name:    "negative flow window",
+			req:     ScreenStocksRequest{FlowWindowDays: -1},
 			wantErr: ErrInvalidArgument,
 		},
 		{
 			name:    "filter on an unknown indicator",
 			req:     ScreenStocksRequest{Filters: &[]ScreenStocksFilter{filter("smma:20", filterOpGt, 0)}},
+			wantErr: ErrInvalidArgument,
+		},
+		{
+			// The broker-flow column is a stored fact, not a registry indicator:
+			// thresholds on it are a filter kind v1 does not have, so the DSL
+			// rejects it as an unknown indicator rather than quietly accepting it.
+			name:    "filter on the broker-flow column",
+			req:     ScreenStocksRequest{Filters: &[]ScreenStocksFilter{filter("foreign_net", filterOpGt, 0)}},
 			wantErr: ErrInvalidArgument,
 		},
 		{
@@ -538,7 +600,7 @@ func TestScreenStocks_ReadErrorsPropagate(t *testing.T) {
 // TestScreenStocks_NoTradingDay — with nothing stored there is no anchor, and
 // the call says so rather than screening an empty market.
 func TestScreenStocks_NoTradingDay(t *testing.T) {
-	uc := NewScreenStocksUseCase(nil, logrus.New(), &fakeScreenerSource{})
+	uc := NewScreenStocksUseCase(nil, logrus.New(), &fakeScreenerSource{}, &fakeScreenerFlow{})
 
 	_, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{})
 	if !errors.Is(err, ErrNotFound) {
@@ -552,7 +614,7 @@ func TestScreenStocks_AsOfPinsTheAnchor(t *testing.T) {
 	asOf := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
 	source := &fakeScreenerSource{universe: 10, candidates: nil, prices: nil}
 	source.latest = &asOf
-	uc := NewScreenStocksUseCase(nil, logrus.New(), source)
+	uc := NewScreenStocksUseCase(nil, logrus.New(), source, &fakeScreenerFlow{})
 
 	res, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{AsOf: &asOf})
 	if err != nil {
@@ -560,6 +622,224 @@ func TestScreenStocks_AsOfPinsTheAnchor(t *testing.T) {
 	}
 	if res.AsOf != "2026-06-30" {
 		t.Fatalf("as_of = %s, want 2026-06-30", res.AsOf)
+	}
+}
+
+// TestScreenStocks_ForeignNetColumnAndCoverage — the broker-flow column is
+// joined for survivors, and a ticker the anomaly-gated broker population never
+// covered reads as a null column with a false coverage flag, never as a zero
+// net the caller would take for "no foreign activity". The window is echoed
+// with the denominator its day counts read against.
+func TestScreenStocks_ForeignNetColumnAndCoverage(t *testing.T) {
+	source := &fakeScreenerSource{
+		universe: 900,
+		candidates: []repository.ScreenCandidate{
+			screenCandidate("BBRI", 812_000_000_000),
+			screenCandidate("TLKM", 300_000_000_000),
+			screenCandidate("ASII", 120_000_000_000),
+		},
+		prices: map[string][]entity.DailyPrice{
+			"BBRI": screenSeries("BBRI", 250),
+			"TLKM": screenSeries("TLKM", 250),
+			"ASII": screenSeries("ASII", 250),
+		},
+	}
+	flow := &fakeScreenerFlow{window: flowWindow(20,
+		repository.TickerForeignNet{Ticker: "BBRI", ForeignNet: 145_300_000_000, Days: 7},
+		repository.TickerForeignNet{Ticker: "ASII", ForeignNet: -20_000_000_000, Days: 3},
+	)}
+	uc := newScreenTestUseCaseWithFlow(source, flow)
+
+	res, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if res.FlowWindowDays != defaultFlowWindowDays || res.FlowDaysInWindow != 20 {
+		t.Fatalf("window = %d over %d days, want %d over 20",
+			res.FlowWindowDays, res.FlowDaysInWindow, defaultFlowWindowDays)
+	}
+	if flow.gotTradingDays != defaultFlowWindowDays {
+		t.Fatalf("flow read asked for %d trading days, want the default %d",
+			flow.gotTradingDays, defaultFlowWindowDays)
+	}
+	if strings.Join(flow.gotTickers, ",") != "BBRI,TLKM,ASII" {
+		t.Fatalf("flow read for %v, want exactly the survivors", flow.gotTickers)
+	}
+	if !flow.gotAnchor.Equal(testAnchor()) {
+		t.Fatalf("flow anchor = %s, want %s", flow.gotAnchor, testAnchor())
+	}
+
+	byTicker := map[string]ScreenStocksRow{}
+	for _, row := range res.Rows {
+		byTicker[row.Ticker] = row
+	}
+
+	if row := byTicker["BBRI"]; row.ForeignNet == nil || *row.ForeignNet != 145_300_000_000 {
+		t.Fatalf("BBRI foreign_net = %v, want 145.3B", row.ForeignNet)
+	}
+	if got := byTicker["BBRI"].Coverage[coverageForeignNet]; !got.Observed || got.Days != 7 {
+		t.Fatalf("BBRI coverage = %+v, want observed over 7 days", got)
+	}
+
+	// Observed and negative: a net seller is a fact, not a missing value.
+	if row := byTicker["ASII"]; row.ForeignNet == nil || *row.ForeignNet != -20_000_000_000 {
+		t.Fatalf("ASII foreign_net = %v, want −20B", row.ForeignNet)
+	}
+
+	// Uncovered: null, flagged, and never a zero.
+	tlkm := byTicker["TLKM"]
+	if tlkm.ForeignNet != nil {
+		t.Fatalf("TLKM foreign_net = %d, want null for an uncovered ticker", *tlkm.ForeignNet)
+	}
+	if got := tlkm.Coverage[coverageForeignNet]; got.Observed || got.Days != 0 {
+		t.Fatalf("TLKM coverage = %+v, want unobserved with no days", got)
+	}
+	if _, ok := tlkm.Coverage[coverageForeignNet]; !ok {
+		t.Fatal("coverage is missing the foreign_net key; a reader cannot tell observed from missing")
+	}
+
+	// The flow column is not a registry indicator, so it must not appear among
+	// the echoed columns — the registry stays the one place an indicator is
+	// defined.
+	for _, key := range res.Indicators {
+		if key == coverageForeignNet {
+			t.Fatalf("indicators = %v, want the flow column excluded", res.Indicators)
+		}
+	}
+}
+
+// TestScreenStocks_FlowWindowIsAParameter — the flow lookback is the caller's,
+// and a window longer than the stored history reports the span it actually
+// covered rather than the one asked for.
+func TestScreenStocks_FlowWindowIsAParameter(t *testing.T) {
+	source := &fakeScreenerSource{
+		universe:   1,
+		candidates: []repository.ScreenCandidate{screenCandidate("BBRI", 812_000_000_000)},
+		prices:     map[string][]entity.DailyPrice{"BBRI": screenSeries("BBRI", 250)},
+	}
+	// Asked for 60 days, only 12 stored: the denominator says so.
+	flow := &fakeScreenerFlow{window: flowWindow(12,
+		repository.TickerForeignNet{Ticker: "BBRI", ForeignNet: 1_000_000_000, Days: 4},
+	)}
+	uc := newScreenTestUseCaseWithFlow(source, flow)
+
+	res, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{FlowWindowDays: 60})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if flow.gotTradingDays != 60 {
+		t.Fatalf("flow read asked for %d days, want 60", flow.gotTradingDays)
+	}
+	if res.FlowWindowDays != 60 || res.FlowDaysInWindow != 12 {
+		t.Fatalf("window = %d over %d days, want 60 asked over 12 observed",
+			res.FlowWindowDays, res.FlowDaysInWindow)
+	}
+	if got := res.Rows[0].Coverage[coverageForeignNet].Days; got != 4 {
+		t.Fatalf("coverage days = %d, want the 4 observed days", got)
+	}
+}
+
+// TestScreenStocks_RanksByForeignNet — the flow column is a sort key, and an
+// uncovered row ranks last in either direction: a ticker with nothing stored
+// has no claim to the top (or the bottom) of a ranking it cannot compete in.
+// The tie-break still decides equal nets deterministically.
+func TestScreenStocks_RanksByForeignNet(t *testing.T) {
+	source := &fakeScreenerSource{
+		universe: 4,
+		candidates: []repository.ScreenCandidate{
+			screenCandidate("AAAA", 400_000_000_000), // net 5B
+			screenCandidate("BBBB", 300_000_000_000), // uncovered
+			screenCandidate("CCCC", 200_000_000_000), // net 5B (tie, smaller value)
+			screenCandidate("DDDD", 600_000_000_000), // net −7B
+		},
+		prices: map[string][]entity.DailyPrice{
+			"AAAA": screenSeries("AAAA", 250),
+			"BBBB": screenSeries("BBBB", 250),
+			"CCCC": screenSeries("CCCC", 250),
+			"DDDD": screenSeries("DDDD", 250),
+		},
+	}
+	flow := &fakeScreenerFlow{window: flowWindow(20,
+		repository.TickerForeignNet{Ticker: "AAAA", ForeignNet: 5_000_000_000, Days: 9},
+		repository.TickerForeignNet{Ticker: "CCCC", ForeignNet: 5_000_000_000, Days: 2},
+		repository.TickerForeignNet{Ticker: "DDDD", ForeignNet: -7_000_000_000, Days: 6},
+	)}
+	uc := newScreenTestUseCaseWithFlow(source, flow)
+
+	desc, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{
+		Sort: coverageForeignNet, Filters: noFilters(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// AAAA and CCCC tie on 5B, so value descending breaks it; DDDD's −7B is last
+	// among the observed and BBBB is last outright.
+	if got := rowTickers(desc.Rows); got != "AAAA,CCCC,DDDD,BBBB" {
+		t.Fatalf("desc by foreign_net = %s, want AAAA,CCCC,DDDD,BBBB (unobserved last)", got)
+	}
+	if desc.Sort != coverageForeignNet {
+		t.Fatalf("sort echoed = %s, want %s", desc.Sort, coverageForeignNet)
+	}
+
+	// Ascending: the smallest net leads, and the uncovered row is still last.
+	asc, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{
+		Sort: coverageForeignNet, Order: "asc", Filters: noFilters(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := rowTickers(asc.Rows); got != "DDDD,AAAA,CCCC,BBBB" {
+		t.Fatalf("asc by foreign_net = %s, want DDDD,AAAA,CCCC,BBBB (unobserved still last)", got)
+	}
+
+	// Case-insensitive, like every other sort key.
+	upper, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Sort: "FOREIGN_NET"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if upper.Sort != coverageForeignNet {
+		t.Fatalf("sort = %s, want the canonical key %s", upper.Sort, coverageForeignNet)
+	}
+}
+
+// TestScreenStocks_FlowReadError — a broker read failure is an error, never a
+// shortlist whose every row reads as "no foreign data".
+func TestScreenStocks_FlowReadError(t *testing.T) {
+	boom := errors.New("broker table exploded")
+	source := &fakeScreenerSource{
+		universe:   1,
+		candidates: []repository.ScreenCandidate{screenCandidate("BBRI", 812_000_000_000)},
+		prices:     map[string][]entity.DailyPrice{"BBRI": screenSeries("BBRI", 250)},
+	}
+	uc := newScreenTestUseCaseWithFlow(source, &fakeScreenerFlow{err: boom})
+
+	_, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the flow read failure", err)
+	}
+}
+
+// TestScreenStocks_FlowReadScopedToSurvivors — the flow read is asked for the
+// survivors and nobody else, and a ticker the hard filters dropped is never
+// read: the broker population is the expensive, sparsely covered one.
+func TestScreenStocks_FlowReadScopedToSurvivors(t *testing.T) {
+	source := &fakeScreenerSource{
+		universe:   900,
+		candidates: []repository.ScreenCandidate{screenCandidate("BBRI", 812_000_000_000)},
+		prices:     map[string][]entity.DailyPrice{"BBRI": screenSeries("BBRI", 250)},
+	}
+	flow := &fakeScreenerFlow{}
+	uc := newScreenTestUseCaseWithFlow(source, flow)
+
+	if _, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{FlowWindowDays: 5}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Join(flow.gotTickers, ",") != "BBRI" {
+		t.Fatalf("flow read for %v, want only the survivor", flow.gotTickers)
+	}
+	if flow.gotTradingDays != 5 {
+		t.Fatalf("flow read asked for %d days, want 5", flow.gotTradingDays)
 	}
 }
 

@@ -140,6 +140,76 @@ func TestHandleScreenStocksSuccess(t *testing.T) {
 	}
 }
 
+// TestHandleScreenStocks_FlowColumnReachesTheUsecase — the broker-flow window is
+// a parsed argument like every other bound, and the row's null column and
+// coverage flag survive the wire as the caller must read them: null, not 0.
+func TestHandleScreenStocks_FlowColumnReachesTheUsecase(t *testing.T) {
+	net := int64(145_300_000_000)
+	reader := &fakeScreenStocksReader{data: &usecase.ScreenStocksResponse{
+		AsOf:             "2026-09-11",
+		FlowWindowDays:   5,
+		FlowDaysInWindow: 5,
+		Rows: []usecase.ScreenStocksRow{
+			{
+				Ticker:     "BBRI",
+				ForeignNet: &net,
+				Coverage: map[string]usecase.ScreenColumnCoverage{
+					"foreign_net": {Observed: true, Days: 3},
+				},
+			},
+			{
+				Ticker: "GOTO",
+				Coverage: map[string]usecase.ScreenColumnCoverage{
+					"foreign_net": {Observed: false},
+				},
+			},
+		},
+	}}
+	s := newScreenStocksTestServer(reader)
+
+	res, err := s.handleScreenStocks(context.Background(), screenStocksReq(map[string]any{
+		"flow_window_days": float64(5),
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result: %v", res.Content)
+	}
+	if reader.got.FlowWindowDays != 5 {
+		t.Fatalf("flow_window_days = %d, want 5", reader.got.FlowWindowDays)
+	}
+
+	text := res.Content[0].(mcpgo.TextContent)
+	// The uncovered row must render foreign_net as null rather than 0 — the
+	// difference the coverage flag exists to make readable.
+	if !strings.Contains(text.Text, `"foreign_net":null`) {
+		t.Fatalf("response does not render an uncovered foreign_net as null:\n%s", text.Text)
+	}
+	var got screenStocksResponse
+	if err := json.Unmarshal([]byte(text.Text), &got); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, text.Text)
+	}
+	if got.FlowWindowDays != 5 || got.FlowDaysInWindow != 5 {
+		t.Fatalf("window echoed = %d over %d, want 5 over 5", got.FlowWindowDays, got.FlowDaysInWindow)
+	}
+	if len(got.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(got.Rows))
+	}
+	if row := got.Rows[0]; row.ForeignNet == nil || *row.ForeignNet != net {
+		t.Fatalf("row 0 foreign_net = %v, want %d", row.ForeignNet, net)
+	}
+	if coverage := got.Rows[0].Coverage["foreign_net"]; !coverage.Observed || coverage.Days != 3 {
+		t.Fatalf("row 0 coverage = %+v, want observed over 3 days", coverage)
+	}
+	if got.Rows[1].ForeignNet != nil {
+		t.Fatalf("row 1 foreign_net = %d, want null", *got.Rows[1].ForeignNet)
+	}
+	if coverage := got.Rows[1].Coverage["foreign_net"]; coverage.Observed {
+		t.Fatalf("row 1 coverage = %+v, want unobserved", coverage)
+	}
+}
+
 // TestHandleScreenStocks_OptionalArgumentsAbsent — a bare call leaves every
 // optional argument unset so the usecase applies its own defaults: nil
 // min_value (the shipped floor), zero window/limit/suspension, empty indicators
@@ -164,6 +234,9 @@ func TestHandleScreenStocks_OptionalArgumentsAbsent(t *testing.T) {
 	}
 	if reader.got.Indicators != nil || reader.got.Sort != "" || reader.got.Order != "" {
 		t.Fatalf("request = %+v, want no column or sort arguments", reader.got)
+	}
+	if reader.got.FlowWindowDays != 0 {
+		t.Fatalf("flow_window_days = %d, want 0 so the usecase applies its default", reader.got.FlowWindowDays)
 	}
 	// nil, not a pointer to an empty list: the usecase has to be able to tell
 	// "said nothing" (default set) from "asked for none".
@@ -294,7 +367,7 @@ func TestHandleScreenStocks_FilterArgumentErrors(t *testing.T) {
 // no fake, no DB) with the INVALID_ARGUMENT envelope rather than being
 // half-validated in the handler.
 func TestHandleScreenStocks_FilterSemanticsReachTheUsecase(t *testing.T) {
-	s := newScreenStocksTestServer(usecase.NewScreenStocksUseCase(nil, logrus.New(), nil))
+	s := newScreenStocksTestServer(usecase.NewScreenStocksUseCase(nil, logrus.New(), nil, nil))
 
 	res, err := s.handleScreenStocks(context.Background(), screenStocksReq(map[string]any{
 		"filters": []any{
@@ -446,7 +519,7 @@ func TestHandleScreenStocks_UsecaseErrorsAreEnveloped(t *testing.T) {
 // bound to the usecase, so an over-cap limit is rejected by the real usecase
 // (no fake, no DB) with the INVALID_ARGUMENT envelope.
 func TestHandleScreenStocks_RealUsecaseValidation(t *testing.T) {
-	s := newScreenStocksTestServer(usecase.NewScreenStocksUseCase(nil, logrus.New(), nil))
+	s := newScreenStocksTestServer(usecase.NewScreenStocksUseCase(nil, logrus.New(), nil, nil))
 
 	res, err := s.handleScreenStocks(context.Background(), screenStocksReq(map[string]any{"limit": float64(51)}))
 	if err != nil {
@@ -475,12 +548,17 @@ func TestScreenStocksToolContract(t *testing.T) {
 	if len(toolScreenStocks.InputSchema.Required) != 0 {
 		t.Fatalf("required = %v, want none", toolScreenStocks.InputSchema.Required)
 	}
-	for _, prop := range []string{"min_value", "suspension_window_days", "window", "limit", "indicators", "filters", "sort", "order", "as_of"} {
+	for _, prop := range []string{"min_value", "suspension_window_days", "window", "flow_window_days", "limit", "indicators", "filters", "sort", "order", "as_of"} {
 		if _, ok := toolScreenStocks.InputSchema.Properties[prop]; !ok {
 			t.Fatalf("property %q missing", prop)
 		}
 	}
-	for _, want := range []string{"universe", "after_value", "after_structure", "total_matches", "insufficient"} {
+	for _, want := range []string{
+		"universe", "after_value", "after_structure", "total_matches", "insufficient",
+		// The broker-flow column's contract: the column, its per-row coverage
+		// flag, and the window denominator a row's day count reads against.
+		"foreign_net", "coverage", "flow_window_days", "flow_days_in_window",
+	} {
 		if !strings.Contains(toolScreenStocks.Description, want) {
 			t.Fatalf("description does not mention %q", want)
 		}
