@@ -328,6 +328,14 @@ func main() {
 	// get_sector_flow (issue 17): read-time aggregation of the stored broker
 	// rows joined to the 15b seeder's taxonomy — no new ingestion.
 	sectorFlowUC := usecase.NewSectorFlowUseCase(db, log, brokerStockSummaryRepo, repository.NewDailyPriceRepository(log), tickerRepo)
+	// compute_indicators (screener ticket 01): registry-driven indicator engine
+	// over stored Daily Price rows — computed on demand, nothing persisted.
+	computeIndicatorsUC := usecase.NewComputeIndicatorsUseCase(db, log, dailyPriceRepo)
+	// screen_stocks (screener ticket 04): the whole-universe funnel screener —
+	// the hard filters are SQL over daily_prices + suspensions, and indicators
+	// and the ticket-06 foreign-net column are read for the survivors only.
+	// Nothing persisted.
+	screenStocksUC := usecase.NewScreenStocksUseCase(db, log, dailyPriceRepo, brokerStockSummaryRepo)
 
 	// ─── HTTP router ────────────────────────────────────────────
 
@@ -382,6 +390,8 @@ func main() {
 		ShareholderCompUC:       shareholderCompositionUC,
 		TickerMetadataUC:        tickerMetadataUC,
 		SectorFlowUC:            sectorFlowUC,
+		ComputeIndicatorsUC:     computeIndicatorsUC,
+		ScreenStocksUC:          screenStocksUC,
 		SourceStatusRepo:        sourceStatusRepo,
 		TickerRepo:              tickerRepo,
 	})

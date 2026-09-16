@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -128,6 +129,143 @@ func (r *DailyPriceRepository) FindByTickerAndDateRange(db *sqlx.DB, ticker stri
 		"SELECT * FROM daily_prices WHERE ticker = $1 AND trading_day BETWEEN $2 AND $3 ORDER BY trading_day",
 		ticker, from, to,
 	)
+	return prices, err
+}
+
+// FindByTickerUpTo returns the most recent `limit` OHLCV rows for a ticker at
+// or before `to`, ascending by trading day — the window the indicator registry
+// reads. Anchoring on stored rows (not a calendar span) means an indicator's
+// warm-up is counted in trading days, so a short window is never padded by
+// weekends or IDX holidays; the inner ORDER BY DESC uses the
+// (ticker, trading_day DESC) index.
+func (r *DailyPriceRepository) FindByTickerUpTo(db *sqlx.DB, ticker string, to time.Time, limit int) ([]entity.DailyPrice, error) {
+	var prices []entity.DailyPrice
+	err := db.Select(&prices, `
+		SELECT * FROM (
+			SELECT * FROM daily_prices
+			WHERE ticker = $1 AND trading_day <= $2
+			ORDER BY trading_day DESC
+			LIMIT $3
+		) recent
+		ORDER BY trading_day`,
+		ticker, to, limit,
+	)
+	return prices, err
+}
+
+// ScreenCandidate is one ticker that cleared the screener's SQL hard filters:
+// its anchor-day transaction value and close, which the funnel reports and the
+// ranking sorts on.
+type ScreenCandidate struct {
+	Ticker string   `db:"ticker"`
+	Value  *int64   `db:"value"`
+	Close  *float64 `db:"close"`
+}
+
+// ScreenUniverse counts the tickers with any stored row inside the `window`
+// most recent trading days at or before anchor — the screener funnel's first
+// number, the population the hard filters cut down.
+//
+// The window is counted in market-wide stored trading days (the DISTINCT
+// trading_day axis daily_prices itself defines), never in calendar days, so
+// weekends and IDX holidays never pad it — the same rule the indicator window
+// uses. Anchoring on days that carry data also means "the universe" is exactly
+// the population a screen can read, not every code that ever traded.
+//
+// The anchor is bound as a calendar day (YYYY-MM-DD, cast with ::date in SQL)
+// rather than as an instant: trading_day is a DATE, and comparing it to a
+// timestamptz would let the session timezone decide which day the screen reads
+// — the equality against the anchor would silently match nothing in a timezone
+// west of UTC, emptying the funnel. FindByTickerAndDay takes a day string for
+// the same reason.
+func (r *DailyPriceRepository) ScreenUniverse(db *sqlx.DB, anchor time.Time, window int) (int, error) {
+	var count int
+	err := db.Get(&count, `
+		WITH recent_days AS (
+			SELECT DISTINCT trading_day FROM daily_prices
+			WHERE trading_day <= $1::date
+			ORDER BY trading_day DESC
+			LIMIT $2
+		)
+		SELECT COUNT(DISTINCT p.ticker)
+		FROM daily_prices p
+		JOIN recent_days d ON d.trading_day = p.trading_day`,
+		anchor.Format("2006-01-02"), window)
+	return count, err
+}
+
+// ScreenCandidates returns the tickers that clear every SQL hard filter for an
+// anchor day: a stored row ON the anchor day (the ticker is still trading — a
+// halted or delisted name's latest row is older, so it drops out), a stored
+// transaction value at or above minValue, and no suspension-related event in
+// the last suspensionDays trading days.
+//
+// The suspension window is counted in trading days by walking the same stored
+// day axis back from the anchor, and matched against suspensions.event_date,
+// which is the listing/action date. UMA and "trading resumed" (UPT) events
+// count as well as suspensions (SPT): a resume inside the window means the
+// ticker was suspended inside the window, which is exactly what the filter
+// guards against — so the check is a plain event-date match, with no per-type
+// rule to explain in the response.
+//
+// A row with no stored value never clears a liquidity floor (unknown is not
+// liquid), so it is excluded even at minValue 0. Candidates come back ordered
+// by ticker, so identical inputs produce identical funnel output.
+func (r *DailyPriceRepository) ScreenCandidates(db *sqlx.DB, anchor time.Time, minValue int64, suspensionDays int) ([]ScreenCandidate, error) {
+	var candidates []ScreenCandidate
+	err := db.Select(&candidates, `
+		WITH suspension_from AS (
+			SELECT MIN(trading_day) AS day FROM (
+				SELECT DISTINCT trading_day FROM daily_prices
+				WHERE trading_day <= $1::date
+				ORDER BY trading_day DESC
+				LIMIT $3
+			) window_days
+		)
+		SELECT p.ticker, p.value, p.close
+		FROM daily_prices p
+		WHERE p.trading_day = $1::date
+			AND p.value IS NOT NULL
+			AND p.value >= $2
+			AND NOT EXISTS (
+				SELECT 1 FROM suspensions s, suspension_from f
+				WHERE s.ticker = p.ticker
+					AND s.event_date >= f.day
+					AND s.event_date <= $1::date
+			)
+		ORDER BY p.ticker`,
+		anchor.Format("2006-01-02"), minValue, suspensionDays)
+	return candidates, err
+}
+
+// FindByTickersUpTo returns the most recent `limit` OHLCV rows for each of the
+// given tickers at or before `to`, ascending by ticker then trading day. It is
+// the screener's survivor read: one round trip covers every ticker that cleared
+// the SQL hard filters, and a ticker the filters dropped is never read at all.
+//
+// The LATERAL join applies the per-ticker LIMIT through the
+// (ticker, trading_day DESC) index, so the work is proportional to the
+// survivors rather than to the stored history behind them. The ticker list
+// rides as a comma-joined string split in SQL (ticker codes are 2-6 uppercase
+// letters, so the delimiter can never appear in one) — an array parameter would
+// depend on how the active driver binds []string, which differs between the
+// pgx stdlib driver the server connects with and lib/pq.
+func (r *DailyPriceRepository) FindByTickersUpTo(db *sqlx.DB, tickers []string, to time.Time, limit int) ([]entity.DailyPrice, error) {
+	if len(tickers) == 0 {
+		return nil, nil
+	}
+	var prices []entity.DailyPrice
+	err := db.Select(&prices, `
+		SELECT p.*
+		FROM unnest(string_to_array($1, ',')) AS t(ticker)
+		CROSS JOIN LATERAL (
+			SELECT * FROM daily_prices
+			WHERE ticker = t.ticker AND trading_day <= $2::date
+			ORDER BY trading_day DESC
+			LIMIT $3
+		) p
+		ORDER BY p.ticker, p.trading_day`,
+		strings.Join(tickers, ","), to.Format("2006-01-02"), limit)
 	return prices, err
 }
 

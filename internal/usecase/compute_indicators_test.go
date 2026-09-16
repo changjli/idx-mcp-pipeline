@@ -1,0 +1,713 @@
+package usecase
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jmoiron/sqlx"
+	"github.com/sirupsen/logrus"
+
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
+)
+
+// fakePriceSeries is the stored-row seam: rows keyed by ticker, ordered as the
+// real repository returns them (ascending by trading day).
+type fakePriceSeries struct {
+	rows   map[string][]entity.DailyPrice
+	latest *time.Time
+	err    error
+}
+
+func (f *fakePriceSeries) FindByTickerUpTo(db *sqlx.DB, ticker string, to time.Time, limit int) ([]entity.DailyPrice, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	rows := f.rows[ticker]
+	if len(rows) > limit {
+		rows = rows[len(rows)-limit:]
+	}
+	return rows, nil
+}
+
+func (f *fakePriceSeries) LatestTradingDayAll(db *sqlx.DB) (*time.Time, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.latest, nil
+}
+
+// priceRows builds an ascending close series from closes.
+func priceRows(closes []float64) []entity.DailyPrice {
+	rows := make([]entity.DailyPrice, 0, len(closes))
+	day := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	for _, c := range closes {
+		rows = append(rows, entity.DailyPrice{Ticker: "TEST", TradingDay: day, Close: f64p(c)})
+		day = day.AddDate(0, 0, 1)
+	}
+	return rows
+}
+
+// ohlcvRows builds an ascending OHLCV series from parallel columns, the shape
+// the column-reading registry entries need.
+func ohlcvRows(highs, lows, closes []float64, volumes []int64) []entity.DailyPrice {
+	rows := make([]entity.DailyPrice, 0, len(closes))
+	day := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	for i, c := range closes {
+		rows = append(rows, entity.DailyPrice{
+			Ticker:     "TEST",
+			TradingDay: day,
+			High:       f64p(highs[i]),
+			Low:        f64p(lows[i]),
+			Close:      f64p(c),
+			Volume:     i64p(volumes[i]),
+		})
+		day = day.AddDate(0, 0, 1)
+	}
+	return rows
+}
+
+func newComputeTestUseCase(series *fakePriceSeries) *ComputeIndicatorsUseCase {
+	return NewComputeIndicatorsUseCase(nil, logrus.New(), series)
+}
+
+func testAnchor() time.Time { return time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC) }
+
+// Validation must run before any read: with a nil DB and nil repository these
+// calls can only pass if they never reach the price seam.
+func TestComputeIndicators_PureValidation(t *testing.T) {
+	uc := NewComputeIndicatorsUseCase(nil, logrus.New(), nil)
+
+	cases := []struct {
+		name    string
+		req     ComputeIndicatorsRequest
+		wantErr error
+	}{
+		{
+			name: "unknown indicator name",
+			req: ComputeIndicatorsRequest{
+				Tickers: []string{"BBRI"}, Indicators: []string{"smma:20"},
+			},
+			wantErr: ErrInvalidArgument,
+		},
+		{
+			name: "bad period",
+			req: ComputeIndicatorsRequest{
+				Tickers: []string{"BBRI"}, Indicators: []string{"sma:0"},
+			},
+			wantErr: ErrInvalidArgument,
+		},
+		{
+			name: "no indicators",
+			req: ComputeIndicatorsRequest{
+				Tickers: []string{"BBRI"},
+			},
+			wantErr: ErrInvalidArgument,
+		},
+		{
+			name: "no tickers",
+			req: ComputeIndicatorsRequest{
+				Indicators: []string{"sma:20"},
+			},
+			wantErr: ErrInvalidArgument,
+		},
+		{
+			name: "invalid ticker",
+			req: ComputeIndicatorsRequest{
+				Tickers: []string{"not a ticker"}, Indicators: []string{"sma:20"},
+			},
+			wantErr: ErrInvalidTicker,
+		},
+		{
+			name: "window below the floor",
+			req: ComputeIndicatorsRequest{
+				Tickers: []string{"BBRI"}, Indicators: []string{"sma:20"}, Window: 1,
+			},
+			wantErr: ErrInvalidArgument,
+		},
+		{
+			name: "window above the ceiling",
+			req: ComputeIndicatorsRequest{
+				Tickers: []string{"BBRI"}, Indicators: []string{"sma:20"}, Window: 501,
+			},
+			wantErr: ErrInvalidArgument,
+		},
+		{
+			name: "series mode with more than one ticker",
+			req: ComputeIndicatorsRequest{
+				Mode: "series", Tickers: []string{"BBRI", "TLKM"}, Indicators: []string{"sma:20"},
+			},
+			wantErr: ErrInvalidArgument,
+		},
+		{
+			name: "unknown mode",
+			req: ComputeIndicatorsRequest{
+				Mode: "scren", Tickers: []string{"BBRI"}, Indicators: []string{"sma:20"},
+			},
+			wantErr: ErrInvalidArgument,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := uc.ComputeIndicators(context.Background(), tc.req)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tc.wantErr)
+			}
+			if resp != nil {
+				t.Errorf("response = %+v, want nil on error", resp)
+			}
+		})
+	}
+}
+
+// A typo has to be fixable from the error alone — the enumeration of valid
+// names rides in the message.
+func TestComputeIndicators_UnknownIndicatorEnumeratesValidNames(t *testing.T) {
+	uc := NewComputeIndicatorsUseCase(nil, logrus.New(), nil)
+	_, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Tickers: []string{"BBRI"}, Indicators: []string{"bollinger"},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an unknown indicator")
+	}
+	for _, name := range []string{"sma", "ema", "rsi"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error %q does not enumerate valid name %q", err.Error(), name)
+		}
+	}
+}
+
+func TestComputeIndicators_ScreenModeRows(t *testing.T) {
+	series := &fakePriceSeries{
+		latest: f64pDay(testAnchor()),
+		rows: map[string][]entity.DailyPrice{
+			"BBRI": priceRows([]float64{1, 2, 3, 4, 5}),
+			"TLKM": priceRows([]float64{10, 11, 12, 11, 13, 12}),
+		},
+	}
+	uc := newComputeTestUseCase(series)
+
+	resp, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Tickers:    []string{"BBRI", "TLKM"},
+		Indicators: []string{"sma:3", "rsi:3"},
+		Window:     10,
+	})
+	if err != nil {
+		t.Fatalf("ComputeIndicators error: %v", err)
+	}
+
+	if resp.Mode != computeModeScreen {
+		t.Errorf("Mode = %q, want %q", resp.Mode, computeModeScreen)
+	}
+	if want := "2026-09-11"; resp.AsOf != want {
+		t.Errorf("AsOf = %q, want %q", resp.AsOf, want)
+	}
+	if resp.Window != 10 {
+		t.Errorf("Window = %d, want 10", resp.Window)
+	}
+	if resp.Count != 2 || len(resp.Rows) != 2 {
+		t.Fatalf("Count = %d, rows = %d, want 2 and 2", resp.Count, len(resp.Rows))
+	}
+	if got, want := strings.Join(resp.Indicators, ","), "sma:3,rsi:3"; got != want {
+		t.Errorf("Indicators = %q, want %q", got, want)
+	}
+
+	// BBRI: sma:3 over 1..5 = 4; rsi:3 over a strictly rising series = 100.
+	bbri := resp.Rows[0]
+	if bbri.Ticker != "BBRI" {
+		t.Errorf("Rows[0].Ticker = %q, want BBRI (request order)", bbri.Ticker)
+	}
+	assertValue(t, bbri, "sma:3", 4)
+	assertValue(t, bbri, "rsi:3", 100)
+	if bbri.HistoryRows != 5 {
+		t.Errorf("BBRI history_rows = %d, want 5", bbri.HistoryRows)
+	}
+	if bbri.RequiredRows != 4 { // rsi:3 needs period+1
+		t.Errorf("BBRI required_rows = %d, want 4", bbri.RequiredRows)
+	}
+	if len(bbri.Insufficient) != 0 {
+		t.Errorf("BBRI insufficient = %v, want empty", bbri.Insufficient)
+	}
+
+	// TLKM: sma:3 over the last three closes (11,13,12) = 12; rsi:3 is the
+	// hand-computed 57.142857 fixture (registry test).
+	tlkm := resp.Rows[1]
+	assertValue(t, tlkm, "sma:3", 12)
+	assertValue(t, tlkm, "rsi:3", 57.142857)
+}
+
+// Series mode answers the stage-2 question — not "what is RSI today" but "which
+// way is it going": one array per indicator, parallel to the dates axis and
+// ascending by trading day, with the warm-up rows null and the basis declared.
+func TestComputeIndicators_SeriesModeArrays(t *testing.T) {
+	series := &fakePriceSeries{
+		latest: f64pDay(testAnchor()),
+		rows: map[string][]entity.DailyPrice{
+			"BBRI": priceRows([]float64{1, 2, 3, 4, 5}),
+		},
+	}
+	uc := newComputeTestUseCase(series)
+
+	resp, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Mode:       "series",
+		Tickers:    []string{"bbri.jk"},
+		Indicators: []string{"sma:3", "rsi:3"},
+		Window:     10,
+	})
+	if err != nil {
+		t.Fatalf("ComputeIndicators error: %v", err)
+	}
+
+	if resp.Mode != computeModeSeries {
+		t.Errorf("Mode = %q, want %q", resp.Mode, computeModeSeries)
+	}
+	if resp.Ticker != "BBRI" {
+		t.Errorf("Ticker = %q, want BBRI (normalized)", resp.Ticker)
+	}
+	if resp.Window != 10 {
+		t.Errorf("Window = %d, want 10", resp.Window)
+	}
+	if resp.Count != 0 || len(resp.Rows) != 0 {
+		t.Errorf("screen half = count %d / %d rows, want it empty in series mode", resp.Count, len(resp.Rows))
+	}
+	if got, want := strings.Join(resp.Indicators, ","), "sma:3,rsi:3"; got != want {
+		t.Errorf("Indicators = %q, want %q", got, want)
+	}
+
+	// priceRows walks one calendar day at a time from 2026-01-02, so the axis
+	// is the five stored days and nothing is padded in.
+	wantDates := []string{"2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05", "2026-01-06"}
+	if got := strings.Join(resp.Dates, ","); got != strings.Join(wantDates, ",") {
+		t.Errorf("Dates = %v, want %v", resp.Dates, wantDates)
+	}
+	if resp.HistoryRows != 5 {
+		t.Errorf("history_rows = %d, want 5", resp.HistoryRows)
+	}
+
+	// sma:3 settles on row 3: (1+2+3)/3 = 2, then 3, then 4.
+	sma := seriesEntry(t, resp, "sma:3")
+	assertSeriesValues(t, sma, []float64{math.NaN(), math.NaN(), 2, 3, 4})
+	if sma.ObservedRows != 3 || sma.RequiredRows != 3 || sma.Insufficient {
+		t.Errorf("sma:3 basis = %+v, want 3 observed over a 3-row bar", sma)
+	}
+
+	// rsi:3 needs four rows and a strictly rising series pins it at 100.
+	rsi := seriesEntry(t, resp, "rsi:3")
+	assertSeriesValues(t, rsi, []float64{math.NaN(), math.NaN(), math.NaN(), 100, 100})
+	if rsi.ObservedRows != 2 || rsi.RequiredRows != 4 || rsi.Insufficient {
+		t.Errorf("rsi:3 basis = %+v, want 2 observed over a 4-row bar", rsi)
+	}
+}
+
+// A series request is one ticker's trajectory: asking about several names that
+// rule rather than silently answering about the first.
+func TestComputeIndicators_SeriesModeIsSingleTicker(t *testing.T) {
+	series := &fakePriceSeries{latest: f64pDay(testAnchor()), rows: map[string][]entity.DailyPrice{}}
+	uc := newComputeTestUseCase(series)
+
+	_, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Mode:       "series",
+		Tickers:    []string{"BBRI", "bbri.JK", "TLKM"},
+		Indicators: []string{"sma:3"},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("error = %v, want ErrInvalidArgument", err)
+	}
+	// Two distinct tickers after dedupe, and the message has to name the rule.
+	if !strings.Contains(err.Error(), "one ticker") {
+		t.Errorf("error %q must name the single-ticker rule", err.Error())
+	}
+	if !strings.Contains(err.Error(), "TLKM") {
+		t.Errorf("error %q must list what was passed", err.Error())
+	}
+}
+
+// History shorter than an indicator's bar is flagged per indicator with the
+// basis declared — the bar it missed and the rows it had — while the other
+// indicators in the same request still return their arrays.
+func TestComputeIndicators_SeriesModeInsufficientFlagged(t *testing.T) {
+	series := &fakePriceSeries{
+		latest: f64pDay(testAnchor()),
+		rows:   map[string][]entity.DailyPrice{"BBRI": priceRows([]float64{100, 101})},
+	}
+	uc := newComputeTestUseCase(series)
+
+	resp, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Mode:       "series",
+		Tickers:    []string{"BBRI"},
+		Indicators: []string{"sma:2", "sma:20"},
+	})
+	if err != nil {
+		t.Fatalf("ComputeIndicators error: %v", err)
+	}
+
+	short := seriesEntry(t, resp, "sma:2")
+	assertSeriesValues(t, short, []float64{math.NaN(), 100.5})
+	if short.Insufficient || short.ObservedRows != 1 || short.RequiredRows != 2 {
+		t.Errorf("sma:2 basis = %+v, want 1 observed over a 2-row bar", short)
+	}
+
+	// The whole array is null, never a short-window average that would read as
+	// a warmed MA.
+	starved := seriesEntry(t, resp, "sma:20")
+	assertSeriesValues(t, starved, []float64{math.NaN(), math.NaN()})
+	if !starved.Insufficient || starved.ObservedRows != 0 || starved.RequiredRows != 20 {
+		t.Errorf("sma:20 basis = %+v, want insufficient over a 20-row bar", starved)
+	}
+	if resp.HistoryRows != 2 {
+		t.Errorf("history_rows = %d, want 2", resp.HistoryRows)
+	}
+}
+
+// The date axis is the stored rows the values rest on, so a row with no stored
+// close shortens the axis instead of padding a day into it — and an indicator
+// reading a column one row lacked is empty at that index rather than shifted.
+func TestComputeIndicators_SeriesModeDateAxisFollowsUsableRows(t *testing.T) {
+	rows := priceRows([]float64{1, 2, 3, 4})
+	rows[1].Close = nil
+	series := &fakePriceSeries{
+		latest: f64pDay(testAnchor()),
+		rows:   map[string][]entity.DailyPrice{"BBRI": rows},
+	}
+	uc := newComputeTestUseCase(series)
+
+	resp, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Mode:       "series",
+		Tickers:    []string{"BBRI"},
+		Indicators: []string{"sma:2"},
+	})
+	if err != nil {
+		t.Fatalf("ComputeIndicators error: %v", err)
+	}
+	wantDates := []string{"2026-01-02", "2026-01-04", "2026-01-05"}
+	if got := strings.Join(resp.Dates, ","); got != strings.Join(wantDates, ",") {
+		t.Errorf("Dates = %v, want %v (the close-less day is not a day)", resp.Dates, wantDates)
+	}
+	// Closes 1,3,4: sma:2 = 2, then 3.5 — each on its own day.
+	assertSeriesValues(t, seriesEntry(t, resp, "sma:2"), []float64{math.NaN(), 2, 3.5})
+
+	// A column-reading entry over rows where one volume is missing: the day is
+	// still on the axis (it has a close) but the value for it is null.
+	ohlcv := ohlcvRows(
+		[]float64{12, 16, 12, 16, 14},
+		[]float64{8, 10, 10, 11, 11},
+		[]float64{10, 11, 11, 12, 12},
+		[]int64{100, 200, 300, 400, 500},
+	)
+	ohlcv[2].Volume = nil
+	uc = newComputeTestUseCase(&fakePriceSeries{
+		latest: f64pDay(testAnchor()),
+		rows:   map[string][]entity.DailyPrice{"BBRI": ohlcv},
+	})
+	resp, err = uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Mode:       "series",
+		Tickers:    []string{"BBRI"},
+		Indicators: []string{"volume_ma:3"},
+	})
+	if err != nil {
+		t.Fatalf("ComputeIndicators error: %v", err)
+	}
+	if len(resp.Dates) != 5 {
+		t.Fatalf("Dates = %v, want the five stored days (every row has a close)", resp.Dates)
+	}
+	entry := seriesEntry(t, resp, "volume_ma:3")
+	assertSeriesValues(t, entry, []float64{math.NaN(), math.NaN(), math.NaN(), 233.3333333, 366.6666667})
+	if entry.ObservedRows != 2 {
+		t.Errorf("observed_rows = %d, want 2 (the volume-less day carries no value)", entry.ObservedRows)
+	}
+}
+
+// A series shorter than an indicator's warm-up bar is null plus a flag for that
+// indicator only — the other indicators in the same row still report values.
+func TestComputeIndicators_InsufficientWarmupPerIndicator(t *testing.T) {
+	series := &fakePriceSeries{
+		latest: f64pDay(testAnchor()),
+		rows: map[string][]entity.DailyPrice{
+			"BBRI": priceRows([]float64{100, 101}),
+		},
+	}
+	uc := newComputeTestUseCase(series)
+
+	resp, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Tickers:    []string{"BBRI"},
+		Indicators: []string{"sma:2", "rsi:14"},
+	})
+	if err != nil {
+		t.Fatalf("ComputeIndicators error: %v", err)
+	}
+
+	row := resp.Rows[0]
+	assertValue(t, row, "sma:2", 100.5)
+	if v := row.Values["rsi:14"]; v != nil {
+		t.Errorf("rsi:14 = %v, want null (2 rows is short of 15)", *v)
+	}
+	if got, want := strings.Join(row.Insufficient, ","), "rsi:14"; got != want {
+		t.Errorf("insufficient = %q, want %q", got, want)
+	}
+	if row.HistoryRows != 2 {
+		t.Errorf("history_rows = %d, want 2", row.HistoryRows)
+	}
+	if row.RequiredRows != 15 { // rsi:14 is the binding constraint
+		t.Errorf("required_rows = %d, want 15", row.RequiredRows)
+	}
+}
+
+// OHLCV entries read the columns they declare, and a row missing one of those
+// columns is dropped rather than read as a zero — the registry test covers the
+// arithmetic, this covers the seam that feeds it from stored rows.
+func TestComputeIndicators_OHLCVEntriesReadTheirColumns(t *testing.T) {
+	// The ticket-02 fixture bars: H 12,16,12,16,14 / L 8,10,10,11,11 /
+	// C 10,11,11,12,12 / V 100,200,300,400,500 → atr:3 = (2+5+3)/3,
+	// volume_ratio:3 = 500/400, range_position:3 = (12-10)/(16-10).
+	series := &fakePriceSeries{
+		latest: f64pDay(testAnchor()),
+		rows: map[string][]entity.DailyPrice{
+			"BBRI": ohlcvRows(
+				[]float64{12, 16, 12, 16, 14},
+				[]float64{8, 10, 10, 11, 11},
+				[]float64{10, 11, 11, 12, 12},
+				[]int64{100, 200, 300, 400, 500},
+			),
+			// The same closes with no high/low/volume stored: the close-only
+			// entries still report, the column-reading ones do not.
+			"TLKM": priceRows([]float64{10, 11, 11, 12, 12}),
+		},
+	}
+	uc := newComputeTestUseCase(series)
+
+	resp, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Tickers:    []string{"BBRI", "TLKM"},
+		Indicators: []string{"atr:3", "volume_ratio:3", "range_position:3", "sma:3"},
+	})
+	if err != nil {
+		t.Fatalf("ComputeIndicators error: %v", err)
+	}
+
+	bbri := resp.Rows[0]
+	assertValue(t, bbri, "atr:3", 3.3333333)
+	assertValue(t, bbri, "volume_ratio:3", 1.25)
+	assertValue(t, bbri, "range_position:3", 0.3333333)
+	assertValue(t, bbri, "sma:3", 11.6666667)
+	if bbri.HistoryRows != 5 {
+		t.Errorf("BBRI history_rows = %d, want 5", bbri.HistoryRows)
+	}
+	if len(bbri.Insufficient) != 0 {
+		t.Errorf("BBRI insufficient = %v, want empty", bbri.Insufficient)
+	}
+
+	tlkm := resp.Rows[1]
+	assertValue(t, tlkm, "sma:3", 11.6666667)
+	for _, key := range []string{"atr:3", "volume_ratio:3", "range_position:3"} {
+		if v := tlkm.Values[key]; v != nil {
+			t.Errorf("TLKM %s = %v, want null (the column was not stored)", key, *v)
+		}
+	}
+	if got, want := strings.Join(tlkm.Insufficient, ","), "atr:3,volume_ratio:3,range_position:3"; got != want {
+		t.Errorf("TLKM insufficient = %q, want %q", got, want)
+	}
+}
+
+// A ticker with no stored rows is a row of nulls and flags, not an error: the
+// caller asked about it and needs to see "no history", not a failed call.
+func TestComputeIndicators_NoStoredRows(t *testing.T) {
+	series := &fakePriceSeries{latest: f64pDay(testAnchor()), rows: map[string][]entity.DailyPrice{}}
+	uc := newComputeTestUseCase(series)
+
+	resp, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Tickers: []string{"GHOST"}, Indicators: []string{"sma:20"},
+	})
+	if err != nil {
+		t.Fatalf("ComputeIndicators error: %v", err)
+	}
+	row := resp.Rows[0]
+	if row.Values["sma:20"] != nil {
+		t.Errorf("sma:20 = %v, want null", *row.Values["sma:20"])
+	}
+	if row.HistoryRows != 0 {
+		t.Errorf("history_rows = %d, want 0", row.HistoryRows)
+	}
+	if got, want := strings.Join(row.Insufficient, ","), "sma:20"; got != want {
+		t.Errorf("insufficient = %q, want %q", got, want)
+	}
+}
+
+// Rows with no stored close are dropped from the series rather than read as
+// zero, and duplicate tickers cost one window, not two.
+func TestComputeIndicators_UsableClosesAndDedupe(t *testing.T) {
+	rows := priceRows([]float64{1, 2, 3, 4, 5})
+	rows[2].Close = nil // a gap in the middle
+	series := &fakePriceSeries{
+		latest: f64pDay(testAnchor()),
+		rows:   map[string][]entity.DailyPrice{"BBRI": rows},
+	}
+	uc := newComputeTestUseCase(series)
+
+	resp, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Tickers:    []string{"BBRI", "BBRI", "bbri.JK"},
+		Indicators: []string{"sma:3", "sma:3"},
+	})
+	if err != nil {
+		t.Fatalf("ComputeIndicators error: %v", err)
+	}
+	if resp.Count != 1 {
+		t.Fatalf("Count = %d, want 1 (duplicates collapse)", resp.Count)
+	}
+	row := resp.Rows[0]
+	if row.HistoryRows != 4 { // 5 rows, one without a close
+		t.Errorf("history_rows = %d, want 4", row.HistoryRows)
+	}
+	// The series is 1,2,4,5 after the gap: sma:3 = (2+4+5)/3.
+	assertValue(t, row, "sma:3", 11.0/3)
+	if len(resp.Indicators) != 1 {
+		t.Errorf("Indicators = %v, want one entry (duplicate spec collapses)", resp.Indicators)
+	}
+}
+
+// The cap is stated in the tool description and enforced here: at the cap is
+// fine, one over is a structured error naming the limit.
+func TestComputeIndicators_TickerCap(t *testing.T) {
+	series := &fakePriceSeries{latest: f64pDay(testAnchor()), rows: map[string][]entity.DailyPrice{}}
+	uc := newComputeTestUseCase(series)
+
+	atCap := make([]string, 0, maxScreenTickers)
+	for i := 0; i < maxScreenTickers; i++ {
+		atCap = append(atCap, fmt.Sprintf("AA%c", 'A'+i%26)+fmt.Sprintf("%c", 'A'+i/26))
+	}
+	if _, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Tickers: atCap, Indicators: []string{"sma:20"},
+	}); err != nil {
+		t.Fatalf("call at the cap failed: %v", err)
+	}
+
+	_, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Tickers:    append(atCap, "BBRI"),
+		Indicators: []string{"sma:20"},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("error = %v, want ErrInvalidArgument", err)
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("%d", maxScreenTickers)) {
+		t.Errorf("error %q does not state the cap", err.Error())
+	}
+}
+
+// The window is a count of stored trading days: no calendar padding, so the
+// row's history_rows never overstates the rows the values rest on.
+func TestComputeIndicators_WindowLimitsHistory(t *testing.T) {
+	series := &fakePriceSeries{
+		latest: f64pDay(testAnchor()),
+		rows:   map[string][]entity.DailyPrice{"BBRI": priceRows([]float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})},
+	}
+	uc := newComputeTestUseCase(series)
+
+	resp, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Tickers: []string{"BBRI"}, Indicators: []string{"sma:3"}, Window: 4,
+	})
+	if err != nil {
+		t.Fatalf("ComputeIndicators error: %v", err)
+	}
+	row := resp.Rows[0]
+	if row.HistoryRows != 4 {
+		t.Errorf("history_rows = %d, want 4", row.HistoryRows)
+	}
+	assertValue(t, row, "sma:3", 9) // (8+9+10)/3
+}
+
+// An explicit asOf anchors the window; the default anchor is the latest stored
+// market-wide trading day.
+func TestComputeIndicators_AsOfAnchor(t *testing.T) {
+	series := &fakePriceSeries{
+		rows: map[string][]entity.DailyPrice{"BBRI": priceRows([]float64{1, 2, 3})},
+	}
+	uc := newComputeTestUseCase(series)
+
+	asOf := time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC)
+	resp, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Tickers: []string{"BBRI"}, Indicators: []string{"sma:3"}, AsOf: &asOf,
+	})
+	if err != nil {
+		t.Fatalf("ComputeIndicators error: %v", err)
+	}
+	if want := "2026-09-04"; resp.AsOf != want {
+		t.Errorf("AsOf = %q, want %q", resp.AsOf, want)
+	}
+
+	// No stored day at all: the latest-day read fails loudly rather than
+	// anchoring on a zero time.
+	_, err = uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Tickers: []string{"BBRI"}, Indicators: []string{"sma:3"},
+	})
+	if err == nil {
+		t.Error("expected an error when no anchor day is resolvable")
+	}
+}
+
+func TestComputeIndicators_RepositoryErrorPropagates(t *testing.T) {
+	series := &fakePriceSeries{
+		latest: f64pDay(testAnchor()),
+		err:    errors.New("db down"),
+	}
+	uc := newComputeTestUseCase(series)
+
+	_, err := uc.ComputeIndicators(context.Background(), ComputeIndicatorsRequest{
+		Tickers: []string{"BBRI"}, Indicators: []string{"sma:20"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "db down") {
+		t.Fatalf("error = %v, want the repository error wrapped", err)
+	}
+}
+
+// seriesEntry finds one indicator's series in a series-mode response.
+func seriesEntry(t *testing.T, resp *ComputeIndicatorsResponse, key string) ComputeIndicatorsSeriesEntry {
+	t.Helper()
+	for _, entry := range resp.Series {
+		if entry.Key == key {
+			return entry
+		}
+	}
+	t.Fatalf("series %q missing from %v", key, resp.Indicators)
+	return ComputeIndicatorsSeriesEntry{}
+}
+
+// assertSeriesValues compares an array a row at a time, reading a null as NaN so
+// a fixture can be written as one literal line.
+func assertSeriesValues(t *testing.T, entry ComputeIndicatorsSeriesEntry, want []float64) {
+	t.Helper()
+	if len(entry.Values) != len(want) {
+		t.Fatalf("%s: array length = %d, want %d (%v)", entry.Key, len(entry.Values), len(want), entry.Values)
+	}
+	for i, expected := range want {
+		got := entry.Values[i]
+		if math.IsNaN(expected) {
+			if got != nil {
+				t.Errorf("%s[%d] = %v, want null", entry.Key, i, *got)
+			}
+			continue
+		}
+		if got == nil {
+			t.Errorf("%s[%d] = null, want %v", entry.Key, i, expected)
+			continue
+		}
+		if diff := *got - expected; diff > 1e-4 || diff < -1e-4 {
+			t.Errorf("%s[%d] = %v, want %v", entry.Key, i, *got, expected)
+		}
+	}
+}
+
+func assertValue(t *testing.T, row ComputeIndicatorsRow, key string, want float64) {
+	t.Helper()
+	got, ok := row.Values[key]
+	if !ok || got == nil {
+		t.Fatalf("%s missing from row %s (values %v)", key, row.Ticker, row.Values)
+	}
+	if diff := *got - want; diff > 1e-4 || diff < -1e-4 {
+		t.Errorf("%s = %v, want %v", key, *got, want)
+	}
+}
+
+func f64pDay(day time.Time) *time.Time { return &day }

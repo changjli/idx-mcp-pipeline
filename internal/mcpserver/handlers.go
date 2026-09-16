@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"strconv"
 	"strings"
@@ -89,6 +90,23 @@ func argLimit(args map[string]any) int {
 		return maxLimit
 	}
 	return n
+}
+
+// argStrings extracts a string-array argument, dropping non-string elements.
+// An absent or wrongly-typed argument yields nil, which the usecase rejects as
+// a missing required list.
+func argStrings(args map[string]any, key string) []string {
+	raw, ok := args[key].([]any)
+	if !ok {
+		return nil
+	}
+	values := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			values = append(values, s)
+		}
+	}
+	return values
 }
 
 // marketAnomaliesResponse wraps the usecase data with staleness metadata.
@@ -529,6 +547,179 @@ func (s *Server) handleGetDailyPrices(ctx context.Context, req mcpgo.CallToolReq
 		DailyPricesData:   data,
 		StalenessMetadata: stalenessFor(s.db, s.sourceStatusRepo, sourceIdxStockSummary, time.Now()),
 	}), nil
+}
+
+// computeIndicatorsResponse wraps the registry read with staleness metadata.
+type computeIndicatorsResponse struct {
+	*usecase.ComputeIndicatorsResponse
+	mcp.StalenessMetadata
+}
+
+// handleComputeIndicators validates the call shape (mode, ticker list, as_of)
+// and delegates the registry/period validation to the usecase, so a bad name
+// or an over-cap list returns the same structured error whether it arrives over
+// MCP or from another caller.
+func (s *Server) handleComputeIndicators(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	args := req.GetArguments()
+	mode, _ := args["mode"].(string)
+	asOfStr, _ := args["as_of"].(string)
+	window, _ := args["window"].(float64)
+
+	tickers := argStrings(args, "tickers")
+	if len(tickers) == 0 {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "tickers must list at least one ticker", false)), nil
+	}
+	normalized := make([]string, 0, len(tickers))
+	for _, ticker := range tickers {
+		norm, ok := s.tickers.Normalize(ticker)
+		if !ok {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidTicker, "invalid ticker: "+ticker, false)), nil
+		}
+		normalized = append(normalized, norm)
+	}
+
+	var asOfPtr *time.Time
+	if asOfStr != "" {
+		t, err := time.Parse("2006-01-02", asOfStr)
+		if err != nil {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid as_of date: "+asOfStr, false)), nil
+		}
+		asOfPtr = &t
+	}
+
+	data, err := s.computeIndicatorsUC.ComputeIndicators(ctx, usecase.ComputeIndicatorsRequest{
+		Mode:       mode,
+		Tickers:    normalized,
+		Indicators: argStrings(args, "indicators"),
+		AsOf:       asOfPtr,
+		Window:     int(window),
+	})
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(computeIndicatorsResponse{
+		ComputeIndicatorsResponse: data,
+		StalenessMetadata:         stalenessFor(s.db, s.sourceStatusRepo, sourceIdxStockSummary, time.Now()),
+	}), nil
+}
+
+// screenStocksResponse wraps the funnel read with staleness metadata.
+type screenStocksResponse struct {
+	*usecase.ScreenStocksResponse
+	mcp.StalenessMetadata
+}
+
+// handleScreenStocks parses the funnel parameters and delegates to the usecase,
+// which owns every default, bound, and validation rule — so a bad limit, floor,
+// sort key, or indicator spec returns the same structured error whether the
+// call arrived over MCP or from another caller. The handler adds no ticker
+// argument: the universe is the caller's screen, not a list they name.
+func (s *Server) handleScreenStocks(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	args := req.GetArguments()
+	asOfStr, _ := args["as_of"].(string)
+	window, _ := args["window"].(float64)
+	limit, _ := args["limit"].(float64)
+	suspensionDays, _ := args["suspension_window_days"].(float64)
+	flowWindowDays, _ := args["flow_window_days"].(float64)
+	sortKey, _ := args["sort"].(string)
+	order, _ := args["order"].(string)
+
+	minValue, ok := argMinValue(args)
+	if !ok {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument,
+			"min_value must be a whole number of rupiah, 0 or more", false)), nil
+	}
+
+	filters, err := argFilters(args)
+	if err != nil {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, err.Error(), false)), nil
+	}
+
+	var asOfPtr *time.Time
+	if asOfStr != "" {
+		t, err := time.Parse("2006-01-02", asOfStr)
+		if err != nil {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid as_of date: "+asOfStr, false)), nil
+		}
+		asOfPtr = &t
+	}
+
+	data, err := s.screenStocksUC.ScreenStocks(ctx, usecase.ScreenStocksRequest{
+		AsOf:                 asOfPtr,
+		Window:               int(window),
+		MinValue:             minValue,
+		Limit:                int(limit),
+		SuspensionWindowDays: int(suspensionDays),
+		FlowWindowDays:       int(flowWindowDays),
+		Indicators:           argStrings(args, "indicators"),
+		Filters:              filters,
+		Sort:                 sortKey,
+		Order:                order,
+	})
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(screenStocksResponse{
+		ScreenStocksResponse: data,
+		StalenessMetadata:    stalenessFor(s.db, s.sourceStatusRepo, sourceIdxStockSummary, time.Now()),
+	}), nil
+}
+
+// argFilters extracts the optional structural filter list, preserving the three
+// states the DSL distinguishes: an absent argument stays nil so the usecase runs
+// the shipped default set, an explicit empty array is a pointer to an empty list
+// so no structural filters run, and a populated array decodes through the DSL's
+// own codec — so a value that is neither a number nor a [low, high] pair is an
+// argument error here rather than a zero reaching a comparison.
+func argFilters(args map[string]any) (*[]usecase.ScreenStocksFilter, error) {
+	raw, ok := args["filters"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, errors.New(filterShapeError)
+	}
+
+	filters := []usecase.ScreenStocksFilter{}
+	if err := json.Unmarshal(encoded, &filters); err != nil {
+		return nil, errors.New(filterShapeError + ": " + filterDetail(err))
+	}
+	return &filters, nil
+}
+
+// filterShapeError is the one sentence a malformed filter list is reported with,
+// so the caller learns the shape they must write.
+const filterShapeError = "filters must be an array of {indicator, op, value} objects"
+
+// filterDetail renders the decoder's complaint without leaking this package's
+// Go type names: a payload of the wrong shape gets the shape sentence, and a
+// filter whose value the DSL rejected (a string, a null, a nested array) keeps
+// the DSL's own wording, which names what to write instead.
+func filterDetail(err error) string {
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) || !errors.Is(err, usecase.ErrInvalidArgument) {
+		return filterShapeError
+	}
+	return strings.TrimPrefix(err.Error(), usecase.ErrInvalidArgument.Error()+": ")
+}
+
+// argMinValue extracts the optional min_value argument as whole rupiah. Absent
+// yields nil, which the usecase resolves to its default floor; a fractional,
+// negative, or out-of-range value is rejected rather than silently rounded into
+// a different floor than the caller asked for.
+func argMinValue(args map[string]any) (*int64, bool) {
+	raw, ok := args["min_value"]
+	if !ok {
+		return nil, true
+	}
+	v, ok := raw.(float64)
+	if !ok || v < 0 || v != math.Trunc(v) || v > math.MaxInt64 {
+		return nil, false
+	}
+	value := int64(v)
+	return &value, true
 }
 
 // financialsResponse wraps the live financial statements with the staleness
