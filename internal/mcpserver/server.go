@@ -32,6 +32,7 @@ type Deps struct {
 	TickerMetadataUC        usecase.TickerMetadataReader
 	SectorFlowUC            usecase.SectorFlowReader
 	ComputeIndicatorsUC     usecase.ComputeIndicatorsReader
+	ScreenStocksUC          usecase.ScreenStocksReader
 	SourceStatusRepo        *repository.SourceStatusRepository
 	TickerRepo              *repository.TickerRepository
 }
@@ -57,6 +58,7 @@ type Server struct {
 	tickerMetadataUC         usecase.TickerMetadataReader
 	sectorFlowUC             usecase.SectorFlowReader
 	computeIndicatorsUC      usecase.ComputeIndicatorsReader
+	screenStocksUC           usecase.ScreenStocksReader
 	sourceStatusRepo         *repository.SourceStatusRepository
 	tickers                  *TickerValidator
 }
@@ -81,6 +83,7 @@ func NewServer(deps Deps) *Server {
 		tickerMetadataUC:         deps.TickerMetadataUC,
 		sectorFlowUC:             deps.SectorFlowUC,
 		computeIndicatorsUC:      deps.ComputeIndicatorsUC,
+		screenStocksUC:           deps.ScreenStocksUC,
 		sourceStatusRepo:         deps.SourceStatusRepo,
 		tickers:                  NewTickerValidator(deps.DB, deps.TickerRepo, deps.Log),
 	}
@@ -110,5 +113,6 @@ func (s *Server) Handler() http.Handler {
 	srv.AddTool(toolGetTickerMetadata, s.handleGetTickerMetadata)
 	srv.AddTool(toolGetSectorFlow, s.handleGetSectorFlow)
 	srv.AddTool(toolComputeIndicators, s.handleComputeIndicators)
+	srv.AddTool(toolScreenStocks, s.handleScreenStocks)
 	return server.NewStreamableHTTPServer(srv)
 }

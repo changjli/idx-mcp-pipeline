@@ -602,6 +602,77 @@ func (s *Server) handleComputeIndicators(ctx context.Context, req mcpgo.CallTool
 	}), nil
 }
 
+// screenStocksResponse wraps the funnel read with staleness metadata.
+type screenStocksResponse struct {
+	*usecase.ScreenStocksResponse
+	mcp.StalenessMetadata
+}
+
+// handleScreenStocks parses the funnel parameters and delegates to the usecase,
+// which owns every default, bound, and validation rule — so a bad limit, floor,
+// sort key, or indicator spec returns the same structured error whether the
+// call arrived over MCP or from another caller. The handler adds no ticker
+// argument: the universe is the caller's screen, not a list they name.
+func (s *Server) handleScreenStocks(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	args := req.GetArguments()
+	asOfStr, _ := args["as_of"].(string)
+	window, _ := args["window"].(float64)
+	limit, _ := args["limit"].(float64)
+	suspensionDays, _ := args["suspension_window_days"].(float64)
+	sortKey, _ := args["sort"].(string)
+	order, _ := args["order"].(string)
+
+	minValue, ok := argMinValue(args)
+	if !ok {
+		return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument,
+			"min_value must be a whole number of rupiah, 0 or more", false)), nil
+	}
+
+	var asOfPtr *time.Time
+	if asOfStr != "" {
+		t, err := time.Parse("2006-01-02", asOfStr)
+		if err != nil {
+			return envelopeResult(mcp.NewError(mcp.ErrorCodeInvalidArgument, "invalid as_of date: "+asOfStr, false)), nil
+		}
+		asOfPtr = &t
+	}
+
+	data, err := s.screenStocksUC.ScreenStocks(ctx, usecase.ScreenStocksRequest{
+		AsOf:                 asOfPtr,
+		Window:               int(window),
+		MinValue:             minValue,
+		Limit:                int(limit),
+		SuspensionWindowDays: int(suspensionDays),
+		Indicators:           argStrings(args, "indicators"),
+		Sort:                 sortKey,
+		Order:                order,
+	})
+	if err != nil {
+		return envelopeResult(exceptionToEnvelope(err)), nil
+	}
+	return textResult(screenStocksResponse{
+		ScreenStocksResponse: data,
+		StalenessMetadata:    stalenessFor(s.db, s.sourceStatusRepo, sourceIdxStockSummary, time.Now()),
+	}), nil
+}
+
+// argMinValue extracts the optional min_value argument as whole rupiah. Absent
+// yields nil, which the usecase resolves to its default floor; a fractional,
+// negative, or out-of-range value is rejected rather than silently rounded into
+// a different floor than the caller asked for.
+func argMinValue(args map[string]any) (*int64, bool) {
+	raw, ok := args["min_value"]
+	if !ok {
+		return nil, true
+	}
+	v, ok := raw.(float64)
+	if !ok || v < 0 || v != math.Trunc(v) || v > math.MaxInt64 {
+		return nil, false
+	}
+	value := int64(v)
+	return &value, true
+}
+
 // financialsResponse wraps the live financial statements with the staleness
 // envelope. The fetch is live, so data_stale is always false (omitted, per
 // the shared metadata convention); last_good_date is the newest statement

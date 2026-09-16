@@ -169,7 +169,7 @@ func (uc *ComputeIndicatorsUseCase) ComputeIndicators(ctx context.Context, req C
 		return nil, err
 	}
 
-	anchor, err := uc.anchorDay(req.AsOf)
+	anchor, err := resolveAnchorDay(uc.PriceRepo, uc.DB, req.AsOf)
 	if err != nil {
 		return nil, err
 	}
@@ -264,15 +264,22 @@ func (uc *ComputeIndicatorsUseCase) seriesResponse(base *ComputeIndicatorsRespon
 	return base, nil
 }
 
-// anchorDay resolves the trading day the values anchor to: the caller's asOf,
-// or the latest stored market-wide trading day. Market-wide (not per-ticker)
-// keeps a multi-ticker comparison same-day — a halted ticker reads as
-// insufficient history rather than as a value from a different day.
-func (uc *ComputeIndicatorsUseCase) anchorDay(asOf *time.Time) (*time.Time, error) {
+// anchorDaySource is the one thing every on-demand price tool needs from the
+// repository: the trading day its values anchor to.
+type anchorDaySource interface {
+	LatestTradingDayAll(db *sqlx.DB) (*time.Time, error)
+}
+
+// resolveAnchorDay resolves the trading day values anchor to: the caller's
+// asOf, or the latest stored market-wide trading day. Market-wide (not
+// per-ticker) keeps a multi-ticker read same-day — a halted ticker reads as
+// insufficient history rather than as a value from a different day. Shared by
+// compute_indicators and screen_stocks, which must agree on the day they read.
+func resolveAnchorDay(source anchorDaySource, db *sqlx.DB, asOf *time.Time) (*time.Time, error) {
 	if asOf != nil {
 		return asOf, nil
 	}
-	day, err := uc.PriceRepo.LatestTradingDayAll(uc.DB)
+	day, err := source.LatestTradingDayAll(db)
 	if err != nil {
 		return nil, fmt.Errorf("resolve latest trading day: %w", err)
 	}

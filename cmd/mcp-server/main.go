@@ -331,6 +331,10 @@ func main() {
 	// compute_indicators (screener ticket 01): registry-driven indicator engine
 	// over stored Daily Price rows — computed on demand, nothing persisted.
 	computeIndicatorsUC := usecase.NewComputeIndicatorsUseCase(db, log, dailyPriceRepo)
+	// screen_stocks (screener ticket 04): the whole-universe funnel screener —
+	// the hard filters are SQL over daily_prices + suspensions, and indicators
+	// are computed on the survivors only. Nothing persisted.
+	screenStocksUC := usecase.NewScreenStocksUseCase(db, log, dailyPriceRepo)
 
 	// ─── HTTP router ────────────────────────────────────────────
 
@@ -386,6 +390,7 @@ func main() {
 		TickerMetadataUC:        tickerMetadataUC,
 		SectorFlowUC:            sectorFlowUC,
 		ComputeIndicatorsUC:     computeIndicatorsUC,
+		ScreenStocksUC:          screenStocksUC,
 		SourceStatusRepo:        sourceStatusRepo,
 		TickerRepo:              tickerRepo,
 	})
