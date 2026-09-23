@@ -30,6 +30,13 @@ type NodriverConfig struct {
 	// / 504 timeout — Cloudflare challenge solving is stochastic per attempt)
 	// are retried; only 502 proxy_dead bans a proxy.
 	MaxProxyAttempts int
+	// MaxStickySuccesses caps how many consecutive successful fetches reuse one
+	// proxy before a deliberate rotation. Proxies are sticky-until-dead (the
+	// clearance cookie is IP-bound, so rotating per request forces the sidecar
+	// to re-solve the challenge every time), and this cap bounds the
+	// rate-limit risk of a single IP carrying a whole backfill. 1 restores
+	// rotate-every-fetch.
+	MaxStickySuccesses int
 }
 
 // DefaultConfig returns sensible defaults.
@@ -37,11 +44,12 @@ func DefaultConfig() Config {
 	return Config{
 		BaseURL: "https://www.idx.co.id",
 		Nodriver: NodriverConfig{
-			Timeout:          20 * time.Second,
-			WakeTimeout:      60 * time.Second,
-			ProxiesTTL:       time.Hour,
-			DeadRetryAfter:   6 * time.Hour,
-			MaxProxyAttempts: 3,
+			Timeout:            20 * time.Second,
+			WakeTimeout:        60 * time.Second,
+			ProxiesTTL:         time.Hour,
+			DeadRetryAfter:     6 * time.Hour,
+			MaxProxyAttempts:   3,
+			MaxStickySuccesses: 10,
 		},
 	}
 }
@@ -78,6 +86,9 @@ func ConfigFromViper(vip *viper.Viper) Config {
 	}
 	if v := vip.GetInt("nodriver.proxy_attempts"); v > 0 {
 		nd.MaxProxyAttempts = v
+	}
+	if v := vip.GetInt("nodriver.max_sticky_successes"); v > 0 {
+		nd.MaxStickySuccesses = v
 	}
 
 	return cfg

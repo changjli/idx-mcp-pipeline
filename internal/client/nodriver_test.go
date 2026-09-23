@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
 )
 
 // nodriverStub mimics the nodriver sidecar /fetch + /health API for hermetic tests.
@@ -260,6 +261,253 @@ func TestNodriver_Fetch_TargetStatusSurfaces(t *testing.T) {
 	}
 	if got := nc.pool.live(); got != 2 {
 		t.Errorf("expected both proxies still live (no ban on target status), got %d", got)
+	}
+}
+
+// TestNodriver_Fetch_StickyReusesProxy verifies the core sticky contract: once
+// a proxy succeeds, later fetches reuse it without advancing the round-robin
+// cursor, so the sidecar's warm Chrome keeps one Cloudflare clearance instead of
+// paying a fresh challenge solve per request.
+func TestNodriver_Fetch_StickyReusesProxy(t *testing.T) {
+	stub := newNodriverStub()
+	for _, p := range []string{"http://a:1", "http://b:2", "http://c:3"} {
+		stub.proxyBody[p] = `{"ok":true}`
+	}
+	nc := newTestNodriver(t, stub, []string{"http://a:1", "http://b:2", "http://c:3"})
+
+	for i := 0; i < 3; i++ {
+		if _, status, err := nc.Fetch("https://idx.example/api", nil); err != nil || status != http.StatusOK {
+			t.Fatalf("fetch %d: status=%d err=%v", i, status, err)
+		}
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.requests) != 3 {
+		t.Fatalf("expected 3 sidecar requests (one per fetch), got %d", len(stub.requests))
+	}
+	for i, req := range stub.requests {
+		if req.Proxy != "http://a:1" {
+			t.Errorf("fetch %d should reuse the sticky proxy a, got %s", i, req.Proxy)
+		}
+	}
+}
+
+// TestNodriver_Fetch_StickyRotatesAfterMaxSuccesses verifies the deliberate
+// rotation: after maxStickySuccesses consecutive successes the proxy is
+// released and the next fetch moves to the next live proxy, so one IP never
+// carries a whole backfill.
+func TestNodriver_Fetch_StickyRotatesAfterMaxSuccesses(t *testing.T) {
+	stub := newNodriverStub()
+	for _, p := range []string{"http://a:1", "http://b:2", "http://c:3"} {
+		stub.proxyBody[p] = `{"ok":true}`
+	}
+	nc := newTestNodriver(t, stub, []string{"http://a:1", "http://b:2", "http://c:3"})
+	nc.maxStickySuccesses = 2
+
+	for i := 0; i < 5; i++ {
+		if _, status, err := nc.Fetch("https://idx.example/api", nil); err != nil || status != http.StatusOK {
+			t.Fatalf("fetch %d: status=%d err=%v", i, status, err)
+		}
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	want := []string{"http://a:1", "http://a:1", "http://b:2", "http://b:2", "http://c:3"}
+	if len(stub.requests) != len(want) {
+		t.Fatalf("expected %d sidecar requests, got %d", len(want), len(stub.requests))
+	}
+	for i, req := range stub.requests {
+		if req.Proxy != want[i] {
+			t.Errorf("fetch %d used %s, want %s", i, req.Proxy, want[i])
+		}
+	}
+}
+
+// TestNodriver_Fetch_StickyDroppedOnDeadProxy verifies a dead sticky proxy is
+// banned and rotated off exactly as before stickiness existed: the next fetch
+// tries it once, gets 502 proxy_dead, and lands on the next live proxy, which
+// then becomes sticky itself.
+func TestNodriver_Fetch_StickyDroppedOnDeadProxy(t *testing.T) {
+	stub := newNodriverStub()
+	stub.proxyBody["http://a:1"] = `{"ok":true}`
+	stub.proxyBody["http://b:2"] = `{"ok":true}`
+	nc := newTestNodriver(t, stub, []string{"http://a:1", "http://b:2"})
+
+	if _, _, err := nc.Fetch("https://idx.example/api", nil); err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	stub.mu.Lock()
+	stub.proxyStatus["http://a:1"] = http.StatusBadGateway
+	stub.proxyError["http://a:1"] = "proxy_dead"
+	stub.mu.Unlock()
+
+	// Second fetch: sticky a is live, so it is retried — and dies.
+	if _, status, err := nc.Fetch("https://idx.example/api", nil); err != nil || status != http.StatusOK {
+		t.Fatalf("second fetch: status=%d err=%v", status, err)
+	}
+	// Third fetch: b is now sticky.
+	if _, status, err := nc.Fetch("https://idx.example/api", nil); err != nil || status != http.StatusOK {
+		t.Fatalf("third fetch: status=%d err=%v", status, err)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	want := []string{"http://a:1", "http://a:1", "http://b:2", "http://b:2"}
+	if len(stub.requests) != len(want) {
+		t.Fatalf("expected %d sidecar requests, got %d", len(want), len(stub.requests))
+	}
+	for i, req := range stub.requests {
+		if req.Proxy != want[i] {
+			t.Errorf("request %d used %s, want %s", i, req.Proxy, want[i])
+		}
+	}
+	if got := nc.pool.live(); got != 1 {
+		t.Errorf("expected a banned (1 live proxy), got %d", got)
+	}
+}
+
+// TestNodriver_Fetch_StickyDroppedOnTransientRotation verifies that a sticky
+// proxy whose transient attempts are spent stops being reused: the rotation
+// moves on without a ban, and the newly succeeded proxy becomes sticky.
+func TestNodriver_Fetch_StickyDroppedOnTransientRotation(t *testing.T) {
+	stub := newNodriverStub()
+	stub.proxyStatus["http://a:1"] = http.StatusServiceUnavailable
+	stub.proxyError["http://a:1"] = "challenge_not_cleared"
+	stub.proxyBody["http://b:2"] = `{"ok":true}`
+	nc := newTestNodriver(t, stub, []string{"http://a:1", "http://b:2"})
+
+	// Fetch 1: a flakes 3x (MaxProxyAttempts), rotates to b, b succeeds.
+	if _, status, err := nc.Fetch("https://idx.example/api", nil); err != nil || status != http.StatusOK {
+		t.Fatalf("first fetch: status=%d err=%v", status, err)
+	}
+	// Fetch 2: b is sticky — one request, no a retries.
+	if _, status, err := nc.Fetch("https://idx.example/api", nil); err != nil || status != http.StatusOK {
+		t.Fatalf("second fetch: status=%d err=%v", status, err)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	want := []string{"http://a:1", "http://a:1", "http://a:1", "http://b:2", "http://b:2"}
+	if len(stub.requests) != len(want) {
+		t.Fatalf("expected %d sidecar requests, got %d", len(want), len(stub.requests))
+	}
+	for i, req := range stub.requests {
+		if req.Proxy != want[i] {
+			t.Errorf("request %d used %s, want %s", i, req.Proxy, want[i])
+		}
+	}
+	if got := nc.pool.live(); got != 2 {
+		t.Errorf("expected both proxies live (no ban on transient), got %d", got)
+	}
+}
+
+// TestNodriver_Fetch_StickyPoolExhaustionUnchanged verifies the all-dead path
+// still ends in the same exhausted error — stickiness must not extend the
+// attempt budget.
+func TestNodriver_Fetch_StickyPoolExhaustionUnchanged(t *testing.T) {
+	stub := newNodriverStub()
+	for _, p := range []string{"http://a:1", "http://b:2"} {
+		stub.proxyStatus[p] = http.StatusBadGateway
+		stub.proxyError[p] = "proxy_dead"
+	}
+	nc := newTestNodriver(t, stub, []string{"http://a:1", "http://b:2"})
+
+	if _, _, err := nc.Fetch("https://idx.example/api", nil); err == nil {
+		t.Fatal("expected error when every proxy is dead")
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.requests) != 2 {
+		t.Fatalf("expected 2 sidecar attempts (one per dead proxy), got %d", len(stub.requests))
+	}
+}
+
+// TestNodriver_DefaultMaxStickySuccesses verifies the config default applies
+// when the knob is unset.
+func TestNodriver_DefaultMaxStickySuccesses(t *testing.T) {
+	nc := newTestNodriver(t, newNodriverStub(), []string{"http://a:1"})
+	if nc.maxStickySuccesses != defaultMaxStickySuccesses {
+		t.Errorf("expected default max sticky successes %d, got %d", defaultMaxStickySuccesses, nc.maxStickySuccesses)
+	}
+	if defaultMaxStickySuccesses != 10 {
+		t.Errorf("expected shipped default 10, got %d", defaultMaxStickySuccesses)
+	}
+}
+
+// TestConfigFromViper_MaxStickySuccesses verifies the viper wiring for the
+// deliberate-rotation knob.
+func TestConfigFromViper_MaxStickySuccesses(t *testing.T) {
+	vip := viper.New()
+	if got := ConfigFromViper(vip).Nodriver.MaxStickySuccesses; got != 10 {
+		t.Errorf("expected default 10, got %d", got)
+	}
+	vip.Set("nodriver.max_sticky_successes", 4)
+	if got := ConfigFromViper(vip).Nodriver.MaxStickySuccesses; got != 4 {
+		t.Errorf("expected 4 from viper, got %d", got)
+	}
+}
+
+// TestNodriver_Fetch_StickyRotationWrapsRoundRobin pins what happens after a
+// proxy's success cap: the released proxy is not banned, it re-enters only
+// after the cursor wraps past every live proxy — one full cycle later.
+func TestNodriver_Fetch_StickyRotationWrapsRoundRobin(t *testing.T) {
+	stub := newNodriverStub()
+	for _, p := range []string{"http://a:1", "http://b:2", "http://c:3"} {
+		stub.proxyBody[p] = `{"ok":true}`
+	}
+	nc := newTestNodriver(t, stub, []string{"http://a:1", "http://b:2", "http://c:3"})
+	nc.maxStickySuccesses = 2
+
+	for i := 0; i < 7; i++ {
+		if _, status, err := nc.Fetch("https://idx.example/api", nil); err != nil || status != http.StatusOK {
+			t.Fatalf("fetch %d: status=%d err=%v", i, status, err)
+		}
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	want := []string{
+		"http://a:1", "http://a:1",
+		"http://b:2", "http://b:2",
+		"http://c:3", "http://c:3",
+		"http://a:1", // wrapped: a is back, still live (release is not a ban)
+	}
+	if len(stub.requests) != len(want) {
+		t.Fatalf("expected %d sidecar requests, got %d", len(want), len(stub.requests))
+	}
+	for i, req := range stub.requests {
+		if req.Proxy != want[i] {
+			t.Errorf("fetch %d used %s, want %s", i, req.Proxy, want[i])
+		}
+	}
+	if got := nc.pool.live(); got != 3 {
+		t.Errorf("expected all 3 proxies still live (cap release is not a ban), got %d", got)
+	}
+}
+
+// TestNodriver_Fetch_StickyRotationWrapsToSoleSurvivor pins the one case where
+// the released proxy comes straight back: every other proxy is quarantined, so
+// the dead-skip walk lands on it again. Reusing the only usable IP beats
+// failing the fetch.
+func TestNodriver_Fetch_StickyRotationWrapsToSoleSurvivor(t *testing.T) {
+	stub := newNodriverStub()
+	stub.proxyBody["http://a:1"] = `{"ok":true}`
+	stub.proxyStatus["http://b:2"] = http.StatusBadGateway
+	stub.proxyError["http://b:2"] = "proxy_dead"
+	nc := newTestNodriver(t, stub, []string{"http://a:1", "http://b:2"})
+	nc.maxStickySuccesses = 1
+
+	// Fetch 1: a succeeds, hits the cap of 1 and is released.
+	if _, status, err := nc.Fetch("https://idx.example/api", nil); err != nil || status != http.StatusOK {
+		t.Fatalf("first fetch: status=%d err=%v", status, err)
+	}
+	// Fetch 2: rotation walks to b, which is dead-marked by then.
+	nc.pool.markDead("http://b:2")
+	if _, status, err := nc.Fetch("https://idx.example/api", nil); err != nil || status != http.StatusOK {
+		t.Fatalf("second fetch: status=%d err=%v", status, err)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	for i, req := range stub.requests {
+		if req.Proxy != "http://a:1" {
+			t.Errorf("request %d used %s, want the sole surviving proxy a", i, req.Proxy)
+		}
 	}
 }
 

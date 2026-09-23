@@ -78,6 +78,21 @@ func (p *proxyPool) next() (string, error) {
 	return "", fmt.Errorf("all %d proxies are dead", len(p.proxies))
 }
 
+// isLive reports whether proxy is still in the loaded list and not currently
+// quarantined. The nodriver rotation loop calls it before reusing its sticky
+// proxy, so a proxy banned mid-run rotates out instead of being retried. The
+// list itself is only reloaded by next(), so a proxy dropped from a refreshed
+// source stays usable until the next rotation.
+func (p *proxyPool) isLive(proxy string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if proxy == "" || !containsString(p.proxies, proxy) {
+		return false
+	}
+	until, dead := p.dead[proxy]
+	return !dead || !until.After(time.Now())
+}
+
 // markDead records a proxy as unusable until now+deadRetryAfter.
 func (p *proxyPool) markDead(proxy string) {
 	p.mu.Lock()

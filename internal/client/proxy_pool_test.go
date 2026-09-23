@@ -90,6 +90,50 @@ func TestProxyPool_DeadRevivesAfterRetryAfter(t *testing.T) {
 	}
 }
 
+func TestProxyPool_IsLive(t *testing.T) {
+	p := testPool(writeProxyFile(t, []string{"http://a:1", "http://b:2"}), time.Hour, time.Hour)
+
+	// List not loaded yet, and an unknown proxy: not live.
+	if p.isLive("http://a:1") {
+		t.Error("expected not live before the list loads")
+	}
+	if p.isLive("") {
+		t.Error("expected empty proxy to be not live")
+	}
+	if _, err := p.next(); err != nil {
+		t.Fatalf("next: %v", err)
+	}
+	if !p.isLive("http://a:1") {
+		t.Error("expected a live after load")
+	}
+	if p.isLive("http://c:3") {
+		t.Error("expected a proxy absent from the list to be not live")
+	}
+	p.markDead("http://a:1")
+	if p.isLive("http://a:1") {
+		t.Error("expected a dead proxy to be not live")
+	}
+	if !p.isLive("http://b:2") {
+		t.Error("expected b unaffected by a's ban")
+	}
+}
+
+func TestProxyPool_IsLiveAfterRevival(t *testing.T) {
+	p := testPool(writeProxyFile(t, []string{"http://a:1"}), time.Hour, 50*time.Millisecond)
+
+	if _, err := p.next(); err != nil {
+		t.Fatalf("next: %v", err)
+	}
+	p.markDead("http://a:1")
+	if p.isLive("http://a:1") {
+		t.Error("expected dead proxy to be not live")
+	}
+	time.Sleep(60 * time.Millisecond)
+	if !p.isLive("http://a:1") {
+		t.Error("expected revived proxy to be live again")
+	}
+}
+
 func TestProxyPool_LoadFromURL(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]string{"http://a:1", "http://b:2"})

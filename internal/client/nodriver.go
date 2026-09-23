@@ -24,6 +24,10 @@ const streamFetchTimeout = 2 * time.Minute
 // MaxProxyAttempts unset.
 const defaultMaxProxyAttempts = 3
 
+// defaultMaxStickySuccesses is the deliberate-rotation cap when the config
+// leaves MaxStickySuccesses unset.
+const defaultMaxStickySuccesses = 10
+
 // fetchFailureClass tells the rotation loop how to react to a failed sidecar
 // fetch: ban the proxy, retry it in place, or surface the failure without
 // burning rotation.
@@ -91,15 +95,28 @@ type nodriverResponse struct {
 // egressing through a rotating proxy pool shared with FlareSolverr, and returns
 // the page bytes + status. One warm Chrome on the sidecar => all calls here are
 // serialized by a mutex.
+//
+// Proxies are sticky-until-dead: the last proxy that succeeded is reused for
+// subsequent fetches, and the round-robin cursor only advances when that proxy
+// dies, flunks out transiently, or reaches maxStickySuccesses. Cloudflare's
+// clearance cookie is IP-bound, so reusing the egress IP is what lets the
+// sidecar skip a fresh 60-250s challenge solve on every request; the success
+// cap bounds the rate-limit risk of one IP carrying a whole backfill.
 type NodriverClient struct {
-	baseURL          string
-	authToken        string
-	timeout          time.Duration
-	wakeTimeout      time.Duration
-	maxProxyAttempts int
-	pool             *proxyPool
-	http             *http.Client
-	log              *logrus.Logger
+	baseURL            string
+	authToken          string
+	timeout            time.Duration
+	wakeTimeout        time.Duration
+	maxProxyAttempts   int
+	maxStickySuccesses int
+	pool               *proxyPool
+	http               *http.Client
+	log                *logrus.Logger
+
+	// stickyProxy / stickySuccesses track the reused egress proxy. Both are
+	// guarded by mu, like the rest of the rotation loop.
+	stickyProxy     string
+	stickySuccesses int
 
 	mu sync.Mutex
 }
@@ -119,16 +136,21 @@ func NewNodriverClient(cfg NodriverConfig, pool *proxyPool, log *logrus.Logger) 
 	if attempts <= 0 {
 		attempts = defaultMaxProxyAttempts
 	}
+	sticky := cfg.MaxStickySuccesses
+	if sticky <= 0 {
+		sticky = defaultMaxStickySuccesses
+	}
 	httpClient := &http.Client{Timeout: timeout + 10*time.Second}
 	return &NodriverClient{
-		baseURL:          strings.TrimRight(cfg.BaseURL, "/"),
-		authToken:        cfg.AuthToken,
-		timeout:          timeout,
-		wakeTimeout:      cfg.WakeTimeout,
-		maxProxyAttempts: attempts,
-		pool:             pool,
-		http:             httpClient,
-		log:              log,
+		baseURL:            strings.TrimRight(cfg.BaseURL, "/"),
+		authToken:          cfg.AuthToken,
+		timeout:            timeout,
+		wakeTimeout:        cfg.WakeTimeout,
+		maxProxyAttempts:   attempts,
+		maxStickySuccesses: sticky,
+		pool:               pool,
+		http:               httpClient,
+		log:                log,
 	}, nil
 }
 
@@ -148,7 +170,9 @@ func (n *NodriverClient) FetchBinary(url string, headers map[string]string) ([]b
 
 // fetch is the shared rotation loop for Fetch/FetchBinary: it retries a proxy
 // in place on transient Cloudflare flakes and rotates proxies until one
-// succeeds or the attempt budget is spent.
+// succeeds or the attempt budget is spent. A successful proxy is kept for
+// later fetches (sticky-until-dead) so the sidecar's Cloudflare clearance is
+// reused instead of re-solved per request.
 func (n *NodriverClient) fetch(url string, headers map[string]string, binary bool, fetchTimeout time.Duration) ([]byte, int, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -165,10 +189,11 @@ func (n *NodriverClient) fetch(url string, headers map[string]string, binary boo
 	// The attempt budget bounds the loop: un-banned transient rotation can
 	// otherwise cycle the pool forever. Each live proxy is worth
 	// maxProxyAttempts tries; the budget is fixed once the pool has loaded.
+	// Sticky reuse consumes no budget — one loop iteration, one proxy.
 	budget, start := -1, 0
 	var lastErr error
 	for {
-		proxy, err := n.pool.next()
+		proxy, err := n.nextProxy()
 		if err != nil {
 			if lastErr != nil {
 				return nil, 0, fmt.Errorf("all proxies exhausted: %w (last: %v)", err, lastErr)
@@ -184,6 +209,7 @@ func (n *NodriverClient) fetch(url string, headers map[string]string, binary boo
 			budget--
 			body, status, err := n.fetchViaProxy(url, referer, headers, proxy, binary, fetchTimeout)
 			if err == nil {
+				n.noteSuccess(proxy)
 				return body, status, nil
 			}
 			lastErr = err
@@ -205,9 +231,52 @@ func (n *NodriverClient) fetch(url string, headers map[string]string, binary boo
 			// usually clear on a re-attempt — then rotate without a ban.
 		}
 
+		// This proxy is spent for the fetch: dead and banned, or transiently
+		// exhausted. Release stickiness so the next iteration rotates on.
+		n.dropSticky(proxy)
+
 		if budget <= 0 {
 			return nil, 0, fmt.Errorf("all proxies exhausted after %d attempts: %v", start, lastErr)
 		}
+	}
+}
+
+// nextProxy returns the proxy for the next rotation-loop iteration: the sticky
+// proxy left by the last successful fetch while it is still live, otherwise the
+// next live proxy round-robin.
+func (n *NodriverClient) nextProxy() (string, error) {
+	if n.stickyProxy != "" && n.pool.isLive(n.stickyProxy) {
+		return n.stickyProxy, nil
+	}
+	n.stickyProxy = ""
+	n.stickySuccesses = 0
+	return n.pool.next()
+}
+
+// noteSuccess records a fetch that came back through proxy. The first success
+// makes that proxy sticky — later fetches reuse it, so the sidecar's IP-bound
+// Cloudflare clearance survives across requests. At maxStickySuccesses the
+// proxy is released deliberately, so the next fetch rotates onto the next live
+// IP: sticky-forever would let one IP hammer IDX for a whole backfill.
+func (n *NodriverClient) noteSuccess(proxy string) {
+	if n.stickyProxy != proxy {
+		n.stickyProxy = proxy
+		n.stickySuccesses = 1
+		return
+	}
+	n.stickySuccesses++
+	if n.stickySuccesses >= n.maxStickySuccesses {
+		n.stickyProxy = ""
+		n.stickySuccesses = 0
+	}
+}
+
+// dropSticky releases proxy if it is the sticky one, so the next iteration
+// rotates instead of picking it again.
+func (n *NodriverClient) dropSticky(proxy string) {
+	if n.stickyProxy == proxy {
+		n.stickyProxy = ""
+		n.stickySuccesses = 0
 	}
 }
 
