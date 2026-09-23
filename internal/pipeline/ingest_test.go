@@ -56,18 +56,52 @@ func (f *fakeDisclosureSink) Upsert(d *entity.Disclosure) error {
 	return nil
 }
 
-type fakeTickerRegistrar struct{ codes []string }
+type fakeTickerRegistrar struct {
+	codes  []string
+	failAt int // -1 = never; 1-based row index whose registration fails
+}
 
 func (f *fakeTickerRegistrar) Upsert(ticker *entity.Ticker) error {
+	if f.failAt == len(f.codes)+1 {
+		return errFake
+	}
 	f.codes = append(f.codes, ticker.Code)
 	return nil
 }
 
-type fakeDailyPriceStore struct{ tickers []string }
+type fakeDailyPriceStore struct {
+	batches [][]string // tickers per UpsertBatch call, one entry per call
+	failAt  int        // -1 = never; 1-based call index whose batch fails
+}
 
-func (f *fakeDailyPriceStore) Upsert(price *entity.DailyPrice) error {
-	f.tickers = append(f.tickers, price.Ticker)
-	return nil
+func (f *fakeDailyPriceStore) UpsertBatch(prices []entity.DailyPrice) (int, error) {
+	codes := make([]string, 0, len(prices))
+	for _, p := range prices {
+		codes = append(codes, p.Ticker)
+	}
+	f.batches = append(f.batches, codes)
+	if f.failAt == len(f.batches) {
+		return 0, errFake
+	}
+	return len(prices), nil
+}
+
+// tickers flattens every ticker handed to the store, in call order.
+func (f *fakeDailyPriceStore) tickers() []string {
+	var all []string
+	for _, b := range f.batches {
+		all = append(all, b...)
+	}
+	return all
+}
+
+// partialBatchStore writes all but the last row of a batch and returns the
+// error — the shape a failing second chunk takes at the repository seam.
+type partialBatchStore struct{ written int }
+
+func (s *partialBatchStore) UpsertBatch(prices []entity.DailyPrice) (int, error) {
+	s.written = len(prices) - 1
+	return s.written, errFake
 }
 
 type fixedMatcher struct{ matches map[string][]MatchedTicker }
@@ -196,36 +230,71 @@ func TestStockSummaryIngest_UpsertAllRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertRows: %v", err)
 	}
-	if got != 2 || len(prices.tickers) != 2 || len(registrar.codes) != 2 {
+	if got != 2 || len(prices.tickers()) != 2 || len(registrar.codes) != 2 {
 		t.Errorf("expected both rows upserted, got %d", got)
+	}
+	// One batch call for the whole day, not one call per ticker.
+	if len(prices.batches) != 1 {
+		t.Errorf("expected 1 batch call, got %d", len(prices.batches))
+	}
+}
+
+// TestStockSummaryIngest_RegistersTickersBeforePriceBatch pins the FK order:
+// every ticker row is registered before the price batch is issued, so a new
+// listing is never referenced by a price row that lands first.
+func TestStockSummaryIngest_RegistersTickersBeforePriceBatch(t *testing.T) {
+	prices := &fakeDailyPriceStore{}
+	registrar := &fakeTickerRegistrar{}
+	n := NewStockSummaryIngest(prices, registrar, newNoopLog())
+
+	// A ticker registration failure aborts before any price is written.
+	n2 := NewStockSummaryIngest(prices, &fakeTickerRegistrar{failAt: 2}, newNoopLog())
+	got, err := n2.UpsertRows([]StockSummaryItem{summaryRow("AALI"), summaryRow("BBCA")}, "2026-08-29")
+	if err == nil {
+		t.Fatal("expected ticker failure to propagate")
+	}
+	if got != 0 || len(prices.batches) != 0 {
+		t.Errorf("ticker failure must write no prices, got count=%d batches=%d", got, len(prices.batches))
+	}
+
+	// On the happy path the day still lands as a single batch.
+	if _, err := n.UpsertRows([]StockSummaryItem{summaryRow("AALI"), summaryRow("BBCA")}, "2026-08-29"); err != nil {
+		t.Fatalf("UpsertRows: %v", err)
+	}
+	if len(prices.batches) != 1 || len(prices.batches[0]) != 2 {
+		t.Errorf("expected one 2-row batch, got %v", prices.batches)
 	}
 }
 
 func TestStockSummaryIngest_FailFastPreservesCount(t *testing.T) {
-	// A row whose daily_price upsert fails aborts the batch and returns the
-	// error (package storage-error policy); the count reflects rows written
-	// before the failure.
-	prices := &rejectingPriceStore{reject: "AALI"}
-	registrar := &fakeTickerRegistrar{}
-	n := NewStockSummaryIngest(prices, registrar, newNoopLog())
+	// A chunk failure aborts the batch and returns the error (package
+	// storage-error policy); the count reflects rows written by the chunks
+	// before the failure — asynq retries the whole day together.
+	prices := &partialBatchStore{}
+	n := NewStockSummaryIngest(prices, &fakeTickerRegistrar{}, newNoopLog())
 
-	got, err := n.UpsertRows([]StockSummaryItem{summaryRow("AALI"), summaryRow("BBCA")}, "2026-08-29")
+	got, err := n.UpsertRows([]StockSummaryItem{
+		summaryRow("AALI"), summaryRow("BBCA"), summaryRow("TLKM"),
+	}, "2026-08-29")
+	if err == nil {
+		t.Fatal("expected failure to propagate")
+	}
+	if got != 2 || got != prices.written {
+		t.Errorf("expected the store's partial count 2 surfaced, got %d", got)
+	}
+}
+
+// TestStockSummaryIngest_StoreFailureZeroRows covers the first-chunk failure:
+// nothing written, error surfaced, count 0.
+func TestStockSummaryIngest_StoreFailureZeroRows(t *testing.T) {
+	prices := &fakeDailyPriceStore{failAt: 1}
+	n := NewStockSummaryIngest(prices, &fakeTickerRegistrar{}, newNoopLog())
+
+	got, err := n.UpsertRows([]StockSummaryItem{summaryRow("AALI")}, "2026-08-29")
 	if err == nil {
 		t.Fatal("expected failure to propagate")
 	}
 	if got != 0 {
-		t.Errorf("expected 0 upserted before the failure, got %d", got)
+		t.Errorf("expected 0 upserted, got %d", got)
 	}
-	if len(registrar.codes) != 1 {
-		t.Errorf("expected ticker registration only for the first row, got %v", registrar.codes)
-	}
-}
-
-type rejectingPriceStore struct{ reject string }
-
-func (s *rejectingPriceStore) Upsert(price *entity.DailyPrice) error {
-	if price.Ticker == s.reject {
-		return errFake
-	}
-	return nil
 }

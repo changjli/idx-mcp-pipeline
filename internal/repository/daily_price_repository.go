@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"fmt"
 	"strings"
 	"time"
 
@@ -11,16 +12,118 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 )
 
+// DefaultDailyPriceChunkSize is how many rows share one multi-row upsert
+// statement: ~950 rows for a trading day became 5 round trips instead of 950
+// (issue 21). 10 bound columns per row keeps a chunk at 2000 parameters, well
+// inside Postgres' 65535 limit even for a large chunk size.
+const DefaultDailyPriceChunkSize = 200
+
 type DailyPriceRepository struct {
 	*Repository[entity.DailyPrice]
 	Log *logrus.Logger
+
+	// ChunkSize is the rows-per-statement used by UpsertBatch. Zero (or a
+	// repository built as a plain struct literal) falls back to
+	// DefaultDailyPriceChunkSize.
+	ChunkSize int
 }
 
 func NewDailyPriceRepository(log *logrus.Logger) *DailyPriceRepository {
 	return &DailyPriceRepository{
 		Repository: &Repository[entity.DailyPrice]{},
 		Log:        log,
+		ChunkSize:  DefaultDailyPriceChunkSize,
 	}
+}
+
+// UpsertBatch persists a day's rows in chunked multi-row INSERT ... ON CONFLICT
+// statements, one round trip per chunk instead of one per ticker — the
+// round-trip cost, not the write itself, is what made a ~950-row day take ~50s
+// over the Supabase pooler. Returns the number of rows written.
+//
+// Fail-fast: the first chunk that fails aborts the batch, returning the rows
+// already written and the error, so asynq retries the whole day together (the
+// package storage-error policy). A failure is not partially swallowed — later
+// chunks are never attempted after one fails.
+func (r *DailyPriceRepository) UpsertBatch(db *sqlx.DB, prices []entity.DailyPrice) (int, error) {
+	written := 0
+	for _, chunk := range chunkDailyPrices(prices, r.chunkSize()) {
+		query, args := buildDailyPriceUpsert(chunk)
+		if _, err := db.Exec(query, args...); err != nil {
+			return written, fmt.Errorf("daily_prices upsert rows %d-%d of %d: %w",
+				written+1, written+len(chunk), len(prices), err)
+		}
+		written += len(chunk)
+	}
+	return written, nil
+}
+
+// chunkSize resolves the configured chunk size, falling back to the default.
+func (r *DailyPriceRepository) chunkSize() int {
+	if r.ChunkSize <= 0 {
+		return DefaultDailyPriceChunkSize
+	}
+	return r.ChunkSize
+}
+
+// chunkDailyPrices splits rows into consecutive chunks of at most size rows,
+// preserving order. An empty slice yields no chunks (no statement is issued),
+// and a row count that is not a multiple of size yields a short final chunk.
+// Split out so the chunk boundary rule is unit-testable without a database.
+func chunkDailyPrices(rows []entity.DailyPrice, size int) [][]entity.DailyPrice {
+	if len(rows) == 0 {
+		return nil
+	}
+	if size < 1 {
+		size = DefaultDailyPriceChunkSize
+	}
+	chunks := make([][]entity.DailyPrice, 0, (len(rows)+size-1)/size)
+	for start := 0; start < len(rows); start += size {
+		end := start + size
+		if end > len(rows) {
+			end = len(rows)
+		}
+		chunks = append(chunks, rows[start:end])
+	}
+	return chunks
+}
+
+// buildDailyPriceUpsert builds one multi-row INSERT ... ON CONFLICT statement
+// for a chunk of rows. The DO UPDATE list is identical to the single-row
+// Upsert's, so a re-ingested day refreshes every value column (and fetched_at)
+// with no change in semantics. fetched_at is left out of the INSERT column list
+// and comes from the column's NOW() default on a fresh row; the conflict branch
+// sets it explicitly, exactly as the single-row path does.
+func buildDailyPriceUpsert(rows []entity.DailyPrice) (string, []interface{}) {
+	const cols = 10 // ticker, trading_day, open, high, low, close, volume, value, frequency, source
+	valueStrings := make([]string, 0, len(rows))
+	args := make([]interface{}, 0, len(rows)*cols)
+	for i, r := range rows {
+		base := i * cols
+		valueStrings = append(valueStrings, fmt.Sprintf(
+			"($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+			base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10,
+		))
+		args = append(args,
+			r.Ticker, r.TradingDay, r.Open, r.High, r.Low, r.Close,
+			r.Volume, r.Value, r.Frequency, r.Source,
+		)
+	}
+	query := fmt.Sprintf(`
+		INSERT INTO daily_prices (ticker, trading_day, open, high, low, close, volume, value, frequency, source)
+		VALUES %s
+		ON CONFLICT (ticker, trading_day) DO UPDATE SET
+			open = EXCLUDED.open,
+			high = EXCLUDED.high,
+			low = EXCLUDED.low,
+			close = EXCLUDED.close,
+			volume = EXCLUDED.volume,
+			value = EXCLUDED.value,
+			frequency = EXCLUDED.frequency,
+			source = EXCLUDED.source,
+			fetched_at = NOW()
+	`, strings.Join(valueStrings, ","))
+	return query, args
 }
 
 func (r *DailyPriceRepository) Upsert(db *sqlx.DB, price *entity.DailyPrice) error {

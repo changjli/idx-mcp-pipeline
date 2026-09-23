@@ -27,11 +27,13 @@ type StockSummaryItem struct {
 	ListedShares *float64 `json:"ListedShares"`
 }
 
-// DailyPriceStore upserts daily_prices rows. Consumer-side interface
-// (ADR-0006): satisfied by the sqlx-backed DailyPriceRepository; tests provide
-// the second adapter.
+// DailyPriceStore persists a day's daily_prices rows in one batch call.
+// Consumer-side interface (ADR-0006): satisfied by the sqlx-backed
+// DailyPriceRepository; tests provide the second adapter. The batch shape is
+// the point — the adapter chunks it into multi-row upserts, so the ingest never
+// pays a round trip per ticker (issue 21).
 type DailyPriceStore interface {
-	Upsert(price *entity.DailyPrice) error
+	UpsertBatch(prices []entity.DailyPrice) (int, error)
 }
 
 // StockSummaryIngest upserts one day's stock summary rows into daily_prices,
@@ -54,20 +56,30 @@ func NewStockSummaryIngest(prices DailyPriceStore, tickers TickerRegistrar, log 
 // UpsertRows persists all rows for one date into daily_prices. Returns rows
 // upserted and the first error — fail-fast per the package storage-error
 // policy (see policy.go).
+//
+// Two passes. Tickers first: a new listing must exist before any price row
+// referencing it can land (FK), so every registration completes before the
+// price batch is issued — a ticker failure therefore writes no prices at all.
+// Prices second, as one batch call the store chunks into multi-row upserts;
+// a chunk failure aborts the day and returns the rows written by the chunks
+// that preceded it.
 func (n *StockSummaryIngest) UpsertRows(rows []StockSummaryItem, dateKey string) (int, error) {
-	upserted := 0
 	for _, item := range rows {
 		if err := n.tickers.Upsert(tickerFromSummaryItem(item)); err != nil {
 			n.log.Warnf("stock_summary: ticker upsert failed for %s: %v", item.StockCode, err)
-			return upserted, fmt.Errorf("ticker upsert %s: %w", item.StockCode, err)
+			return 0, fmt.Errorf("ticker upsert %s: %w", item.StockCode, err)
 		}
+	}
 
-		price := itemToDailyPrice(item, dateKey)
-		if err := n.prices.Upsert(price); err != nil {
-			n.log.Warnf("stock_summary: daily_price upsert failed for %s: %v", item.StockCode, err)
-			return upserted, fmt.Errorf("daily_price upsert %s: %w", item.StockCode, err)
-		}
-		upserted++
+	prices := make([]entity.DailyPrice, 0, len(rows))
+	for _, item := range rows {
+		prices = append(prices, *itemToDailyPrice(item, dateKey))
+	}
+
+	upserted, err := n.prices.UpsertBatch(prices)
+	if err != nil {
+		n.log.Warnf("stock_summary: daily_price batch upsert failed after %d rows: %v", upserted, err)
+		return upserted, fmt.Errorf("daily_price upsert: %w", err)
 	}
 	return upserted, nil
 }
@@ -139,7 +151,8 @@ func NewSQLDailyPriceStore(repo *repository.DailyPriceRepository, db *sqlx.DB) *
 	return &SQLDailyPriceStore{repo: repo, db: db}
 }
 
-// Upsert writes one daily_prices row.
-func (s *SQLDailyPriceStore) Upsert(price *entity.DailyPrice) error {
-	return s.repo.Upsert(s.db, price)
+// UpsertBatch writes a day's daily_prices rows, chunked into multi-row
+// statements by the repository. Returns the rows written.
+func (s *SQLDailyPriceStore) UpsertBatch(prices []entity.DailyPrice) (int, error) {
+	return s.repo.UpsertBatch(s.db, prices)
 }
