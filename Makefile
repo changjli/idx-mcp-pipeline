@@ -27,6 +27,7 @@ migrate-create:
 build:
 	go build -o build/mcp-server ./cmd/mcp-server
 	go build -o build/enqueue-daily ./cmd/enqueue-daily
+	go build -o build/measure ./cmd/measure
 
 build-all: build
 

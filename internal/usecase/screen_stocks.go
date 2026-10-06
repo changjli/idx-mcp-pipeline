@@ -230,6 +230,22 @@ func NewScreenStocksUseCase(db *sqlx.DB, log *logrus.Logger, source ScreenerSour
 // read, so a bad parameter costs one round trip and returns the same structured
 // error whether it arrived over MCP or from another caller.
 func (uc *ScreenStocksUseCase) ScreenStocks(ctx context.Context, req ScreenStocksRequest) (*ScreenStocksResponse, error) {
+	return uc.screen(ctx, req, true)
+}
+
+// ScreenAllSurvivors runs the same funnel as ScreenStocks but returns every
+// survivor instead of the capped shortlist. The Measurement Harness's Replay is
+// its only caller: a grader must see the whole survivor population, and
+// re-implementing the funnel outside this usecase is exactly the drift the
+// harness exists to prevent. Ranking still runs, so the order matches a Screen's
+// — the row cap is the only behavior that differs.
+func (uc *ScreenStocksUseCase) ScreenAllSurvivors(ctx context.Context, req ScreenStocksRequest) (*ScreenStocksResponse, error) {
+	return uc.screen(ctx, req, false)
+}
+
+// screen is the shared funnel. capRows applies the request's row cap; a Replay
+// passes false so nothing is silently dropped from a measurement.
+func (uc *ScreenStocksUseCase) screen(ctx context.Context, req ScreenStocksRequest, capRows bool) (*ScreenStocksResponse, error) {
 	window, err := resolveIndicatorWindow(req.Window)
 	if err != nil {
 		return nil, err
@@ -361,7 +377,7 @@ func (uc *ScreenStocksUseCase) ScreenStocks(ctx context.Context, req ScreenStock
 	rankRows(rows, sortKey, order == sortOrderDesc)
 	afterStructure := len(rows)
 	totalMatches := afterStructure
-	if totalMatches > limit {
+	if capRows && totalMatches > limit {
 		rows = rows[:limit]
 	}
 
