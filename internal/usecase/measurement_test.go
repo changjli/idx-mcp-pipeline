@@ -19,35 +19,52 @@ import (
 
 // fakeMeasurementScreener is the Replay seam: it returns a canned Screen
 // response and records the request, so tests assert what the engine asked the
-// funnel for without a database.
+// funnel for without a database. A multi-anchor Grade looks its response up by
+// anchor date (or through handler), so the fake stays order-independent.
 type fakeMeasurementScreener struct {
-	response *ScreenStocksResponse
-	err      error
+	response          *ScreenStocksResponse
+	responsesByAnchor map[string]*ScreenStocksResponse
+	handler           func(ScreenStocksRequest) (*ScreenStocksResponse, error)
+	err               error
 
-	called bool
-	gotReq ScreenStocksRequest
+	called  bool
+	gotReq  ScreenStocksRequest
+	gotReqs []ScreenStocksRequest
 }
 
 func (f *fakeMeasurementScreener) ScreenAllSurvivors(_ context.Context, req ScreenStocksRequest) (*ScreenStocksResponse, error) {
 	f.called = true
 	f.gotReq = req
+	f.gotReqs = append(f.gotReqs, req)
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.handler != nil {
+		return f.handler(req)
+	}
+	if f.responsesByAnchor != nil && req.AsOf != nil {
+		if response, ok := f.responsesByAnchor[req.AsOf.Format("2006-01-02")]; ok {
+			return response, nil
+		}
 	}
 	return f.response, nil
 }
 
 // fakeMeasurementPrices is the read seam: the hard-filter candidates (the
 // Liquidity Baseline), the market calendar, and the batched forward window.
+// candidatesByAnchor lets a multi-anchor Grade see each date's own hard-stage
+// survivors; without it the single flat candidate list is returned.
 type fakeMeasurementPrices struct {
-	calendar   []time.Time
-	candidates []repository.ScreenCandidate
-	prices     map[string][]entity.DailyPrice
+	calendar           []time.Time
+	candidates         []repository.ScreenCandidate
+	candidatesByAnchor map[string][]repository.ScreenCandidate
+	prices             map[string][]entity.DailyPrice
 
 	calendarErr   error
 	candidatesErr error
 	pricesErr     error
 
+	gotAnchor         time.Time
 	gotMinValue       int64
 	gotSuspensionDays int
 	gotTickers        []string
@@ -55,11 +72,17 @@ type fakeMeasurementPrices struct {
 	gotLimit          int
 }
 
-func (f *fakeMeasurementPrices) ScreenCandidates(_ *sqlx.DB, _ time.Time, minValue int64, suspensionDays int) ([]repository.ScreenCandidate, error) {
+func (f *fakeMeasurementPrices) ScreenCandidates(_ *sqlx.DB, anchor time.Time, minValue int64, suspensionDays int) ([]repository.ScreenCandidate, error) {
+	f.gotAnchor = anchor
 	f.gotMinValue = minValue
 	f.gotSuspensionDays = suspensionDays
 	if f.candidatesErr != nil {
 		return nil, f.candidatesErr
+	}
+	if f.candidatesByAnchor != nil {
+		if candidates, ok := f.candidatesByAnchor[anchor.Format("2006-01-02")]; ok {
+			return candidates, nil
+		}
 	}
 	return f.candidates, nil
 }

@@ -76,6 +76,75 @@ _Avoid_: outdated, expired
 The daily asynq job graph: Wave 1 ingestion (stock summary, announcements, broker summary, RSS, cleanup) → detect anomalies → filter disclosures → extract per disclosure. Owned by the asynq Scheduler inside `mcp-server`. The graph is declarative data in `internal/tasks/graph.go`, consumed by the scheduler, enqueue-daily, and self-heal — not emergent from handler chains.
 _Avoid_: cron job, batch
 
+## Screening & indicators
+
+**Screen**:
+One `screen_stocks` call: the whole persisted universe run through the funnel and returned as a ranked, capped shortlist. The universe is the caller's market, never a ticker list they name — that is what makes stage 1 of the daily flow deterministic and cheap.
+_Avoid_: scan, query, search
+
+**Funnel Stage**:
+One filter layer of a Screen, each reporting its own survivor count: `universe` (tickers with a row inside the window) → `after_value` (survivors of the SQL hard filters: trading on the anchor day, at or above the value floor, no recent suspension/UMA) → `after_structure` (survivors of the Structural Filters). The counts are mandatory in every response, so a filter set that keeps everything or nothing is visible rather than inferred from a shortlist.
+_Avoid_: step, phase, tier
+
+**Structural Filter**:
+One `{indicator, op, value}` threshold comparison on a **single** registered indicator's latest value. Filters are AND-combined, and the set is a call parameter that replaces the shipped default set outright. Comparing two indicators is not a filter — it is a derived indicator (`ma_distance` for close-vs-MA, `ma_spread` for fast-MA-vs-slow-MA), which collapses the comparison into one filterable number. Temporal logic (crossovers, streaks, state changes) is not expressible and belongs to series reads of `compute_indicators`.
+_Avoid_: rule, condition, criteria, screen
+
+**Threshold Operator**:
+The comparison a Structural Filter applies: `lt`, `gt`, `lte`, `gte`, or `between`. `between` takes `[low, high]`, inclusive at both ends.
+_Avoid_: comparator, predicate
+
+**Indicator Registry**:
+`internal/indicator`'s map of name → formula, default periods, and warm-up bar. The single place an indicator is defined: a Screen's default columns, an ad-hoc `compute_indicators` call, and a Structural Filter all resolve through it, so adding an indicator is one registry entry and the MCP tool definitions never change.
+_Avoid_: indicator library, formula set
+
+**Warm-up Bar**:
+The number of usable stored rows an indicator needs before it reports a value at all (`required_rows`). Below it the value is null and the key is flagged (`insufficient` on a screen row) — never a short-window number that would read as fully warmed. A missing column narrows the series rather than counting as a zero. Warm-up is a **flag** at the indicator stage and a **drop** at the structural-filter stage: a short-history ticker keeps its row when no filters run, and is removed by the default set when they do.
+_Avoid_: lookback period, minimum history
+
+**Flow Column**:
+A screen row's `foreign_net` — the stored foreign net (Σ `f_nval`) from the Broker Stock Summary footer totals over `flow_window_days` stored trading days ending on the anchor day. It is joined on every call (never a toggle: the column is flagged per row, not switched per request) and read for the survivors only. The footer grain is what makes it complete — `f_nval` covers brokers below IPOT's top-10 that the listed rows alone cannot attribute. It is **not** a registry indicator and **not** a Structural Filter target: the registry computes from price series, this is a stored broker fact. It is a sort key (`sort: foreign_net`), where an unobserved row ranks last in either direction.
+_Avoid_: foreign flow, bandarmology, smart money
+
+**Column Coverage**:
+A screen row's per-column declaration of what an optional column actually observes: `{observed, days}`, keyed by column name so a later column lands without a schema change. The response's `flow_days_in_window` is the denominator the day count reads against — "7 of 20". It is what keeps a missing number from reading as a zero: an uncovered row's `foreign_net` is null with `observed: false`, never 0. Broker coverage is sparse by design (the population is anomaly-gated), so unobserved is the normal case, not an error.
+_Avoid_: completeness, data quality, null flag
+
+## Measurement
+
+**Measurement Harness**:
+The offline grader for the pipeline's claims — a read-only CLI that Replays Screens as of past Trading Days and scores survivors, Anomalies, flow signals, Disclosures, and journal verdicts against a Baseline using Forward Returns. The tool computes, the AI interprets, the user tunes. _Avoid_: backtester, bot, monitor
+
+**Grader**:
+One claim-scorer in the Measurement Harness — the screen, Anomaly, flow, Disclosure, or journal Grader. Each Grader reuses the shared engine and stands alone: it can land without the others. _Avoid_: monitor, test, benchmark
+
+**Grade**:
+One Grader's run against a named filter set (or two, compared) over one or more Replay Dates, producing a single report. The observations of every Replay Date are pooled into one population, and the report states the distinct-ticker count and any skipped dates, so a Grade never reads as more evidence than it holds. _Avoid_: backtest, score, run
+
+**Replay**:
+A Screen executed with a past anchor Trading Day. The Screen is deterministic, so a Replay reproduces exactly what the tool would have said that day; a Replay that needs post-anchor prices (Forward Returns) is bounded to dates with enough stored history after them. _Avoid_: backtest run, simulation
+
+**Replay Date**:
+One anchor Trading Day a Replay runs on. A Grade pools the observations of all its Replay Dates; the pooled count is reported beside the number of distinct tickers it rests on, because repeated tickers and overlapping forward windows make it an observation count, not an independent-sample count. _Avoid_: as-of date, sample date
+
+**Forward Return**:
+Close-to-close price change over 5, 10, or 20 trading days after an anchor day. The only outcome measure the Harness uses. _Avoid_: future return, PnL
+
+**Baseline**:
+The counterfactual a measurement is compared against — edge is always relative. Two kinds: the **Liquidity Baseline** (survivors of the hard-filter stage alone — traded on the anchor day, value floor, suspension/UMA window — before structural filters and ranking) and the **Big-Cap Basket** (the fixed 8-ticker IHSG proxy, a secondary reference line). _Avoid_: market average, benchmark
+
+**Excess**:
+Survivor median Forward Return minus Baseline median Forward Return at the same horizon. A positive Excess is the only sense in which a filter set "works." _Avoid_: alpha, outperformance
+
+**Excess Delta**:
+At one horizon, the difference between two filter sets' Excess, each measured against its own Liquidity Baseline. It is how a tuning decision is read: positive means the first set's structural filters add more over their own hard-filter floor. When the two sets differ in hard-filter parameters, the comparison is flagged not-like-for-like. _Avoid_: alpha delta, outperformance spread
+
+**Holdout**:
+The most recent ~3 months of Trading Days, sealed: filter changes are tuned on older data and must pass exactly one validation on Holdout data before adoption. Prevents tuning that memorizes the past. _Avoid_: validation set, test window
+
+**Decision Journal**:
+The append-only log of the AI's tradable verdicts — date, ticker, verdict, entry, TP, SL, rationale — written at decision time so history can grade them later. Reasoning is subjective; the logged verdict is falsifiable. _Avoid_: trade log, diary
+
 ## Fetch transport
 
 **Fetch Mode**:
@@ -83,7 +152,7 @@ The IDX client's transport: `nodriver` — headless Chrome sidecar + rotating pr
 _Avoid_: transport mode, proxy mode
 
 **Proxy Pool**:
-The configured list of egress proxies FlareSolverr rotates through. A proxy is tried until one works, then stuck with for the run; failures mark it dead and advance the rotation.
+The configured list of egress proxies the nodriver sidecar rotates through. Rotation is sticky-until-dead: the proxy behind the last successful fetch is reused for later fetches — the Cloudflare clearance cookie is IP-bound, so the egress IP must be held for the sidecar's warm Chrome to skip re-solving the challenge — until it dies (ban), flunks out transiently, or reaches `nodriver.max_sticky_successes` consecutive successes (deliberate rotation, default 10). Scope is the client instance, not the resource: one `Client` per process serves every source (announcements, suspensions, corporate actions, index summary, screener, profiles, PDFs), so they share one sticky proxy — and the success cap, which counts across all of them.
 _Avoid_: proxy list (use for the raw artifact)
 
 **Dead Proxy**:
@@ -101,3 +170,6 @@ _Avoid_: cookie, session cookie
 - **Disclosure → Raw File**: a disclosure's extracted text is a `raw_files` row pointing to an R2 object; the PDF itself is another `raw_files` row.
 - **News Item → Ticker**: many-to-many via `news_tickers` (one article can match multiple tickers).
 - **Source Status → Pipeline**: each Wave-1 source has one `source_status` row; `get_pipeline_status` is its MCP-readable face.
+- **Structural Filter → Indicator Registry**: a filter names a registry spec, and the filter's key and the row column's key are the same canonical string (`ma_distance:20:50`) — which is why a filter's own number appears in the row it judged, and why the filter's indicator is computed even when it was not requested as a column.
+- **Flow Column → Broker Stock Summary**: a screen row's `foreign_net` is Σ `f_nval` over the flow window, read from the same stored footer totals `get_sector_flow` aggregates — one source, so a ticker's flow reads the same in a sector breakdown and in a shortlist row.
+- **Column Coverage → Flow Column**: every row flags whether its optional column was observed and over how many days, against the response's `flow_days_in_window` denominator (the same covered-vs-spanning shape Coverage names for a Net Flow window).

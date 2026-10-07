@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -34,6 +35,9 @@ const (
 	// smallNReplayDates is the Replay-date floor. A single-anchor report is
 	// always flagged, because one date is one regime.
 	smallNReplayDates = 3
+	// screenGradeKind discriminates a screening grade report from the other
+	// graders' reports (Anomaly, flow, Disclosure, journal) a reader may meet.
+	screenGradeKind = "screen_grade"
 )
 
 // BigCapBasket is the fixed 8-ticker IHSG proxy the report carries as a
@@ -41,6 +45,30 @@ const (
 // is — because a basket of the same eight names is not like-for-like with a
 // screener's survivors.
 var BigCapBasket = []string{"BBCA", "BBRI", "BMRI", "BBNI", "TLKM", "ASII", "ADRO", "ANTM"}
+
+// ErrAnchorUnreplayable marks an anchor that cannot produce Forward Returns
+// because it has too few post-anchor Trading Days. A Grade skips and records
+// such an anchor; a single-anchor Measure surfaces it as an invalid argument.
+var ErrAnchorUnreplayable = errors.New("replay anchor is not gradable")
+
+// UnreplayableAnchorError is the structured reason an anchor has too little
+// post-anchor history. It satisfies both ErrAnchorUnreplayable (so a Grade can
+// skip it) and ErrInvalidArgument (so a single-anchor caller sees the house
+// invalid-argument sentinel).
+type UnreplayableAnchorError struct {
+	Anchor   string
+	PostDays int
+	Need     int
+}
+
+func (e *UnreplayableAnchorError) Error() string {
+	return fmt.Sprintf("anchor %s has %d post-anchor trading days; Forward Returns need %d",
+		e.Anchor, e.PostDays, e.Need)
+}
+
+func (e *UnreplayableAnchorError) Is(target error) bool {
+	return target == ErrAnchorUnreplayable || target == ErrInvalidArgument
+}
 
 // MeasurementScreener is the Replay seam: the screener usecase's uncapped run.
 // The concrete *ScreenStocksUseCase satisfies it; tests wire a fake.
@@ -82,19 +110,30 @@ type HorizonStats struct {
 	SmallN   bool        `json:"small_n"`
 }
 
-// TickerForwardReturns is one ticker's close-to-close Forward Returns at every
-// horizon, keyed by horizon in trading days. A nil entry is an unresolved
-// horizon (no stored close on the target day), counted in ReturnStats.Unresolved
-// and excluded from every median — never zero-imputed.
+// TickerForwardReturns is one ticker observation's close-to-close Forward
+// Returns at every horizon, keyed by horizon in trading days. A nil entry is an
+// unresolved horizon (no stored close on the target day), counted in
+// ReturnStats.Unresolved and excluded from every median — never zero-imputed.
+//
+// AsOf is the Replay anchor: a pooled Grade concatenates many anchors' rows, so
+// a row is only attributable by its date. The coverage fields are carried off
+// the Screen row that selected the ticker (CONTEXT: Column Coverage, Warm-up
+// Bar), so a drill-down can see why a column is null without re-running the
+// screen.
 type TickerForwardReturns struct {
-	Ticker      string           `json:"ticker"`
-	AnchorClose *float64         `json:"anchor_close"`
-	Returns     map[int]*float64 `json:"forward_returns"`
+	Ticker       string                          `json:"ticker"`
+	AsOf         string                          `json:"as_of,omitempty"`
+	AnchorClose  *float64                        `json:"anchor_close"`
+	Returns      map[int]*float64                `json:"forward_returns"`
+	Insufficient []string                        `json:"insufficient,omitempty"`
+	Coverage     map[string]ScreenColumnCoverage `json:"coverage,omitempty"`
+	ForeignNet   *int64                          `json:"foreign_net,omitempty"`
 }
 
 // MeasurementCounts is the funnel in flat counts: the universe the Screen saw,
 // the Liquidity Baseline (hard-filter survivors), the graded survivors, and the
-// big-cap basket size.
+// big-cap basket size. Across a pooled Grade every count is a sum over Replay
+// Dates — an observation count.
 type MeasurementCounts struct {
 	Universe  int `json:"universe"`
 	Baseline  int `json:"liquidity_baseline"`
@@ -122,12 +161,34 @@ type SuccessCriterion struct {
 	Answer   string `json:"answer"`
 }
 
-// MeasurementReport is the JSON artifact under measurement/reports/. It carries
-// everything needed to read the number without re-running anything: the anchor,
-// the named filter set, the resolved params, the git revision, the funnel, and
-// the per-horizon stats and drill-down rows.
+// DateGrade is one Replay Date's slice of a pooled Grade: its own funnel and
+// per-horizon stats, retained so the pooled headline can be read against the
+// per-date dispersion it rests on.
+type DateGrade struct {
+	AsOf     string             `json:"as_of"`
+	Funnel   ScreenStocksFunnel `json:"funnel"`
+	Counts   MeasurementCounts  `json:"counts"`
+	Horizons []HorizonStats     `json:"horizons"`
+	Flags    []string           `json:"flags"`
+}
+
+// SkippedAnchor is an anchor the Grade could not replay (too little post-anchor
+// history), recorded so a shortened Replay-date set never reads as the set the
+// caller asked for.
+type SkippedAnchor struct {
+	AsOf   string `json:"as_of"`
+	Reason string `json:"reason"`
+}
+
+// MeasurementReport is one filter set's pooled result within a Grade. For a
+// single-anchor Grade it is the whole result; for a multi-anchor one it is the
+// pooled population, with PerDate retaining each Replay Date beneath. AsOf holds
+// the label (single date, or `first_to_last`); AsOfStart/AsOfEnd are the
+// structured range.
 type MeasurementReport struct {
 	AsOf                 string                 `json:"as_of"`
+	AsOfStart            string                 `json:"as_of_start,omitempty"`
+	AsOfEnd              string                 `json:"as_of_end,omitempty"`
 	FilterSet            string                 `json:"filter_set"`
 	FilterSetDescription string                 `json:"filter_set_description,omitempty"`
 	HoldoutStart         string                 `json:"holdout_start,omitempty"`
@@ -135,15 +196,58 @@ type MeasurementReport struct {
 	ReplayDates          []string               `json:"replay_dates"`
 	GitRevision          string                 `json:"git_revision"`
 	GeneratedAt          string                 `json:"generated_at"`
+	DistinctTickers      int                    `json:"distinct_tickers"`
 	Params               ReplayParams           `json:"params"`
 	Funnel               ScreenStocksFunnel     `json:"funnel"`
 	Counts               MeasurementCounts      `json:"counts"`
 	Horizons             []HorizonStats         `json:"horizons"`
 	Survivors            []TickerForwardReturns `json:"survivors"`
 	BigCapBasket         []TickerForwardReturns `json:"big_cap_basket"`
+	PerDate              []DateGrade            `json:"per_date,omitempty"`
 	Flags                []string               `json:"flags"`
 	SuccessCriteria      []SuccessCriterion     `json:"success_criteria"`
 	Notes                []string               `json:"notes"`
+}
+
+// HorizonDelta is one horizon's two-set comparison. ExcessA and ExcessB are each
+// set's Excess against its own Liquidity Baseline; ExcessDelta is their
+// difference (CONTEXT: Excess Delta).
+type HorizonDelta struct {
+	Horizon     int      `json:"horizon_days"`
+	ExcessA     *float64 `json:"excess_a"`
+	ExcessB     *float64 `json:"excess_b"`
+	ExcessDelta *float64 `json:"excess_delta"`
+	SmallN      bool     `json:"small_n"`
+}
+
+// ScreenComparison is the two-filter-set comparison block. LikeForLike is false
+// when the sets' hard-filter parameters differ, because their Excess figures
+// then rest on different Liquidity Baselines.
+type ScreenComparison struct {
+	A           string         `json:"a"`
+	B           string         `json:"b"`
+	LikeForLike bool           `json:"like_for_like"`
+	Notes       []string       `json:"notes,omitempty"`
+	Horizons    []HorizonDelta `json:"horizons"`
+}
+
+// ScreenGradeReport is the artifact one `grade screen` run writes: the pooled
+// result for each filter set, the comparison when two were asked for, and the
+// run-level bookkeeping (dates, revision, skipped anchors).
+type ScreenGradeReport struct {
+	Kind           string              `json:"kind"`
+	AsOfStart      string              `json:"as_of_start"`
+	AsOfEnd        string              `json:"as_of_end"`
+	ReplayDates    []string            `json:"replay_dates"`
+	GitRevision    string              `json:"git_revision"`
+	GeneratedAt    string              `json:"generated_at"`
+	HoldoutStart   string              `json:"holdout_start,omitempty"`
+	SealedWindow   bool                `json:"sealed_window"`
+	SkippedAnchors []SkippedAnchor     `json:"skipped_anchors"`
+	FilterSets     []MeasurementReport `json:"filter_sets"`
+	Comparison     *ScreenComparison   `json:"comparison,omitempty"`
+	Flags          []string            `json:"flags"`
+	Notes          []string            `json:"notes"`
 }
 
 // MeasurementEngine runs Replays and scores them. It is read-only with respect
@@ -167,7 +271,7 @@ func NewMeasurementEngine(db *sqlx.DB, log *logrus.Logger, screen MeasurementScr
 	return &MeasurementEngine{DB: db, Log: log, Screen: screen, Prices: prices, Filters: filters, Revision: revision}
 }
 
-// MeasurementOptions is a parsed CLI request.
+// MeasurementOptions is a parsed single-anchor CLI request.
 type MeasurementOptions struct {
 	// AsOf is the Replay anchor Trading Day.
 	AsOf time.Time
@@ -178,8 +282,33 @@ type MeasurementOptions struct {
 	HoldoutStart *time.Time
 }
 
-// Measure validates the options, replays the named filter set, and scores it
-// against the Liquidity Baseline and the Big-Cap Basket.
+// ScreenGradeOptions is a parsed `grade screen` request: one or more Replay
+// Dates, one filter set, and optionally a second to compare against.
+type ScreenGradeOptions struct {
+	// Anchors are the Replay Dates; they are deduped and sorted before use.
+	Anchors []time.Time
+	// FilterSet names the primary set; empty uses the default set.
+	FilterSet string
+	// Compare, when set, names the second set to compare side by side.
+	Compare string
+	// HoldoutStart seals the window for every anchor.
+	HoldoutStart *time.Time
+}
+
+// replayResult is one anchor's replay before it is collapsed into a report: the
+// single-anchor report plus the raw populations a pooled Grade concatenates.
+// The Liquidity Baseline rows are not serialized on their own, so they are kept
+// here rather than read back off the report.
+type replayResult struct {
+	anchor    time.Time
+	report    *MeasurementReport
+	survivors []TickerForwardReturns
+	baseline  []TickerForwardReturns
+	bigCap    []TickerForwardReturns
+}
+
+// Measure validates the options, replays the named filter set for one anchor,
+// and scores it against the Liquidity Baseline and the Big-Cap Basket.
 func (e *MeasurementEngine) Measure(ctx context.Context, opts MeasurementOptions) (*MeasurementReport, error) {
 	registry := e.Filters
 	if registry == nil {
@@ -195,6 +324,18 @@ func (e *MeasurementEngine) Measure(ctx context.Context, opts MeasurementOptions
 // replay is Measure with the set already resolved, so tests can inject a set
 // without mutating the registry.
 func (e *MeasurementEngine) replay(ctx context.Context, set MeasurementFilterSet, opts MeasurementOptions) (*MeasurementReport, error) {
+	res, err := e.replayOnce(ctx, set, opts)
+	if err != nil {
+		return nil, err
+	}
+	return res.report, nil
+}
+
+// replayOnce performs the per-(set, anchor) work shared by the single-anchor
+// Measure and the pooled GradeScreen: resolve the forward targets, run the
+// Screen, read the Liquidity Baseline, and build the forward rows. Splitting it
+// out is what keeps one implementation of the read path across both callers.
+func (e *MeasurementEngine) replayOnce(ctx context.Context, set MeasurementFilterSet, opts MeasurementOptions) (*replayResult, error) {
 	anchor := opts.AsOf
 	if opts.HoldoutStart != nil && anchor.Before(*opts.HoldoutStart) {
 		return nil, fmt.Errorf("%w: as_of %s is before the holdout window (starts %s); a holdout run only reads anchors on or after the seal",
@@ -226,10 +367,8 @@ func (e *MeasurementEngine) replay(ctx context.Context, set MeasurementFilterSet
 	}
 
 	survivorTickers := make([]string, 0, len(replay.Rows))
-	survivorCloses := make(map[string]*float64, len(replay.Rows))
 	for _, row := range replay.Rows {
 		survivorTickers = append(survivorTickers, row.Ticker)
-		survivorCloses[row.Ticker] = row.Close
 	}
 	baselineTickers := make([]string, 0, len(baseline))
 	baselineCloses := make(map[string]*float64, len(baseline))
@@ -250,15 +389,17 @@ func (e *MeasurementEngine) replay(ctx context.Context, set MeasurementFilterSet
 		windows = groupPricesByTicker(prices)
 	}
 
-	survivors := forwardRows(survivorTickers, survivorCloses, anchor, targets, windows)
+	survivors := survivorForwardRows(replay.Rows, anchor, targets, windows)
 	baselineRows := forwardRows(baselineTickers, baselineCloses, anchor, targets, windows)
 	bigCapRows := forwardRows(BigCapBasket, nil, anchor, targets, windows)
 
 	horizons := comparisonByHorizon(survivors, baselineRows, bigCapRows)
 	replayDates := []string{anchor.Format("2006-01-02")}
 
-	return &MeasurementReport{
+	report := &MeasurementReport{
 		AsOf:                 anchor.Format("2006-01-02"),
+		AsOfStart:            anchor.Format("2006-01-02"),
+		AsOfEnd:              anchor.Format("2006-01-02"),
 		FilterSet:            set.Name,
 		FilterSetDescription: set.Description,
 		HoldoutStart:         formatOptionalDay(opts.HoldoutStart),
@@ -266,6 +407,7 @@ func (e *MeasurementEngine) replay(ctx context.Context, set MeasurementFilterSet
 		ReplayDates:          replayDates,
 		GitRevision:          e.Revision,
 		GeneratedAt:          time.Now().UTC().Format(time.RFC3339),
+		DistinctTickers:      distinctTickers(survivors),
 		Params:               replayParams(replay),
 		Funnel:               replay.Funnel,
 		Counts: MeasurementCounts{
@@ -279,18 +421,249 @@ func (e *MeasurementEngine) replay(ctx context.Context, set MeasurementFilterSet
 		BigCapBasket:    bigCapRows,
 		Flags:           measurementFlags(horizons, len(replayDates)),
 		SuccessCriteria: measurementSuccessCriteria(horizons),
+		Notes:           measurementNotes(),
+	}
+	return &replayResult{anchor: anchor, report: report, survivors: survivors, baseline: baselineRows, bigCap: bigCapRows}, nil
+}
+
+// GradeScreen is the screen grader: it replays a named filter set (or two,
+// compared) across one or more Replay Dates, pools each set's observations into
+// one population, and writes one report. Data-gap anchors are skipped and
+// recorded; a holdout violation is a hard error, because crossing the seal is a
+// discipline breach rather than a data gap.
+func (e *MeasurementEngine) GradeScreen(ctx context.Context, opts ScreenGradeOptions) (*ScreenGradeReport, error) {
+	registry := e.Filters
+	if registry == nil {
+		registry = newBuiltinMeasurementFilterRegistry()
+	}
+
+	anchors := dedupeSortedDays(opts.Anchors)
+	if len(anchors) == 0 {
+		return nil, fmt.Errorf("%w: at least one --as-of anchor is required", ErrInvalidArgument)
+	}
+	if opts.HoldoutStart != nil {
+		for _, anchor := range anchors {
+			if anchor.Before(*opts.HoldoutStart) {
+				return nil, fmt.Errorf("%w: as_of %s is before the holdout window (starts %s); a holdout run only reads anchors on or after the seal",
+					ErrInvalidArgument, anchor.Format("2006-01-02"), opts.HoldoutStart.Format("2006-01-02"))
+			}
+		}
+	}
+
+	primary, err := registry.Resolve(opts.FilterSet)
+	if err != nil {
+		return nil, err
+	}
+	sets := []MeasurementFilterSet{primary}
+	if strings.TrimSpace(opts.Compare) != "" {
+		second, err := registry.Resolve(opts.Compare)
+		if err != nil {
+			return nil, err
+		}
+		if second.Name == primary.Name {
+			return nil, fmt.Errorf("%w: --compare %q names the same filter set as --filters", ErrInvalidArgument, opts.Compare)
+		}
+		sets = append(sets, second)
+	}
+
+	gradable, skipped, err := e.gradableAnchors(anchors)
+	if err != nil {
+		return nil, err
+	}
+	if len(gradable) == 0 {
+		return nil, fmt.Errorf("%w: none of the %d requested anchor(s) can be graded (all lack %d post-anchor Trading Days)",
+			ErrInvalidArgument, len(anchors), maxMeasurementHorizon)
+	}
+
+	overlap, err := e.anchorsOverlap(gradable)
+	if err != nil {
+		return nil, err
+	}
+
+	reports := make([]MeasurementReport, 0, len(sets))
+	for _, set := range sets {
+		pooled, err := e.poolSet(ctx, set, gradable, opts.HoldoutStart)
+		if err != nil {
+			return nil, err
+		}
+		if overlap {
+			pooled.Flags = append(pooled.Flags, overlapFlag())
+		}
+		reports = append(reports, pooled)
+	}
+
+	grade := &ScreenGradeReport{
+		Kind:           screenGradeKind,
+		AsOfStart:      gradable[0].Format("2006-01-02"),
+		AsOfEnd:        gradable[len(gradable)-1].Format("2006-01-02"),
+		ReplayDates:    replayDateStrings(gradable),
+		GitRevision:    e.Revision,
+		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
+		HoldoutStart:   formatOptionalDay(opts.HoldoutStart),
+		SealedWindow:   opts.HoldoutStart != nil,
+		SkippedAnchors: skipped,
+		FilterSets:     reports,
+		Flags:          []string{},
 		Notes: []string{
-			"Forward Returns are close-to-close over market-wide trading days; execution realism (fills, slippage, fees) is not modeled.",
-			"The Liquidity Baseline is the hard-filter stage alone (traded on the anchor day, value floor, suspension window) — before structural filters and ranking.",
-			"The Big-Cap Basket is a secondary reference line, not the baseline.",
+			"Pooled across Replay Dates: each horizon's median, hit rate, and n are observation counts, not independent-sample counts.",
+			"distinct_tickers beside each set's n is the number of distinct names the observations rest on.",
 		},
-	}, nil
+	}
+	if len(reports) == 2 {
+		grade.Comparison = compareScreenSets(reports[0], reports[1])
+	}
+	return grade, nil
+}
+
+// poolSet replays one filter set across every gradable anchor and pools the
+// populations into a single MeasurementReport. Per-date blocks are retained for
+// dispersion; every run-level figure (funnel, counts, per-horizon stats) is a
+// sum or a union over the Replay Dates.
+func (e *MeasurementEngine) poolSet(ctx context.Context, set MeasurementFilterSet, anchors []time.Time, holdoutStart *time.Time) (MeasurementReport, error) {
+	var (
+		survivors []TickerForwardReturns
+		baseline  []TickerForwardReturns
+		bigCap    []TickerForwardReturns
+		perDate   []DateGrade
+		funnel    ScreenStocksFunnel
+		counts    MeasurementCounts
+		params    ReplayParams
+	)
+
+	for _, anchor := range anchors {
+		res, err := e.replayOnce(ctx, set, MeasurementOptions{AsOf: anchor, HoldoutStart: holdoutStart})
+		if err != nil {
+			return MeasurementReport{}, err
+		}
+		r := res.report
+		survivors = append(survivors, res.survivors...)
+		baseline = append(baseline, res.baseline...)
+		bigCap = append(bigCap, res.bigCap...)
+		perDate = append(perDate, DateGrade{
+			AsOf:     r.AsOf,
+			Funnel:   r.Funnel,
+			Counts:   r.Counts,
+			Horizons: r.Horizons,
+			Flags:    r.Flags,
+		})
+		funnel.Universe += r.Funnel.Universe
+		funnel.AfterValue += r.Funnel.AfterValue
+		funnel.AfterStructure += r.Funnel.AfterStructure
+		counts.Universe += r.Counts.Universe
+		counts.Baseline += r.Counts.Baseline
+		counts.Survivors += r.Counts.Survivors
+		counts.BigCap += r.Counts.BigCap
+		params = r.Params
+	}
+
+	horizons := comparisonByHorizon(survivors, baseline, bigCap)
+	report := MeasurementReport{
+		AsOf:                 labelRange(anchors),
+		AsOfStart:            anchors[0].Format("2006-01-02"),
+		AsOfEnd:              anchors[len(anchors)-1].Format("2006-01-02"),
+		FilterSet:            set.Name,
+		FilterSetDescription: set.Description,
+		HoldoutStart:         formatOptionalDay(holdoutStart),
+		SealedWindow:         holdoutStart != nil,
+		ReplayDates:          replayDateStrings(anchors),
+		GitRevision:          e.Revision,
+		GeneratedAt:          time.Now().UTC().Format(time.RFC3339),
+		DistinctTickers:      distinctTickers(survivors),
+		Params:               params,
+		Funnel:               funnel,
+		Counts:               counts,
+		Horizons:             horizons,
+		Survivors:            survivors,
+		BigCapBasket:         bigCap,
+		PerDate:              perDate,
+		Flags:                measurementFlags(horizons, len(anchors)),
+		SuccessCriteria:      measurementSuccessCriteria(horizons),
+		Notes:                append(measurementNotes(), poolingNote(len(anchors), distinctTickers(survivors))),
+	}
+	return report, nil
+}
+
+// gradableAnchors partitions the requested anchors into the ones that can be
+// replayed and the ones skipped for too little post-anchor history. A read
+// failure is neither: it propagates, because a database error must never look
+// like a data gap.
+func (e *MeasurementEngine) gradableAnchors(anchors []time.Time) ([]time.Time, []SkippedAnchor, error) {
+	gradable := make([]time.Time, 0, len(anchors))
+	skipped := make([]SkippedAnchor, 0)
+	for _, anchor := range anchors {
+		if _, _, err := e.resolveForwardTargets(anchor); err != nil {
+			if errors.Is(err, ErrAnchorUnreplayable) {
+				skipped = append(skipped, SkippedAnchor{AsOf: anchor.Format("2006-01-02"), Reason: err.Error()})
+				continue
+			}
+			return nil, nil, err
+		}
+		gradable = append(gradable, anchor)
+	}
+	return gradable, skipped, nil
+}
+
+// anchorsOverlap reports whether any two consecutive anchors are closer than
+// the longest horizon in Trading Days. Past that distance no two forward windows
+// can share a price path, so the flag is exactly the point where pooled n starts
+// double-counting a move.
+func (e *MeasurementEngine) anchorsOverlap(anchors []time.Time) (bool, error) {
+	if len(anchors) < 2 {
+		return false, nil
+	}
+	days, err := e.Prices.TradingDaysInRangeAll(e.DB, anchors[0], anchors[len(anchors)-1])
+	if err != nil {
+		return false, fmt.Errorf("read market trading days for overlap check: %w", err)
+	}
+	index := make(map[string]int, len(days))
+	for i, day := range days {
+		index[day.Format("2006-01-02")] = i
+	}
+	for i := 1; i < len(anchors); i++ {
+		prev, okPrev := index[anchors[i-1].Format("2006-01-02")]
+		curr, okCurr := index[anchors[i].Format("2006-01-02")]
+		if okPrev && okCurr && curr-prev < maxMeasurementHorizon {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// compareScreenSets builds the two-set comparison: each horizon's Excess Delta,
+// and a not-like-for-like note when the sets' hard-filter parameters differ, so
+// the delta is never read as resting on one shared baseline when it does not.
+func compareScreenSets(a, b MeasurementReport) *ScreenComparison {
+	like := a.Params.MinValue == b.Params.MinValue && a.Params.SuspensionWindowDays == b.Params.SuspensionWindowDays
+	comparison := &ScreenComparison{A: a.FilterSet, B: b.FilterSet, LikeForLike: like}
+	if !like {
+		comparison.Notes = append(comparison.Notes,
+			"hard-filter parameters differ (min_value or suspension window); the two Excess figures rest on different Liquidity Baselines")
+	}
+	for _, ha := range a.Horizons {
+		var hb *HorizonStats
+		for i := range b.Horizons {
+			if b.Horizons[i].Horizon == ha.Horizon {
+				hb = &b.Horizons[i]
+				break
+			}
+		}
+		if hb == nil {
+			continue
+		}
+		delta := HorizonDelta{Horizon: ha.Horizon, ExcessA: ha.Excess, ExcessB: hb.Excess, SmallN: ha.SmallN || hb.SmallN}
+		if ha.Excess != nil && hb.Excess != nil {
+			value := *ha.Excess - *hb.Excess
+			delta.ExcessDelta = &value
+		}
+		comparison.Horizons = append(comparison.Horizons, delta)
+	}
+	return comparison
 }
 
 // resolveForwardTargets resolves the h-th post-anchor Trading Day for each
 // horizon and the batched-read limit that provably covers [anchor, target20].
-// An anchor with fewer than 20 post-anchor days is a structured error: no
-// Forward Return could be computed, so grading it would be a false negative.
+// An anchor with fewer than 20 post-anchor days is an UnreplayableAnchorError:
+// no Forward Return could be computed, so grading it would be a false negative.
 func (e *MeasurementEngine) resolveForwardTargets(anchor time.Time) (map[int]time.Time, int, error) {
 	days, err := e.Prices.TradingDaysInRangeAll(e.DB, anchor, anchor.AddDate(0, 0, measurementLookaheadDays))
 	if err != nil {
@@ -304,8 +677,11 @@ func (e *MeasurementEngine) resolveForwardTargets(anchor time.Time) (map[int]tim
 		}
 	}
 	if len(post) < maxMeasurementHorizon {
-		return nil, 0, fmt.Errorf("%w: anchor %s has %d post-anchor trading days; Forward Returns need %d",
-			ErrInvalidArgument, anchor.Format("2006-01-02"), len(post), maxMeasurementHorizon)
+		return nil, 0, &UnreplayableAnchorError{
+			Anchor:   anchor.Format("2006-01-02"),
+			PostDays: len(post),
+			Need:     maxMeasurementHorizon,
+		}
 	}
 
 	targets := make(map[int]time.Time, len(measurementHorizons))
@@ -327,6 +703,20 @@ func (e *MeasurementEngine) resolveForwardTargets(anchor time.Time) (map[int]tim
 		limit = 1
 	}
 	return targets, limit, nil
+}
+
+// survivorForwardRows builds the survivor drill-down rows, carrying the Screen
+// row's coverage flags so a null column is attributable without a re-run.
+func survivorForwardRows(rows []ScreenStocksRow, anchor time.Time, targets map[int]time.Time, windows map[string][]entity.DailyPrice) []TickerForwardReturns {
+	out := make([]TickerForwardReturns, 0, len(rows))
+	for _, row := range rows {
+		forward := forwardReturns(row.Ticker, anchor, row.Close, targets, windows[row.Ticker])
+		forward.Insufficient = row.Insufficient
+		forward.Coverage = row.Coverage
+		forward.ForeignNet = row.ForeignNet
+		out = append(out, forward)
+	}
+	return out
 }
 
 // forwardRows computes Forward Returns for one population, using each row's
@@ -363,6 +753,7 @@ func forwardReturns(ticker string, anchor time.Time, anchorClose *float64, targe
 
 	out := TickerForwardReturns{
 		Ticker:      ticker,
+		AsOf:        anchorKey,
 		AnchorClose: base,
 		Returns:     make(map[int]*float64, len(targets)),
 	}
@@ -476,6 +867,14 @@ func measurementFlags(horizons []HorizonStats, replayDates int) []string {
 	return flags
 }
 
+// overlapFlag warns that the pooled population rests on overlapping forward
+// windows, so its n overstates the independent evidence.
+func overlapFlag() string {
+	return fmt.Sprintf(
+		"overlap: consecutive anchors are closer than %d trading days; their Forward Returns share price paths, so pooled n is an observation count, not an independent-sample count",
+		maxMeasurementHorizon)
+}
+
 // measurementSuccessCriteria answers the spec's three standing questions with
 // this report's numbers. "No edge anywhere" is a passing grade, so a negative
 // answer is stated plainly.
@@ -542,6 +941,22 @@ func replayParams(res *ScreenStocksResponse) ReplayParams {
 	}
 }
 
+// measurementNotes are the standing caveats every screen report carries.
+func measurementNotes() []string {
+	return []string{
+		"Forward Returns are close-to-close over market-wide trading days; execution realism (fills, slippage, fees) is not modeled.",
+		"The Liquidity Baseline is the hard-filter stage alone (traded on the anchor day, value floor, suspension window) — before structural filters and ranking.",
+		"The Big-Cap Basket is a secondary reference line, not the baseline.",
+	}
+}
+
+// poolingNote records the pooled-count caveat for a multi-anchor report.
+func poolingNote(replayDates, distinct int) string {
+	return fmt.Sprintf(
+		"Pooled across %d Replay Dates: n counts observations, and they rest on %d distinct ticker(s); repeated names and overlapping windows keep n from being an independent-sample count.",
+		replayDates, distinct)
+}
+
 // unionTickers deduplicates the populations' tickers, preserving first-seen
 // order so the batched read is deterministic.
 func unionTickers(groups ...[]string) []string {
@@ -557,6 +972,53 @@ func unionTickers(groups ...[]string) []string {
 		}
 	}
 	return union
+}
+
+// distinctTickers counts the distinct tickers among forward rows, the number a
+// pooled n rests on.
+func distinctTickers(rows []TickerForwardReturns) int {
+	seen := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		seen[row.Ticker] = true
+	}
+	return len(seen)
+}
+
+// dedupeSortedDays drops repeated anchors and orders them ascending, so a Grade
+// pools each date once regardless of flag order.
+func dedupeSortedDays(days []time.Time) []time.Time {
+	seen := make(map[string]bool, len(days))
+	out := make([]time.Time, 0, len(days))
+	for _, day := range days {
+		key := day.Format("2006-01-02")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Before(out[j]) })
+	return out
+}
+
+// replayDateStrings renders anchors as YYYY-MM-DD in order.
+func replayDateStrings(days []time.Time) []string {
+	out := make([]string, 0, len(days))
+	for _, day := range days {
+		out = append(out, day.Format("2006-01-02"))
+	}
+	return out
+}
+
+// labelRange is the pooled report's AsOf: the single date, or `first_to_last`.
+func labelRange(days []time.Time) string {
+	if len(days) == 0 {
+		return ""
+	}
+	if len(days) == 1 {
+		return days[0].Format("2006-01-02")
+	}
+	return days[0].Format("2006-01-02") + "_to_" + days[len(days)-1].Format("2006-01-02")
 }
 
 // formatOptionalDay renders a day as YYYY-MM-DD, or "" for nil.

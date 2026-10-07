@@ -82,3 +82,31 @@ func TestParseMeasurementOptions(t *testing.T) {
 		})
 	}
 }
+
+// TestParseGradeScreenOptions — the grade-screen boundary accepts repeated
+// anchors, passes the comparison set through, and refuses missing or malformed
+// dates as structured errors.
+func TestParseGradeScreenOptions(t *testing.T) {
+	opts, err := parseGradeScreenOptions([]string{"2026-06-01", "2026-07-01"}, "momentum", "rsi", "2026-04-01")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(opts.Anchors) != 2 ||
+		!opts.Anchors[0].Equal(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)) ||
+		!opts.Anchors[1].Equal(time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("anchors = %v, want 2026-06-01 and 2026-07-01", opts.Anchors)
+	}
+	if opts.FilterSet != "momentum" || opts.Compare != "rsi" {
+		t.Fatalf("sets = %q/%q, want momentum/rsi", opts.FilterSet, opts.Compare)
+	}
+	if opts.HoldoutStart == nil || !opts.HoldoutStart.Equal(time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("holdout = %v, want 2026-04-01", opts.HoldoutStart)
+	}
+
+	if _, err := parseGradeScreenOptions(nil, "default", "", ""); !errors.Is(err, usecase.ErrInvalidArgument) {
+		t.Fatalf("missing anchor err = %v, want ErrInvalidArgument", err)
+	}
+	if _, err := parseGradeScreenOptions([]string{"June"}, "default", "", ""); !errors.Is(err, usecase.ErrInvalidArgument) {
+		t.Fatalf("malformed anchor err = %v, want ErrInvalidArgument", err)
+	}
+}
