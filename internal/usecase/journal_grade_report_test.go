@@ -14,20 +14,20 @@ import (
 
 // TestJournalGradeReport_WriteFiles — a windowed Journal Grade writes
 // <from>_to_<until>_journal, the JSON round-trips, and the markdown carries the
-// counts, outcomes, return distribution, per-verdict drill-down, malformed
-// section, and the journal's standing questions.
+// counts, outcomes, unfilled shadow, return distribution, per-verdict zones,
+// malformed section, and the journal's standing questions.
 func TestJournalGradeReport_WriteFiles(t *testing.T) {
 	anchor, days := journalAnchorAndCalendar()
 	date := anchor.Format("2006-01-02")
 	source := &fakeJournalSource{
 		verdicts: []JournalVerdict{
-			journalSetup(date, "AAA", 100, 110, 95),
+			journalSetup(date, "AAA", 100, 105, 90, 95, 120, 125),
 			{Date: date, Ticker: "BBB", Verdict: verdictWatch, Rationale: "wait"},
 		},
 		issues: []JournalIssue{{File: "measurement/journal/2026-06.jsonl", Line: 9, Reason: "invalid JSON"}},
 	}
 	prices := &fakeJournalPrices{calendar: days, series: map[string][]entity.DailyPrice{
-		"AAA": {journalBar("AAA", days[1], 111, 99)},
+		"AAA": {journalBar("AAA", days[1], 106, 101), journalBar("AAA", days[2], 121, 102)},
 	}}
 	from := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
@@ -58,8 +58,11 @@ func TestJournalGradeReport_WriteFiles(t *testing.T) {
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		t.Fatalf("reparse json: %v", err)
 	}
-	if decoded.Kind != journalGradeKind || decoded.GitRevision != "testrev" || decoded.ResolutionDays != journalResolutionDays {
+	if decoded.Kind != journalGradeKind || decoded.GitRevision != "testrev" {
 		t.Fatalf("round-tripped grade = %+v", decoded)
+	}
+	if decoded.EntryWindowDays != journalEntryWindowDays || decoded.ResolutionDays != journalResolutionDays {
+		t.Fatalf("windows = %d/%d", decoded.EntryWindowDays, decoded.ResolutionDays)
 	}
 	if decoded.Counts.Tradable != 1 || decoded.Counts.Watch != 1 || decoded.Counts.Malformed != 1 {
 		t.Fatalf("counts = %+v", decoded.Counts)
@@ -73,13 +76,14 @@ func TestJournalGradeReport_WriteFiles(t *testing.T) {
 		"# Journal grade — 2026-06-01 → 2026-06-30",
 		"## Counts",
 		"## Outcomes (tradable verdicts)",
+		"## Unfilled shadow (never in the win rate)",
 		"## Return distribution (resolved verdicts)",
 		"## Verdicts",
 		"## Malformed lines (skipped, never graded)",
 		"## Discipline flags",
 		"## Success criteria",
 		"## Notes",
-		"| AAA |",
+		"| 100-105 |", // the entry zone renders
 	} {
 		if !strings.Contains(md, want) {
 			t.Fatalf("markdown missing %q\n---\n%s", want, md)

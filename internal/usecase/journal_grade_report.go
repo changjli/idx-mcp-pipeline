@@ -53,8 +53,9 @@ func (g *JournalGradeReport) reportBaseName() string {
 
 // RenderJournalGradeMarkdown renders the human-readable Journal Grade: the
 // window and revision, the verdict/outcome counts, the return distribution and
-// Expectancy, the per-verdict drill-down, the malformed and shadowed lines, the
-// discipline flags, and the journal's standing questions.
+// Expectancy, the per-verdict drill-down, the unfilled shadow breakdown, the
+// malformed and shadowed lines, the discipline flags, and the journal's
+// standing questions.
 func RenderJournalGradeMarkdown(g *JournalGradeReport) string {
 	var b strings.Builder
 
@@ -62,7 +63,8 @@ func RenderJournalGradeMarkdown(g *JournalGradeReport) string {
 	fmt.Fprintf(&b, "- **Window:** %s\n", journalWindowLabel(g))
 	fmt.Fprintf(&b, "- **Git revision:** `%s`\n", g.GitRevision)
 	fmt.Fprintf(&b, "- **Generated:** %s\n", g.GeneratedAt)
-	fmt.Fprintf(&b, "- **Resolution window:** %d trading days\n\n", g.ResolutionDays)
+	fmt.Fprintf(&b, "- **Entry window:** %d trading days; **resolution window:** %d trading days from the fill\n\n",
+		g.EntryWindowDays, g.ResolutionDays)
 
 	b.WriteString("## Counts\n\n")
 	b.WriteString("| Logged | Tradable (SETUP) | WATCH | PASS | Malformed | Duplicates |\n")
@@ -71,11 +73,17 @@ func RenderJournalGradeMarkdown(g *JournalGradeReport) string {
 		g.Counts.Logged, g.Counts.Tradable, g.Counts.Watch, g.Counts.Pass, g.Counts.Malformed, g.Counts.Duplicates)
 
 	b.WriteString("## Outcomes (tradable verdicts)\n\n")
-	b.WriteString("| Wins | Losses | Expired | Unresolved | Win rate | Calibration (no-trade share) |\n")
-	b.WriteString("|---:|---:|---:|---:|---:|---:|\n")
-	fmt.Fprintf(&b, "| %d | %d | %d | %d | %s | %s |\n\n",
-		g.Summary.Wins, g.Summary.Losses, g.Summary.Expired, g.Summary.Unresolved,
+	b.WriteString("| Wins | Losses | Expired | Unresolved | Unfilled | Win rate | Calibration (no-trade share) |\n")
+	b.WriteString("|---:|---:|---:|---:|---:|---:|---:|\n")
+	fmt.Fprintf(&b, "| %d | %d | %d | %d | %d | %s | %s |\n\n",
+		g.Summary.Wins, g.Summary.Losses, g.Summary.Expired, g.Summary.Unresolved, g.Summary.Unfilled,
 		formatPercent(g.Summary.WinRate), formatPercent(g.Summary.Calibration))
+
+	b.WriteString("## Unfilled shadow (never in the win rate)\n\n")
+	b.WriteString("| missed_tp (ran anyway) | dodged_cl (fell anyway) | flat |\n")
+	b.WriteString("|---:|---:|---:|\n")
+	fmt.Fprintf(&b, "| %d | %d | %d |\n\n",
+		g.Summary.UnfilledMissedTP, g.Summary.UnfilledDodgedCL, g.Summary.UnfilledFlat)
 
 	b.WriteString("## Return distribution (resolved verdicts)\n\n")
 	b.WriteString("| Median return | Mean return (Expectancy) | Mean win | Mean loss | Median planned R:R | Breakeven win rate |\n")
@@ -86,13 +94,13 @@ func RenderJournalGradeMarkdown(g *JournalGradeReport) string {
 		formatRatio(g.Summary.MedianPlannedRR), formatPercent(g.Summary.BreakevenWinRate))
 
 	b.WriteString("## Verdicts\n\n")
-	b.WriteString("| Date | Ticker | Verdict | Entry | TP | SL | R:R | Outcome | Return | Resolved on |\n")
-	b.WriteString("|---|---|---|---:|---:|---:|---:|---|---:|---|\n")
+	b.WriteString("| Date | Ticker | Verdict | Entry | TP | CL | R:R | Outcome | Shadow | Return | Resolved on |\n")
+	b.WriteString("|---|---|---|---|---|---|---:|---|---|---:|---|\n")
 	for _, row := range g.Verdicts {
-		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
 			row.Date, row.Ticker, row.Verdict,
-			formatLevel(row.Entry), formatLevel(row.TP), formatLevel(row.SL),
-			formatRatio(row.PlannedRR), verdictOutcomeLabel(row.Outcome),
+			formatZone(row.EntryLow, row.EntryHigh), formatZone(row.TPLow, row.TPHigh), formatZone(row.CLLow, row.CLHigh),
+			formatRatio(row.PlannedRR), verdictOutcomeLabel(row.Outcome), row.Shadow,
 			formatPercentSigned(row.Return), row.ResolvedOn)
 	}
 	b.WriteString("\n")
@@ -162,6 +170,18 @@ func verdictOutcomeLabel(outcome string) string {
 		return "—"
 	}
 	return outcome
+}
+
+// formatZone renders a zone as `low-high`, a point as its single value (low ==
+// high), or an em dash when absent.
+func formatZone(low, high *float64) string {
+	if low == nil || high == nil {
+		return "—"
+	}
+	if *low == *high {
+		return formatLevel(low)
+	}
+	return formatLevel(low) + "-" + formatLevel(high)
 }
 
 // formatLevel renders a price level, or an em dash when absent.

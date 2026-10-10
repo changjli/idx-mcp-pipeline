@@ -17,14 +17,13 @@ func writeJournalFile(t *testing.T, dir, name, content string) {
 	}
 }
 
-// TestJournalFileReader_ParsesAndNormalizes — valid lines are parsed, the
-// ticker and verdict are canonicalized, and a no-trade line never carries
-// levels.
+// TestJournalFileReader_ParsesAndNormalizes — valid lines are parsed, the ticker
+// and verdict are canonicalized, and a no-trade line never carries zones.
 func TestJournalFileReader_ParsesAndNormalizes(t *testing.T) {
 	dir := t.TempDir()
 	writeJournalFile(t, dir, "2026-06.jsonl",
-		`{"date":"2026-06-01","ticker":"aa","verdict":"setup","entry":100,"tp":110,"sl":95,"rationale":"breakout"}`+"\n"+
-			`{"date":"2026-06-02","ticker":"BB","verdict":"watch","entry":100,"tp":110,"sl":95,"rationale":"wait"}`+"\n")
+		`{"date":"2026-06-01","ticker":"aa","verdict":"setup","entryLow":100,"entryHigh":105,"clLow":90,"clHigh":95,"tpLow":120,"tpHigh":125,"rationale":"breakout"}`+"\n"+
+			`{"date":"2026-06-02","ticker":"BB","verdict":"watch","entryLow":100,"entryHigh":105,"clLow":90,"clHigh":95,"tpLow":120,"tpHigh":125,"rationale":"wait"}`+"\n")
 
 	verdicts, issues, err := NewJournalFileReader(dir).ReadVerdicts(nil, nil)
 	if err != nil {
@@ -39,11 +38,27 @@ func TestJournalFileReader_ParsesAndNormalizes(t *testing.T) {
 	if verdicts[0].Ticker != "AA" || verdicts[0].Verdict != verdictSetup {
 		t.Fatalf("normalized verdict = %+v", verdicts[0])
 	}
-	if verdicts[1].Verdict != verdictWatch || verdicts[1].Entry != nil || verdicts[1].TP != nil || verdicts[1].SL != nil {
-		t.Fatalf("no-trade verdict kept levels: %+v", verdicts[1])
+	if verdicts[0].EntryHigh == nil || *verdicts[0].EntryHigh != 105 || verdicts[0].TPHigh == nil || *verdicts[0].TPHigh != 125 {
+		t.Fatalf("zones not parsed: %+v", verdicts[0])
+	}
+	if verdicts[1].Verdict != verdictWatch || verdicts[1].EntryLow != nil || verdicts[1].TPHigh != nil || verdicts[1].CLHigh != nil {
+		t.Fatalf("no-trade verdict kept zones: %+v", verdicts[1])
 	}
 	if verdicts[0].SourceLine != 1 || verdicts[1].SourceLine != 2 {
 		t.Fatalf("source lines = %d/%d, want 1/2", verdicts[0].SourceLine, verdicts[1].SourceLine)
+	}
+}
+
+// TestJournalFileReader_PointsAllowed — a zone with low == high is a point and
+// must validate.
+func TestJournalFileReader_PointsAllowed(t *testing.T) {
+	dir := t.TempDir()
+	writeJournalFile(t, dir, "2026-06.jsonl",
+		`{"date":"2026-06-01","ticker":"AA","verdict":"SETUP","entryLow":100,"entryHigh":100,"clLow":90,"clHigh":90,"tpLow":120,"tpHigh":120,"rationale":"point"}`+"\n")
+
+	verdicts, issues, err := NewJournalFileReader(dir).ReadVerdicts(nil, nil)
+	if err != nil || len(issues) != 0 || len(verdicts) != 1 {
+		t.Fatalf("point zones: verdicts=%d issues=%+v err=%v", len(verdicts), issues, err)
 	}
 }
 
@@ -53,12 +68,13 @@ func TestJournalFileReader_ParsesAndNormalizes(t *testing.T) {
 func TestJournalFileReader_ReportsMalformed(t *testing.T) {
 	dir := t.TempDir()
 	writeJournalFile(t, dir, "2026-06.jsonl",
-		`{"date":"2026-06-01","ticker":"AA","verdict":"SETUP","entry":100,"tp":110,"sl":95,"rationale":"ok"}`+"\n"+ // 1 valid
-			`{"date":"2026-06-01","ticker":"AA","verdict":"SETUP","entry":100,"tp":110,"sl":95}`+"\n"+ // 2 no rationale
+		`{"date":"2026-06-01","ticker":"AA","verdict":"SETUP","entryLow":100,"entryHigh":105,"clLow":90,"clHigh":95,"tpLow":120,"tpHigh":125,"rationale":"ok"}`+"\n"+ // 1 valid
+			`{"date":"2026-06-01","ticker":"AA","verdict":"SETUP","rationale":"no zones"}`+"\n"+ // 2 missing zones
 			`this is not json`+"\n"+ // 3 bad JSON
 			`{"date":"2026-06-01","ticker":"AA","verdict":"HOLD","rationale":"x"}`+"\n"+ // 4 unknown verdict
-			`{"date":"2026-06-01","ticker":"AA","verdict":"SETUP","entry":100,"tp":90,"sl":95,"rationale":"x"}`+"\n"+ // 5 tp below entry
-			`{"date":"2026-06-02","ticker":"BB","verdict":"PASS","rationale":"no"}`+"\n") // 6 valid
+			`{"date":"2026-06-01","ticker":"AA","verdict":"SETUP","entryLow":100,"entryHigh":105,"clLow":90,"clHigh":110,"tpLow":120,"tpHigh":125,"rationale":"x"}`+"\n"+ // 5 clHigh > entryLow
+			`{"date":"2026-06-01","ticker":"AA","verdict":"SETUP","entryLow":100,"entryHigh":130,"clLow":90,"clHigh":95,"tpLow":120,"tpHigh":125,"rationale":"x"}`+"\n"+ // 6 entryHigh > tpLow
+			`{"date":"2026-06-02","ticker":"BB","verdict":"PASS","rationale":"no"}`+"\n") // 7 valid
 
 	verdicts, issues, err := NewJournalFileReader(dir).ReadVerdicts(nil, nil)
 	if err != nil {
@@ -67,7 +83,7 @@ func TestJournalFileReader_ReportsMalformed(t *testing.T) {
 	if len(verdicts) != 2 {
 		t.Fatalf("valid verdicts = %d, want 2", len(verdicts))
 	}
-	wantLines := []int{2, 3, 4, 5}
+	wantLines := []int{2, 3, 4, 5, 6}
 	if len(issues) != len(wantLines) {
 		t.Fatalf("issues = %+v, want %d", issues, len(wantLines))
 	}
@@ -85,10 +101,8 @@ func TestJournalFileReader_ReportsMalformed(t *testing.T) {
 // window are opened, and a line outside the window is not returned.
 func TestJournalFileReader_WindowScoping(t *testing.T) {
 	dir := t.TempDir()
-	writeJournalFile(t, dir, "2026-05.jsonl",
-		`{"date":"2026-05-15","ticker":"MAY","verdict":"SETUP","entry":100,"tp":110,"sl":95,"rationale":"may"}`+"\n")
-	writeJournalFile(t, dir, "2026-06.jsonl",
-		`{"date":"2026-06-15","ticker":"JUN","verdict":"SETUP","entry":100,"tp":110,"sl":95,"rationale":"jun"}`+"\n")
+	writeJournalFile(t, dir, "2026-05.jsonl", `{"date":"2026-05-15","ticker":"MAY","verdict":"SETUP","entryLow":100,"entryHigh":105,"clLow":90,"clHigh":95,"tpLow":120,"tpHigh":125,"rationale":"may"}`+"\n")
+	writeJournalFile(t, dir, "2026-06.jsonl", `{"date":"2026-06-15","ticker":"JUN","verdict":"SETUP","entryLow":100,"entryHigh":105,"clLow":90,"clHigh":95,"tpLow":120,"tpHigh":125,"rationale":"jun"}`+"\n")
 
 	from := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)

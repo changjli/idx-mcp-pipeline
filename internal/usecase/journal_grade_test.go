@@ -55,7 +55,7 @@ func newJournalGradeEngine(journal MeasurementJournalSource, prices JournalPrice
 
 func journalAnchorAndCalendar() (time.Time, []time.Time) {
 	anchor := measurementAnchor()
-	return anchor, measurementCalendar(anchor, 25)
+	return anchor, measurementCalendar(anchor, 55)
 }
 
 // journalBar is one OHLC row with a High/Low an intraday touch reads; the close
@@ -70,10 +70,14 @@ func journalBar(ticker string, day time.Time, high, low float64) entity.DailyPri
 	}
 }
 
-func journalSetup(date, ticker string, entry, tp, sl float64) JournalVerdict {
+// journalSetup builds a SETUP with the standard zones (entry 100-105, cut-loss
+// 90-95, target 120-125) unless the test passes its own.
+func journalSetup(date, ticker string, entryLow, entryHigh, clLow, clHigh, tpLow, tpHigh float64) JournalVerdict {
 	return JournalVerdict{
 		Date: date, Ticker: ticker, Verdict: verdictSetup,
-		Entry: f64p(entry), TP: f64p(tp), SL: f64p(sl), Rationale: "test setup",
+		EntryLow: f64p(entryLow), EntryHigh: f64p(entryHigh),
+		CLLow: f64p(clLow), CLHigh: f64p(clHigh),
+		TPLow: f64p(tpLow), TPHigh: f64p(tpHigh), Rationale: "test setup",
 	}
 }
 
@@ -92,25 +96,33 @@ func almostEqual(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 // ─── Resolution tests ────────────────────────────────────────────────────────
 
-// TestGradeJournal_ResolutionOrder — the four outcomes of a Tradable Verdict:
-// TP touched first is a win, SL touched first is a loss, both touched the same
-// day is a loss (the conservative tie), and neither touched within the window is
-// expired. A verdict without a full 20 post-decision trading days is unresolved.
+// TestGradeJournal_ResolutionOrder — entry-first, then the TP-vs-CL race: a fill
+// the entry-first way (day range overlaps the entry zone), TP first is a win, CL
+// first is a loss, both the same day is a loss (the conservative tie), a full
+// resolution window with neither is expired, and a verdict whose entry window has
+// not elapsed is unresolved.
 func TestGradeJournal_ResolutionOrder(t *testing.T) {
 	anchor, days := journalAnchorAndCalendar()
 	date := anchor.Format("2006-01-02")
+
+	expBars := []entity.DailyPrice{journalBar("EXP", days[1], 106, 101)}
+	for i := 2; i <= 20; i++ {
+		expBars = append(expBars, journalBar("EXP", days[i], 110, 102))
+	}
+
 	source := &fakeJournalSource{verdicts: []JournalVerdict{
-		journalSetup(date, "AAA", 100, 110, 95),                          // day1 High 111 -> TP first: win
-		journalSetup(date, "BBB", 100, 120, 90),                          // day1 Low 89   -> SL first: loss
-		journalSetup(date, "CCC", 100, 110, 95),                          // day1 High 111 & Low 94 -> tie: loss
-		journalSetup(date, "DDD", 100, 130, 80),                          // never touched: expired
-		journalSetup(days[10].Format("2006-01-02"), "EEE", 100, 130, 80), // 15 post days: unresolved
+		journalSetup(date, "WIN", 100, 105, 90, 95, 120, 125),                          // day1 fill, day2 High 121 -> win
+		journalSetup(date, "LOSS", 100, 105, 90, 95, 120, 125),                         // day1 fill, day2 Low 89 -> loss
+		journalSetup(date, "TIE", 100, 105, 90, 95, 120, 125),                          // day1 fill, day2 High 121 & Low 89 -> tie loss
+		journalSetup(date, "EXP", 100, 105, 90, 95, 120, 125),                          // day1 fill, neither ever -> expired
+		journalSetup(days[50].Format("2006-01-02"), "UNR", 100, 105, 90, 95, 120, 125), // never fills, window short
 	}}
 	prices := &fakeJournalPrices{calendar: days, series: map[string][]entity.DailyPrice{
-		"AAA": {journalBar("AAA", days[1], 111, 99)},
-		"BBB": {journalBar("BBB", days[1], 105, 89)},
-		"CCC": {journalBar("CCC", days[1], 111, 94)},
-		"DDD": {journalBar("DDD", days[1], 105, 96)},
+		"WIN":  {journalBar("WIN", days[1], 106, 101), journalBar("WIN", days[2], 121, 102)},
+		"LOSS": {journalBar("LOSS", days[1], 106, 101), journalBar("LOSS", days[2], 108, 89)},
+		"TIE":  {journalBar("TIE", days[1], 106, 101), journalBar("TIE", days[2], 121, 89)},
+		"EXP":  expBars,
+		"UNR":  {journalBar("UNR", days[51], 115, 110)},
 	}}
 
 	report, err := newJournalGradeEngine(source, prices).GradeJournal(context.Background(), JournalGradeOptions{})
@@ -133,55 +145,149 @@ func TestGradeJournal_ResolutionOrder(t *testing.T) {
 			t.Fatalf("%s return = %v, want %v", ticker, *row.Return, *wantReturn)
 		}
 	}
-	assertOutcome("AAA", outcomeWin, f64p(0.10))
-	assertOutcome("BBB", outcomeLoss, f64p(-0.10))
-	assertOutcome("CCC", outcomeLoss, f64p(-0.05)) // tie resolves at SL, not TP
-	assertOutcome("DDD", outcomeExpired, nil)
-	assertOutcome("EEE", outcomeUnresolved, nil)
+	// Booking is conservative: fill at entryHigh (105), win at tpLow (120), loss at clHigh (95).
+	assertOutcome("WIN", outcomeWin, f64p(120.0/105.0-1))
+	assertOutcome("LOSS", outcomeLoss, f64p(95.0/105.0-1))
+	assertOutcome("TIE", outcomeLoss, f64p(95.0/105.0-1)) // tie resolves at CL, not TP
+	assertOutcome("EXP", outcomeExpired, nil)
+	assertOutcome("UNR", outcomeUnresolved, nil)
 
 	if report.Counts.Tradable != 5 || report.Counts.Logged != 5 {
 		t.Fatalf("tradable/logged = %d/%d, want 5/5", report.Counts.Tradable, report.Counts.Logged)
 	}
 	if report.Summary.Wins != 1 || report.Summary.Losses != 2 ||
-		report.Summary.Expired != 1 || report.Summary.Unresolved != 1 {
+		report.Summary.Expired != 1 || report.Summary.Unresolved != 1 || report.Summary.Unfilled != 0 {
 		t.Fatalf("summary split = %+v", report.Summary)
 	}
 	if report.Summary.WinRate == nil || !almostEqual(*report.Summary.WinRate, 1.0/3.0) {
 		t.Fatalf("win rate = %v, want 1/3", report.Summary.WinRate)
 	}
-	if report.Summary.MeanReturn == nil || !almostEqual(*report.Summary.MeanReturn, (0.10-0.10-0.05)/3) {
-		t.Fatalf("mean return = %v", report.Summary.MeanReturn)
+	// Planned R:R = (tpLow - entryHigh) / (entryHigh - clHigh) = 15/10 = 1.5.
+	if report.Summary.MedianPlannedRR == nil || !almostEqual(*report.Summary.MedianPlannedRR, 1.5) {
+		t.Fatalf("median planned R:R = %v, want 1.5", report.Summary.MedianPlannedRR)
 	}
-	if report.Summary.MedianReturn == nil || !almostEqual(*report.Summary.MedianReturn, -0.05) {
-		t.Fatalf("median return = %v, want -0.05", report.Summary.MedianReturn)
+	if report.Summary.BreakevenWinRate == nil || !almostEqual(*report.Summary.BreakevenWinRate, 1.0/2.5) {
+		t.Fatalf("breakeven = %v, want 1/2.5", report.Summary.BreakevenWinRate)
 	}
-	if report.Kind != journalGradeKind || report.GitRevision != "testrev" {
-		t.Fatalf("kind/revision = %q/%q", report.Kind, report.GitRevision)
+	if report.Kind != journalGradeKind || report.GitRevision != "testrev" ||
+		report.EntryWindowDays != journalEntryWindowDays || report.ResolutionDays != journalResolutionDays {
+		t.Fatalf("report meta = %+v", report)
 	}
-	if report.ResolutionDays != journalResolutionDays {
-		t.Fatalf("resolution days = %d, want %d", report.ResolutionDays, journalResolutionDays)
+	if !hasFlagPrefix(report.Flags, "discipline:") {
+		t.Fatalf("expected a discipline flag (all R:R 1.5 < 2), got %v", report.Flags)
 	}
 }
 
-// TestGradeJournal_NoTradeCalibration — WATCH and PASS lines are no-trade: they
-// carry no outcome, are never resolved, and feed Calibration.
-func TestGradeJournal_NoTradeCalibration(t *testing.T) {
+// TestGradeJournal_UnfilledShadows — a verdict whose entry zone is never tapped
+// is unfilled, never a win or loss, and carries a shadow read of what the thesis
+// would have done over the entry window.
+func TestGradeJournal_UnfilledShadows(t *testing.T) {
 	anchor, days := journalAnchorAndCalendar()
 	date := anchor.Format("2006-01-02")
 	source := &fakeJournalSource{verdicts: []JournalVerdict{
-		journalSetup(date, "AAA", 100, 110, 95),
-		{Date: date, Ticker: "BBB", Verdict: verdictWatch, Rationale: "wait"},
-		{Date: date, Ticker: "CCC", Verdict: verdictPass, Rationale: "no setup"},
+		journalSetup(date, "MISS", 100, 105, 90, 95, 120, 125),  // gaps above the entry zone, High 130 -> missed_tp
+		journalSetup(date, "DODGE", 100, 105, 90, 95, 120, 125), // stays below the entry zone, Low 85 -> dodged_cl
+		journalSetup(date, "FLAT", 100, 105, 90, 95, 120, 125),  // above the entry zone, never target/stop -> flat
 	}}
 	prices := &fakeJournalPrices{calendar: days, series: map[string][]entity.DailyPrice{
-		"AAA": {journalBar("AAA", days[1], 111, 99)},
+		"MISS":  {journalBar("MISS", days[1], 130, 126)},
+		"DODGE": {journalBar("DODGE", days[1], 99, 85)},
+		"FLAT":  {journalBar("FLAT", days[1], 115, 110)},
 	}}
 
 	report, err := newJournalGradeEngine(source, prices).GradeJournal(context.Background(), JournalGradeOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if report.Summary.Unfilled != 3 || report.Summary.UnfilledMissedTP != 1 ||
+		report.Summary.UnfilledDodgedCL != 1 || report.Summary.UnfilledFlat != 1 {
+		t.Fatalf("unfilled summary = %+v", report.Summary)
+	}
+	if report.Summary.Wins != 0 || report.Summary.Losses != 0 || report.Summary.WinRate != nil {
+		t.Fatalf("unfilled must not touch the win rate: %+v", report.Summary)
+	}
+	for ticker, wantShadow := range map[string]string{
+		"MISS": shadowMissedTP, "DODGE": shadowDodgedCL, "FLAT": shadowFlat,
+	} {
+		row := findJournalVerdict(t, report, ticker)
+		if row.Outcome != outcomeUnfilled || row.Shadow != wantShadow || row.Return != nil {
+			t.Fatalf("%s row = %+v, want unfilled/%s with no return", ticker, row, wantShadow)
+		}
+	}
+}
 
+// TestGradeJournal_TwoWindows — the resolution clock starts at the fill, not the
+// decision day: a verdict that fills on day 18 and wins on day 24 is still a win
+// even though day 24 is past the decision-day + 20 boundary.
+func TestGradeJournal_TwoWindows(t *testing.T) {
+	anchor, days := journalAnchorAndCalendar()
+	date := anchor.Format("2006-01-02")
+
+	bars := make([]entity.DailyPrice, 0, 20)
+	for i := 1; i <= 17; i++ { // above the entry zone: no fill
+		bars = append(bars, journalBar("LATE", days[i], 115, 110))
+	}
+	bars = append(bars, journalBar("LATE", days[18], 106, 101)) // fill day
+	bars = append(bars, journalBar("LATE", days[24], 121, 102)) // win, 6 trading days after the fill
+
+	source := &fakeJournalSource{verdicts: []JournalVerdict{
+		journalSetup(date, "LATE", 100, 105, 90, 95, 120, 125),
+	}}
+	prices := &fakeJournalPrices{calendar: days, series: map[string][]entity.DailyPrice{"LATE": bars}}
+
+	report, err := newJournalGradeEngine(source, prices).GradeJournal(context.Background(), JournalGradeOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	row := findJournalVerdict(t, report, "LATE")
+	if row.Outcome != outcomeWin {
+		t.Fatalf("outcome = %q, want win (resolution clock starts at the fill)", row.Outcome)
+	}
+	if want := days[24].Format("2006-01-02"); row.ResolvedOn != want {
+		t.Fatalf("resolved on = %q, want %q", row.ResolvedOn, want)
+	}
+}
+
+// TestGradeJournal_PointsAreDegenerateZones — a point is a zone with low == high,
+// so the old single-price plans still work.
+func TestGradeJournal_PointsAreDegenerateZones(t *testing.T) {
+	anchor, days := journalAnchorAndCalendar()
+	date := anchor.Format("2006-01-02")
+	source := &fakeJournalSource{verdicts: []JournalVerdict{
+		journalSetup(date, "PTP", 100, 100, 90, 90, 120, 120),
+	}}
+	prices := &fakeJournalPrices{calendar: days, series: map[string][]entity.DailyPrice{
+		"PTP": {journalBar("PTP", days[1], 100, 99), journalBar("PTP", days[2], 120, 100)},
+	}}
+
+	report, err := newJournalGradeEngine(source, prices).GradeJournal(context.Background(), JournalGradeOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	row := findJournalVerdict(t, report, "PTP")
+	if row.Outcome != outcomeWin || row.Return == nil || !almostEqual(*row.Return, 120.0/100.0-1) {
+		t.Fatalf("point-zone row = %+v, want win at entry 100 / tp 120", row)
+	}
+}
+
+// TestGradeJournal_NoTradeCalibration — WATCH and PASS lines are no-trade: no
+// outcome, never resolved, and they feed Calibration.
+func TestGradeJournal_NoTradeCalibration(t *testing.T) {
+	anchor, days := journalAnchorAndCalendar()
+	date := anchor.Format("2006-01-02")
+	source := &fakeJournalSource{verdicts: []JournalVerdict{
+		journalSetup(date, "AAA", 100, 105, 90, 95, 120, 125),
+		{Date: date, Ticker: "BBB", Verdict: verdictWatch, Rationale: "wait"},
+		{Date: date, Ticker: "CCC", Verdict: verdictPass, Rationale: "no setup"},
+	}}
+	prices := &fakeJournalPrices{calendar: days, series: map[string][]entity.DailyPrice{
+		"AAA": {journalBar("AAA", days[1], 106, 101), journalBar("AAA", days[2], 121, 102)},
+	}}
+
+	report, err := newJournalGradeEngine(source, prices).GradeJournal(context.Background(), JournalGradeOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if report.Counts.Watch != 1 || report.Counts.Pass != 1 || report.Counts.NoTrade != 2 || report.Counts.Tradable != 1 {
 		t.Fatalf("counts = %+v", report.Counts)
 	}
@@ -196,50 +302,20 @@ func TestGradeJournal_NoTradeCalibration(t *testing.T) {
 	}
 }
 
-// TestGradeJournal_PlannedRRAndBreakeven — the planned reward-to-risk is read
-// per verdict, the median drives the Breakeven Win Rate, and a plan below the
-// 1:2 gate is flagged, never skipped.
-func TestGradeJournal_PlannedRRAndBreakeven(t *testing.T) {
-	anchor, days := journalAnchorAndCalendar()
-	date := anchor.Format("2006-01-02")
-	source := &fakeJournalSource{verdicts: []JournalVerdict{
-		journalSetup(date, "AAA", 100, 120, 90), // R:R 2.0
-		journalSetup(date, "BBB", 100, 110, 80), // R:R 0.5, below the gate
-	}}
-	prices := &fakeJournalPrices{calendar: days, series: map[string][]entity.DailyPrice{
-		"AAA": {journalBar("AAA", days[1], 125, 99)},
-		"BBB": {journalBar("BBB", days[1], 115, 79)},
-	}}
-
-	report, err := newJournalGradeEngine(source, prices).GradeJournal(context.Background(), JournalGradeOptions{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if report.Summary.MedianPlannedRR == nil || !almostEqual(*report.Summary.MedianPlannedRR, 1.25) {
-		t.Fatalf("median planned R:R = %v, want 1.25", report.Summary.MedianPlannedRR)
-	}
-	if report.Summary.BreakevenWinRate == nil || !almostEqual(*report.Summary.BreakevenWinRate, 1.0/2.25) {
-		t.Fatalf("breakeven = %v, want 1/2.25", report.Summary.BreakevenWinRate)
-	}
-	if !hasFlagPrefix(report.Flags, "discipline:") {
-		t.Fatalf("expected a discipline flag for the sub-2 R:R plan, got %v", report.Flags)
-	}
-}
-
 // TestGradeJournal_DedupeLastWins — a repeated (date, ticker) keeps the later
 // line; the shadowed line is reported, not graded.
 func TestGradeJournal_DedupeLastWins(t *testing.T) {
 	anchor, days := journalAnchorAndCalendar()
 	date := anchor.Format("2006-01-02")
-	first := journalSetup(date, "AAA", 100, 110, 95)
+	first := journalSetup(date, "AAA", 100, 105, 90, 95, 120, 125) // would win
 	first.SourceFile = "measurement/journal/2026-06.jsonl"
 	first.SourceLine = 1
-	second := journalSetup(date, "AAA", 100, 105, 95) // tighter TP supersedes
+	second := journalSetup(date, "AAA", 100, 105, 90, 95, 130, 135) // supersedes: day2 High 121 < 130
 	second.SourceFile = "measurement/journal/2026-06.jsonl"
 	second.SourceLine = 2
 	source := &fakeJournalSource{verdicts: []JournalVerdict{first, second}}
 	prices := &fakeJournalPrices{calendar: days, series: map[string][]entity.DailyPrice{
-		"AAA": {journalBar("AAA", days[1], 107, 99)},
+		"AAA": {journalBar("AAA", days[1], 106, 101), journalBar("AAA", days[2], 121, 102)},
 	}}
 
 	report, err := newJournalGradeEngine(source, prices).GradeJournal(context.Background(), JournalGradeOptions{})
@@ -253,8 +329,8 @@ func TestGradeJournal_DedupeLastWins(t *testing.T) {
 		t.Fatalf("duplicates = %+v, want the first line shadowed", report.Duplicates)
 	}
 	row := findJournalVerdict(t, report, "AAA")
-	if row.Outcome != outcomeWin || row.TP == nil || !almostEqual(*row.TP, 105) {
-		t.Fatalf("last-wins row = %+v, want the superseding TP=105 to win", row)
+	if row.Outcome != outcomeExpired || row.TPLow == nil || !almostEqual(*row.TPLow, 130) {
+		t.Fatalf("last-wins row = %+v, want the superseding tpLow=130 to win (expired)", row)
 	}
 }
 
@@ -264,11 +340,11 @@ func TestGradeJournal_MalformedReportedNotGraded(t *testing.T) {
 	anchor, days := journalAnchorAndCalendar()
 	date := anchor.Format("2006-01-02")
 	source := &fakeJournalSource{
-		verdicts: []JournalVerdict{journalSetup(date, "AAA", 100, 110, 95)},
+		verdicts: []JournalVerdict{journalSetup(date, "AAA", 100, 105, 90, 95, 120, 125)},
 		issues:   []JournalIssue{{File: "measurement/journal/2026-06.jsonl", Line: 2, Reason: "invalid JSON"}},
 	}
 	prices := &fakeJournalPrices{calendar: days, series: map[string][]entity.DailyPrice{
-		"AAA": {journalBar("AAA", days[1], 111, 99)},
+		"AAA": {journalBar("AAA", days[1], 106, 101), journalBar("AAA", days[2], 121, 102)},
 	}}
 
 	report, err := newJournalGradeEngine(source, prices).GradeJournal(context.Background(), JournalGradeOptions{})

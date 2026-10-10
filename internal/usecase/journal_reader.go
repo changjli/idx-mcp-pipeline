@@ -114,9 +114,10 @@ func readJournalFile(path string, from, to *time.Time) ([]JournalVerdict, []Jour
 }
 
 // normalizeJournalVerdict canonicalizes and validates one line. A SETUP must
-// carry positive entry/tp/sl in ascending STOP < entry < TP order; a WATCH or
-// PASS line carries no levels (any present are ignored). Every verdict needs a
-// date, a ticker, and a one-line rationale.
+// carry three positive, ordered zones — clLow <= clHigh <= entryLow <= entryHigh
+// <= tpLow <= tpHigh — where a point is a zone with low == high. A WATCH or PASS
+// line carries no zones (any present are ignored). Every verdict needs a date, a
+// ticker, and a one-line rationale.
 func normalizeJournalVerdict(v *JournalVerdict) error {
 	day, err := time.Parse("2006-01-02", strings.TrimSpace(v.Date))
 	if err != nil {
@@ -141,20 +142,30 @@ func normalizeJournalVerdict(v *JournalVerdict) error {
 	}
 
 	if v.Verdict != verdictSetup {
-		v.Entry, v.TP, v.SL = nil, nil, nil
+		v.EntryLow, v.EntryHigh, v.CLLow, v.CLHigh, v.TPLow, v.TPHigh = nil, nil, nil, nil, nil, nil
 		return nil
 	}
-	if v.Entry == nil || v.TP == nil || v.SL == nil {
-		return fmt.Errorf("SETUP requires entry, tp and sl")
+
+	if v.EntryLow == nil || v.EntryHigh == nil || v.CLLow == nil || v.CLHigh == nil || v.TPLow == nil || v.TPHigh == nil {
+		return fmt.Errorf("SETUP requires entryLow, entryHigh, clLow, clHigh, tpLow and tpHigh")
 	}
-	if *v.Entry <= 0 || *v.TP <= 0 || *v.SL <= 0 {
-		return fmt.Errorf("SETUP entry, tp and sl must be positive")
+	if *v.EntryLow <= 0 || *v.EntryHigh <= 0 || *v.CLLow <= 0 || *v.CLHigh <= 0 || *v.TPLow <= 0 || *v.TPHigh <= 0 {
+		return fmt.Errorf("SETUP zones must be positive")
 	}
-	if *v.TP <= *v.Entry {
-		return fmt.Errorf("SETUP tp must be above entry")
+	if *v.CLLow > *v.CLHigh {
+		return fmt.Errorf("SETUP clLow must not exceed clHigh")
 	}
-	if *v.SL >= *v.Entry {
-		return fmt.Errorf("SETUP sl must be below entry")
+	if *v.EntryLow > *v.EntryHigh {
+		return fmt.Errorf("SETUP entryLow must not exceed entryHigh")
+	}
+	if *v.TPLow > *v.TPHigh {
+		return fmt.Errorf("SETUP tpLow must not exceed tpHigh")
+	}
+	if *v.CLHigh > *v.EntryLow {
+		return fmt.Errorf("SETUP clHigh must not exceed entryLow (the cut-loss zone must sit below the entry zone)")
+	}
+	if *v.EntryHigh > *v.TPLow {
+		return fmt.Errorf("SETUP entryHigh must not exceed tpLow (the entry zone must sit below the target zone)")
 	}
 	return nil
 }

@@ -143,25 +143,34 @@ At one horizon, the difference between two filter sets' Excess, each measured ag
 The most recent ~3 months of Trading Days, sealed: filter changes are tuned on older data and must pass exactly one validation on Holdout data before adoption. Prevents tuning that memorizes the past. _Avoid_: validation set, test window
 
 **Decision Journal**:
-The append-only log of the AI's Verdicts — date, ticker, verdict, entry, TP, SL, rationale — written at decision time so history can grade them later. Reasoning is subjective; the logged verdict is falsifiable. _Avoid_: trade log, diary
+The append-only log of the AI's Verdicts — date, ticker, verdict, zones, rationale — written at decision time so history can grade them later. Reasoning is subjective; the logged verdict is falsifiable. _Avoid_: trade log, diary
 
 **Verdict**:
 One deep-dive outcome, appended to the Decision Journal at decision time: `SETUP` (a trade plan exists), `WATCH` (interesting, no plan yet), or `PASS` (rejected — a hard gate failed or no setup exists). Exactly one Verdict per deep-dive. _Avoid_: pass verdict (the tradable one is SETUP; "pass" never means "passed the gate")
 
 **Tradable Verdict**:
-A `SETUP` Verdict — the only kind that carries entry, TP, and SL, and the only kind the journal Grader resolves (TP before SL → win, SL first → loss, same-day tie → loss). _Avoid_: pass, signal, buy call
+A `SETUP` Verdict — the only kind that carries the three Tradable Zones, and the only kind the journal Grader resolves. _Avoid_: pass, signal, buy call
 
 **No-Trade Verdict**:
-A `WATCH` or `PASS` Verdict — no entry/TP/SL, never resolved against prices; counted so the journal reports how often the gate declined to trade. _Avoid_: reject, skip, abstention
+A `WATCH` or `PASS` Verdict — no zones, never resolved against prices; counted so the journal reports how often the gate declined to trade. _Avoid_: reject, skip, abstention
 
 **Calibration**:
 The share of logged Verdicts that were no-trade — how often the deep-dive gate declined — reported with the WATCH/PASS split so "wait" and "reject" stay distinguishable. _Avoid_: accuracy, precision (the disclosure Grader's subject)
 
+**Tradable Zone**:
+One of the three price bands a Tradable Verdict carries: the **entry zone**, the **cut-loss (CL) zone**, and the **target (TP) zone**, each a low–high range where `low == high` is a point. A trade fills when a day's range overlaps the entry zone; TP and CL trigger on their near edge (`High ≥ tpLow`, `Low ≤ clHigh`). _Avoid_: level, price, stop
+
+**Entry Window**:
+The 20 market Trading Days after a Tradable Verdict's decision day in which its entry zone must be tapped for the trade to fill. A verdict whose entry is never tapped in the Entry Window is Unfilled. _Avoid_: waiting period
+
 **Resolution Window**:
-The 20 market Trading Days after a Tradable Verdict's decision day in which its TP or SL must be touched for the verdict to resolve. Bounded by the harness's longest Forward Return horizon, so the journal's clock matches the Graders'. _Avoid_: holding period, trade horizon
+The 20 market Trading Days starting at the fill day (inclusive) in which TP or CL must be touched for the verdict to resolve. Both the Entry and Resolution Windows match the harness's longest Forward Return horizon, so the journal's clock matches the Graders'. _Avoid_: holding period, trade horizon
 
 **Verdict Outcome**:
-How a Tradable Verdict resolved against stored prices: **win** (TP touched first), **loss** (SL touched first, or both touched the same day — the conservative tie), **expired** (the Resolution Window elapsed with neither level touched — neither win nor loss), or **unresolved** (fewer than the window's Trading Days of stored prices yet, so it cannot be judged). _Avoid_: result, PnL, fill
+How a Tradable Verdict resolved against stored prices: **win** (TP touched first), **loss** (CL touched first, or both touched the same day — the conservative tie), **expired** (the Resolution Window elapsed with neither touched — neither win nor loss), **unfilled** (the entry zone was never tapped in the Entry Window — no trade happened), or **unresolved** (a window has not elapsed in stored prices yet, so it cannot be judged). _Avoid_: result, PnL, fill
+
+**Unfilled Shadow**:
+For an Unfilled verdict, what the thesis would have done over the Entry Window had it filled — `missed_tp` (reached the target anyway), `dodged_cl` (reached the cut-loss anyway), or `flat`. A plan-placement signal, never part of the win rate or Expectancy. _Avoid_: hypothetical, would-be win
 
 **Expectancy**:
 The mean realized return of Resolved Verdicts — what a Tradable Verdict has been worth on average. A positive Expectancy is the only sense in which the journal's verdicts "work," mirroring Excess for filter sets. _Avoid_: edge, alpha, PnL
