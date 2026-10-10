@@ -42,11 +42,11 @@ func main() {
 	}
 }
 
-// runGrade dispatches the `grade <grader>` group. The screen, anomaly, journal
-// and flow graders are built; the remaining named graders refuse clearly.
+// runGrade dispatches the `grade <grader>` group. The screen, anomaly, journal,
+// flow and disclosure graders are built.
 func runGrade(args []string) {
 	if len(args) == 0 {
-		fatalf("measure: grade requires a grader; expected one of: screen, anomalies, journal")
+		fatalf("measure: grade requires a grader; expected one of: screen, anomalies, journal, flow, disclosures")
 	}
 	switch args[0] {
 	case "screen":
@@ -58,9 +58,9 @@ func runGrade(args []string) {
 	case "flow":
 		runGradeFlow(args[1:])
 	case "disclosures":
-		fatalf("measure: grade %s is not implemented yet", args[0])
+		runGradeDisclosures(args[1:])
 	default:
-		fatalf("measure: unknown grader %q; known: screen, anomalies, journal, flow", args[0])
+		fatalf("measure: unknown grader %q; known: screen, anomalies, journal, flow, disclosures", args[0])
 	}
 }
 
@@ -221,6 +221,53 @@ func runGradeFlow(args []string) {
 	fmt.Println(usecase.RenderFlowGradeMarkdown(grade))
 }
 
+// runGradeDisclosures parses and runs the disclosure grader: one or more Filing
+// Days, the fixed Reject Sample size, and an optional holdout seal. It replays
+// no Screen (the Liquidity Baseline is read directly) but reads disclosures.
+func runGradeDisclosures(args []string) {
+	flags := flag.NewFlagSet("grade disclosures", flag.ExitOnError)
+	var asOfs stringList
+	flags.Var(&asOfs, "as-of", "Filing Day (disclosure announcement date), YYYY-MM-DD (repeatable, required)")
+	rejectSample := flags.Int("reject-sample", 0, "manual Reject Sample size in rejected filings (default: 20)")
+	holdoutStartStr := flags.String("holdout-start", "", "seal date, YYYY-MM-DD: restrict filing days to on/after it (optional)")
+	reportsDir := flags.String("reports-dir", usecase.MeasurementReportDir, "directory for the JSON + markdown report")
+	revision := flags.String("revision", "", "git revision to stamp (default: derived from the working tree)")
+	_ = flags.Parse(args)
+
+	vip := config.NewViper()
+	log := config.NewLogger(vip)
+
+	opts, err := parseGradeDisclosuresOptions(asOfs, *rejectSample, *holdoutStartStr)
+	if err != nil {
+		log.Fatalf("measure: %v", err)
+	}
+
+	db := config.NewDatabase(vip, log)
+	defer db.Close()
+
+	rev := strings.TrimSpace(*revision)
+	if rev == "" {
+		rev = gitRevision()
+	}
+
+	priceRepo := repository.NewDailyPriceRepository(log)
+	engine := usecase.NewMeasurementEngine(db, log, nil, priceRepo, nil, rev)
+	engine.DisclosureFilings = repository.NewDisclosureRepository(log)
+
+	grade, err := engine.GradeDisclosures(context.Background(), opts)
+	if err != nil {
+		log.Fatalf("measure: %v", err)
+	}
+
+	jsonPath, mdPath, err := grade.WriteFiles(*reportsDir)
+	if err != nil {
+		log.Fatalf("measure: write report: %v", err)
+	}
+	log.Infof("measure: wrote %s and %s", jsonPath, mdPath)
+
+	fmt.Println(usecase.RenderDisclosureGradeMarkdown(grade))
+}
+
 // runGradeJournal parses and runs the journal grader: the optional decision-date
 // window, and nothing else — the journal grader replays no Screen and reads no
 // Liquidity Baseline, only the agent-written verdicts and stored prices.
@@ -346,6 +393,33 @@ func parseGradeFlowOptions(asOfs []string, flowWindow int, holdoutStartStr strin
 	return opts, nil
 }
 
+// parseGradeDisclosuresOptions validates the `grade disclosures` flags. The
+// reject-sample bound is checked by the engine, so a CLI parse never diverges
+// from the grader's rule.
+func parseGradeDisclosuresOptions(asOfs []string, rejectSample int, holdoutStartStr string) (usecase.DisclosureGradeOptions, error) {
+	if len(asOfs) == 0 {
+		return usecase.DisclosureGradeOptions{}, fmt.Errorf("%w: --as-of is required (YYYY-MM-DD)", usecase.ErrInvalidArgument)
+	}
+	anchors := make([]time.Time, 0, len(asOfs))
+	for _, raw := range asOfs {
+		day, err := parseMeasurementDay(raw, "--as-of")
+		if err != nil {
+			return usecase.DisclosureGradeOptions{}, err
+		}
+		anchors = append(anchors, day)
+	}
+
+	opts := usecase.DisclosureGradeOptions{Anchors: anchors, RejectSampleN: rejectSample}
+	if strings.TrimSpace(holdoutStartStr) != "" {
+		seal, err := parseMeasurementDay(holdoutStartStr, "--holdout-start")
+		if err != nil {
+			return usecase.DisclosureGradeOptions{}, err
+		}
+		opts.HoldoutStart = &seal
+	}
+	return opts, nil
+}
+
 // parseGradeScreenOptions validates the `grade screen` flags. Errors are
 // structured (usecase.ErrInvalidArgument) so a scripting caller can tell a bad
 // request from a read failure.
@@ -440,15 +514,17 @@ Usage:
   measure grade screen --as-of <date> [--as-of <date> ...] [--filters <name>] [--compare <name>] [flags]
   measure grade anomalies --as-of <date> [--as-of <date> ...] [--flow-window-days <n>] [flags]
   measure grade flow --as-of <date> [--as-of <date> ...] [--flow-window-days <n>] [flags]
+  measure grade disclosures --as-of <date> [--as-of <date> ...] [--reject-sample <n>] [flags]
   measure grade journal [--from <date>] [--until <date>] [flags]
 
 The bare form `+"`measure --as-of <date>`"+` is an alias for `+"`grade screen`"+`.
 
 Flags:
-  --as-of <date>        Replay anchor Trading Day, YYYY-MM-DD (repeatable, required)
+  --as-of <date>        Replay anchor Trading Day, or a disclosure Filing Day, YYYY-MM-DD (repeatable, required)
   --filters <name>      named filter set to grade (default: "default")
   --compare <name>      optional second named filter set to compare against
   --flow-window-days <n> Flow window length in trading days: Flow Lead-in Window for the anomaly grader, Flow Column window for the flow grader (default: 20)
+  --reject-sample <n>   manual Reject Sample size for the disclosure grader (default: 20)
   --from <date>         earliest decision date for the journal grader, YYYY-MM-DD (optional)
   --until <date>        latest decision date for the journal grader, YYYY-MM-DD (optional)
   --holdout-start <date> seal date: restrict anchors to on/after it

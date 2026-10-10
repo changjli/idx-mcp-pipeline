@@ -193,6 +193,18 @@ One `foreign_net` sign population in a Flow Grade: `positive` (net > 0), `negati
 **Signed Magnitude Tercile**:
 A Flow Grade's secondary split: the observed `foreign_net` values cut into thirds by **signed** net (low most-negative → high most-positive), pooled across Replay Dates. Cut on the raw Σ (the shipped Flow Column, absolute like a filter threshold), so `high` is the tail a prospective one-sided `foreign_net >= X` filter would target. _Avoid_: flow quantile, flow decile
 
+**Disclosure Grade**:
+The Grader that scores the 3-layer disclosure filter: each passed-filter Disclosure's ticker Forward Returns from its Filing Day against the Liquidity Baseline, split by whitelist category, plus a manual monthly Reject Sample. Its unit of observation is the deduped `(ticker, Filing Day)` ticker-day — a ticker that filed twice that day is one observation, with the union of its categories — while the JSON rows retain every filing for PDF drill-down. It grades precision (did a filter-confirmed filing coincide with a move), not a tradable signal. _Avoid_: disclosure backtest, filing score
+
+**Filing Day**:
+A Disclosure's `announcement_date` — the calendar date the Grader selects and pools on (`--as-of`), and the day the reaction is measured *after*. It may be a non-trading day; the Reaction Anchor is what makes it gradable. _Avoid_: announcement timestamp, anchor day (that is the Reaction Anchor)
+
+**Reaction Anchor**:
+A Filing Day's first stored market Trading Day on or after it. Forward Returns run close-to-close from this anchor's close and the Liquidity Baseline is read on it, so a weekend or holiday filing is still graded from a real close (on a trading-day filing the anchor is the day itself). _Avoid_: anomaly day, effective date
+
+**Reject Sample**:
+The Disclosure Grade's manual monthly false-negative check: a fixed, deterministic, evenly-spaced sample of the pooled rejected filings, each carrying the procedure and a `Material?` slot the agent fills by hand. The tool never judges materiality; the false-negative rate (material / N) is recorded manually, so the keyword whitelist's blind spot is measured rather than assumed. _Avoid_: rejected population (that is all rejects; the Sample is the drawn subset)
+
 ## Fetch transport
 
 **Fetch Mode**:

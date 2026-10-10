@@ -67,6 +67,22 @@ func (r *DisclosureRepository) FindByTickerAndDate(db *sqlx.DB, ticker string, d
 	return disclosures, err
 }
 
+// FindByAnnouncementDate returns every disclosure announced on `day` whose
+// filter verdict is `passed` (true = passed the 3-layer filter, false =
+// rejected). A pending row (passed_filter IS NULL) matches neither verdict, so
+// the Disclosure Grade never grades an unevaluated filing. Ordered by id, the
+// insertion order, so the grade's rows are deterministic.
+func (r *DisclosureRepository) FindByAnnouncementDate(db *sqlx.DB, day time.Time, passed bool) ([]entity.Disclosure, error) {
+	var rows []entity.Disclosure
+	err := db.Select(&rows, `
+		SELECT * FROM disclosures
+		WHERE announcement_date = $1::date
+		  AND passed_filter = $2
+		ORDER BY id`,
+		day.Format("2006-01-02"), passed)
+	return rows, err
+}
+
 // PassedTickersInWindow returns the distinct tickers among `tickers` that had
 // at least one passed-filter Disclosure announced within [from, to]. It is the
 // Anomaly Grade's disclosure-presence read: the same `passed_filter = true`

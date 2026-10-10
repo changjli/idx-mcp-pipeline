@@ -285,6 +285,10 @@ type MeasurementEngine struct {
 	// ForeignFlow is the Flow Grade's read of the Flow Column (Σ f_nval). The
 	// other graders never touch it; GradeFlow requires it to be set.
 	ForeignFlow MeasurementForeignFlowSource
+	// DisclosureFilings is the Disclosure Grade's read of a filing day's passed
+	// and rejected disclosures. The other graders never touch it;
+	// GradeDisclosures requires it to be set.
+	DisclosureFilings MeasurementDisclosureFilingSource
 	// Journal and JournalPrices are the Journal Grade's reads. The screen and
 	// anomaly graders never touch them; GradeJournal requires both to be set.
 	Journal       MeasurementJournalSource
@@ -720,6 +724,45 @@ func (e *MeasurementEngine) resolveForwardTargets(anchor time.Time) (map[int]tim
 	limit := 0
 	for _, day := range days {
 		if !day.After(last) {
+			limit++
+		}
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	return targets, limit, nil
+}
+
+// resolvePartialForwardTargets resolves whichever Forward Return horizons have a
+// post-anchor Trading Day for anchor, leaving the rest absent. Unlike
+// resolveForwardTargets it never rejects an anchor for too little history: the
+// Disclosure Grade counts an unresolvable horizon as unresolved rather than
+// skipping the filing (ticket 06). The read limit provably covers
+// [anchor, last resolvable target].
+func (e *MeasurementEngine) resolvePartialForwardTargets(anchor time.Time) (map[int]time.Time, int, error) {
+	days, err := e.Prices.TradingDaysInRangeAll(e.DB, anchor, anchor.AddDate(0, 0, measurementLookaheadDays))
+	if err != nil {
+		return nil, 0, fmt.Errorf("read market trading days from %s: %w", anchor.Format("2006-01-02"), err)
+	}
+
+	post := make([]time.Time, 0, len(days))
+	for _, day := range days {
+		if day.After(anchor) {
+			post = append(post, day)
+		}
+	}
+	targets := make(map[int]time.Time, len(measurementHorizons))
+	last := anchor
+	for _, horizon := range measurementHorizons {
+		if len(post) >= horizon {
+			targets[horizon] = post[horizon-1]
+			last = post[horizon-1]
+		}
+	}
+
+	limit := 0
+	for _, day := range days {
+		if !day.Before(anchor) && !day.After(last) {
 			limit++
 		}
 	}

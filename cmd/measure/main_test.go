@@ -194,3 +194,31 @@ func TestParseGradeFlowOptions(t *testing.T) {
 		t.Fatalf("malformed anchor err = %v, want ErrInvalidArgument", err)
 	}
 }
+
+// TestParseGradeDisclosuresOptions — the disclosure boundary accepts repeated
+// Filing Days and a reject-sample size, passes a holdout seal through, and
+// refuses missing or malformed dates as structured errors.
+func TestParseGradeDisclosuresOptions(t *testing.T) {
+	opts, err := parseGradeDisclosuresOptions([]string{"2026-06-01", "2026-07-01"}, 12, "2026-04-01")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(opts.Anchors) != 2 ||
+		!opts.Anchors[0].Equal(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)) ||
+		!opts.Anchors[1].Equal(time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("anchors = %v, want 2026-06-01 and 2026-07-01", opts.Anchors)
+	}
+	if opts.RejectSampleN != 12 {
+		t.Fatalf("reject sample = %d, want 12", opts.RejectSampleN)
+	}
+	if opts.HoldoutStart == nil || !opts.HoldoutStart.Equal(time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("holdout = %v, want 2026-04-01", opts.HoldoutStart)
+	}
+
+	if _, err := parseGradeDisclosuresOptions(nil, 0, ""); !errors.Is(err, usecase.ErrInvalidArgument) {
+		t.Fatalf("missing anchor err = %v, want ErrInvalidArgument", err)
+	}
+	if _, err := parseGradeDisclosuresOptions([]string{"June"}, 0, ""); !errors.Is(err, usecase.ErrInvalidArgument) {
+		t.Fatalf("malformed anchor err = %v, want ErrInvalidArgument", err)
+	}
+}
