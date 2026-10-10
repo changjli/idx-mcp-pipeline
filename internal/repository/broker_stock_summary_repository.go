@@ -219,6 +219,73 @@ type ForeignNetWindow struct {
 	Rows      []TickerForeignNet
 }
 
+// TickerNet is one ticker's total net accumulation over a window: Σ listed
+// buy − Σ listed sell plus the window's Others Net, in the Net Flow convention
+// (positive = net accumulation). Days is how many stored days the sum rests on.
+// A ticker with no stored broker data in the window is absent rather than
+// present with a zero — "not observed" and "net zero" are different answers.
+type TickerNet struct {
+	Ticker string
+	Net    int64
+	Days   int
+}
+
+// SumNetByTickers sums each given ticker's total net accumulation over the
+// `tradingDays` most recent market-wide trading days at or before `to`. It is
+// Broker Confirmation's read (CONTEXT): the listed top-10 rows' buy − sell plus
+// the footer's others_net tail, so the unlisted tail a top-10 read cannot
+// attribute is still counted. Pure DB read.
+//
+// The window walks the same market-wide stored day axis the screener's flow
+// window uses (`SumForeignNetByTickers`), and `to` is the day before the anchor
+// for the Flow Lead-in Window, so weekends and holidays never shorten it.
+// Observed means a stored totals row exists for the ticker in the window: a
+// ticker with none is absent from the result, never a zero net over no days.
+func (r *BrokerStockSummaryRepository) SumNetByTickers(db *sqlx.DB, tickers []string, to time.Time, tradingDays int) ([]TickerNet, error) {
+	nets := []TickerNet{}
+	if len(tickers) == 0 {
+		return nets, nil
+	}
+	err := db.Select(&nets, `
+		WITH window_days AS (
+			SELECT MIN(trading_day) AS day FROM (
+				SELECT DISTINCT trading_day FROM daily_prices
+				WHERE trading_day <= $1::date
+				ORDER BY trading_day DESC
+				LIMIT $2
+			) recent
+		),
+		listed AS (
+			SELECT ticker,
+			       COALESCE(SUM(CASE WHEN side = 'buy' THEN value ELSE -value END), 0)::bigint AS net
+			FROM broker_stock_summaries
+			WHERE ticker = ANY(string_to_array($3, ','))
+			  AND trading_day BETWEEN (SELECT day FROM window_days) AND $1::date
+			GROUP BY ticker
+		),
+		tail AS (
+			SELECT ticker,
+			       COALESCE(SUM(others_net), 0)::bigint AS net,
+			       COUNT(*)::int AS days
+			FROM broker_stock_summary_totals
+			WHERE ticker = ANY(string_to_array($3, ','))
+			  AND trading_day BETWEEN (SELECT day FROM window_days) AND $1::date
+			GROUP BY ticker
+		)
+		SELECT COALESCE(l.ticker, t.ticker) AS ticker,
+		       COALESCE(l.net, 0) + COALESCE(t.net, 0) AS net,
+		       COALESCE(t.days, 0) AS days
+		FROM listed l
+		FULL OUTER JOIN tail t ON t.ticker = l.ticker
+		WHERE COALESCE(t.days, 0) > 0
+		ORDER BY ticker`,
+		to.Format("2006-01-02"), tradingDays, strings.Join(tickers, ","))
+	if err != nil {
+		return nil, err
+	}
+	return nets, nil
+}
+
 // SumForeignNetByTickers sums the stored foreign net (f_nval) of the footer
 // totals for each given ticker over the `tradingDays` most recent market-wide
 // trading days at or before `to`. It is the screener's broker-flow column: a

@@ -145,6 +145,21 @@ The most recent ~3 months of Trading Days, sealed: filter changes are tuned on o
 **Decision Journal**:
 The append-only log of the AI's tradable verdicts — date, ticker, verdict, entry, TP, SL, rationale — written at decision time so history can grade them later. Reasoning is subjective; the logged verdict is falsifiable. _Avoid_: trade log, diary
 
+**Anomaly Grade**:
+The Grader that scores Anomalies: each anomaly ticker-day's Forward Returns against the Liquidity Baseline, split by Direction Bucket and by Anomaly Confluence. Its unit of observation is the deduped anomaly ticker-day — one `(ticker, Replay anchor)`, however many Anomaly rows (volume and/or price) triggered it — so a stock that spiked volume and rose 6% the same day is one observation, never two. _Avoid_: anomaly backtest, alert scoring
+
+**Direction Bucket**:
+One of the three anomaly populations an Anomaly Grade measures separately: `up` (a price Anomaly ≥ +5%), `down` (a price Anomaly ≤ −5%), and `volume_spike` (a volume Anomaly with no ≥5% price move). A ticker-day carrying both a volume and a price row belongs to the price row's bucket. The split exists because follow-through is directional, and a `volume_spike` is a participation event with no direction of its own — it is never folded into `up`. _Avoid_: anomaly type, signal class
+
+**Broker Confirmation**:
+Whether the broker tape agrees with an Anomaly's direction over the **Flow Lead-in Window**: total net accumulation — Σ listed buy − Σ listed sell plus the window's Others Net — is positive for `up` and negative for `down`. A `volume_spike`, having no direction, is split by net sign (accumulation / distribution / flat) instead of confirmed/not. An anomaly ticker-day with no stored broker rows in the window is **unobserved**: excluded from the confirmed/not split and reported as its own bucket, never zero-imputed. Distinct from the Flow Column, whose foreign-only net is ticket 04's subject. _Avoid_: bandarmology, smart money, foreign flow
+
+**Flow Lead-in Window**:
+The `flow_window_days` (default 20) stored Trading Days ending the Trading Day **before** an Anomaly Grade's anchor — the flow *into* the anomaly. Deliberately distinct from the Flow Column's window, which ends *on* the anchor day: including the anomaly day's own tape would make Broker Confirmation partly the move it is meant to corroborate. _Avoid_: flow window (that one is the Flow Column's, ending on the anchor)
+
+**Anomaly Confluence**:
+The cross of Broker Confirmation with disclosure presence — a `passed_filter` Disclosure for the ticker announced within the anomaly-gate lookback (`DisclosureFilterLookbackDays`) on or before the anchor — the "which anomaly population deserves attention" split. Reported nested inside each Direction Bucket, because confirmed `up` and confirmed `down` are opposite populations and pooling them would average a rise against a fall. _Avoid_: confirmation stack, filter overlap
+
 ## Fetch transport
 
 **Fetch Mode**:

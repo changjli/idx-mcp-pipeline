@@ -51,10 +51,12 @@ func runGrade(args []string) {
 	switch args[0] {
 	case "screen":
 		runGradeScreen(args[1:])
-	case "anomalies", "flow", "disclosures", "journal":
+	case "anomalies":
+		runGradeAnomalies(args[1:])
+	case "flow", "disclosures", "journal":
 		fatalf("measure: grade %s is not implemented yet", args[0])
 	default:
-		fatalf("measure: unknown grader %q; known: screen", args[0])
+		fatalf("measure: unknown grader %q; known: screen, anomalies", args[0])
 	}
 }
 
@@ -111,6 +113,83 @@ func runGradeScreen(args []string) {
 	// The markdown summary also goes to stdout: the tool computes, the reader
 	// interprets — no need to open the file to see the headline.
 	fmt.Println(usecase.RenderScreenGradeMarkdown(grade))
+}
+
+// runGradeAnomalies parses and runs the anomaly grader: one or more anchors, an
+// optional holdout seal, and the Flow Lead-in Window length.
+func runGradeAnomalies(args []string) {
+	flags := flag.NewFlagSet("grade anomalies", flag.ExitOnError)
+	var asOfs stringList
+	flags.Var(&asOfs, "as-of", "Replay anchor Trading Day, YYYY-MM-DD (repeatable, required)")
+	flowWindow := flags.Int("flow-window-days", 0, "Flow Lead-in Window length in trading days (default: 20)")
+	holdoutStartStr := flags.String("holdout-start", "", "seal date, YYYY-MM-DD: restrict anchors to on/after it (optional)")
+	reportsDir := flags.String("reports-dir", usecase.MeasurementReportDir, "directory for the JSON + markdown report")
+	revision := flags.String("revision", "", "git revision to stamp (default: derived from the working tree)")
+	_ = flags.Parse(args)
+
+	vip := config.NewViper()
+	log := config.NewLogger(vip)
+
+	opts, err := parseGradeAnomalyOptions(asOfs, *flowWindow, *holdoutStartStr)
+	if err != nil {
+		log.Fatalf("measure: %v", err)
+	}
+
+	db := config.NewDatabase(vip, log)
+	defer db.Close()
+
+	rev := strings.TrimSpace(*revision)
+	if rev == "" {
+		rev = gitRevision()
+	}
+
+	// The anomaly grader needs no screener: its Liquidity Baseline is the
+	// hard-filter stage read directly, so the structural funnel never runs.
+	priceRepo := repository.NewDailyPriceRepository(log)
+	engine := usecase.NewMeasurementEngine(db, log, nil, priceRepo, nil, rev)
+	engine.Anomalies = repository.NewAnomalyRepository(log)
+	engine.Disclosures = repository.NewDisclosureRepository(log)
+	engine.BrokerNet = repository.NewBrokerStockSummaryRepository(log)
+
+	grade, err := engine.GradeAnomalies(context.Background(), opts)
+	if err != nil {
+		log.Fatalf("measure: %v", err)
+	}
+
+	jsonPath, mdPath, err := grade.WriteFiles(*reportsDir)
+	if err != nil {
+		log.Fatalf("measure: write report: %v", err)
+	}
+	log.Infof("measure: wrote %s and %s", jsonPath, mdPath)
+
+	fmt.Println(usecase.RenderAnomalyGradeMarkdown(grade))
+}
+
+// parseGradeAnomalyOptions validates the `grade anomalies` flags. The
+// flow-window bound is checked by the engine, so a CLI parse never diverges from
+// the grader's own rule.
+func parseGradeAnomalyOptions(asOfs []string, flowWindow int, holdoutStartStr string) (usecase.AnomalyGradeOptions, error) {
+	if len(asOfs) == 0 {
+		return usecase.AnomalyGradeOptions{}, fmt.Errorf("%w: --as-of is required (YYYY-MM-DD)", usecase.ErrInvalidArgument)
+	}
+	anchors := make([]time.Time, 0, len(asOfs))
+	for _, raw := range asOfs {
+		day, err := parseMeasurementDay(raw, "--as-of")
+		if err != nil {
+			return usecase.AnomalyGradeOptions{}, err
+		}
+		anchors = append(anchors, day)
+	}
+
+	opts := usecase.AnomalyGradeOptions{Anchors: anchors, FlowWindowDays: flowWindow}
+	if strings.TrimSpace(holdoutStartStr) != "" {
+		seal, err := parseMeasurementDay(holdoutStartStr, "--holdout-start")
+		if err != nil {
+			return usecase.AnomalyGradeOptions{}, err
+		}
+		opts.HoldoutStart = &seal
+	}
+	return opts, nil
 }
 
 // parseGradeScreenOptions validates the `grade screen` flags. Errors are
@@ -205,6 +284,7 @@ func usage() {
 
 Usage:
   measure grade screen --as-of <date> [--as-of <date> ...] [--filters <name>] [--compare <name>] [flags]
+  measure grade anomalies --as-of <date> [--as-of <date> ...] [--flow-window-days <n>] [flags]
 
 The bare form `+"`measure --as-of <date>`"+` is an alias for `+"`grade screen`"+`.
 
@@ -212,6 +292,7 @@ Flags:
   --as-of <date>        Replay anchor Trading Day, YYYY-MM-DD (repeatable, required)
   --filters <name>      named filter set to grade (default: "default")
   --compare <name>      optional second named filter set to compare against
+  --flow-window-days <n> Flow Lead-in Window length for the anomaly grader (default: 20)
   --holdout-start <date> seal date: restrict anchors to on/after it
   --filtersets-dir <dir> directory of <name>.json filter sets
   --reports-dir <dir>   directory for the JSON + markdown report

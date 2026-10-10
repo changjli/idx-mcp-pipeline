@@ -128,6 +128,17 @@ type TickerForwardReturns struct {
 	Insufficient []string                        `json:"insufficient,omitempty"`
 	Coverage     map[string]ScreenColumnCoverage `json:"coverage,omitempty"`
 	ForeignNet   *int64                          `json:"foreign_net,omitempty"`
+
+	// Anomaly Grade drill-down, empty on a screen row: the triggering anomaly
+	// types, the resolved Direction Bucket, the ticker-day's total net
+	// accumulation over the Flow Lead-in Window (nil when unobserved), its
+	// Broker Confirmation state, and whether a passed-filter Disclosure landed
+	// in the gate window (CONTEXT: Direction Bucket, Broker Confirmation).
+	AnomalyTypes    []string `json:"anomaly_types,omitempty"`
+	Direction       string   `json:"direction,omitempty"`
+	BrokerNet       *int64   `json:"broker_net,omitempty"`
+	BrokerState     string   `json:"broker_state,omitempty"`
+	DisclosureState string   `json:"disclosure_state,omitempty"`
 }
 
 // MeasurementCounts is the funnel in flat counts: the universe the Screen saw,
@@ -265,6 +276,12 @@ type MeasurementEngine struct {
 	// Revision is the git revision stamped into every report. The CLI supplies
 	// it so the engine stays pure and testable.
 	Revision string
+	// Anomalies, Disclosures and BrokerNet are the Anomaly Grade's reads. The
+	// screen grader never touches them, so the engine's original construction
+	// is unchanged; GradeAnomalies requires all three to be set.
+	Anomalies   MeasurementAnomalySource
+	Disclosures MeasurementDisclosureSource
+	BrokerNet   MeasurementBrokerNetSource
 }
 
 func NewMeasurementEngine(db *sqlx.DB, log *logrus.Logger, screen MeasurementScreener, prices MeasurementPriceSource, filters *MeasurementFilterRegistry, revision string) *MeasurementEngine {

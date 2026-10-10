@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -64,6 +65,31 @@ func (r *DisclosureRepository) FindByTickerAndDate(db *sqlx.DB, ticker string, d
 		ticker, date,
 	)
 	return disclosures, err
+}
+
+// PassedTickersInWindow returns the distinct tickers among `tickers` that had
+// at least one passed-filter Disclosure announced within [from, to]. It is the
+// Anomaly Grade's disclosure-presence read: the same `passed_filter = true`
+// predicate `FindByDateWithDisclosures` joins on, so a bucket's "disclosure
+// present" means exactly what `get_market_anomalies` reports. The ticker list
+// rides as a comma-joined string split in SQL (the FindByTickersUpTo pattern);
+// an empty list is an empty answer, not an error.
+func (r *DisclosureRepository) PassedTickersInWindow(db *sqlx.DB, tickers []string, from, to time.Time) ([]string, error) {
+	passed := []string{}
+	if len(tickers) == 0 {
+		return passed, nil
+	}
+	err := db.Select(&passed, `
+		SELECT DISTINCT ticker FROM disclosures
+		WHERE ticker = ANY(string_to_array($1, ','))
+		  AND announcement_date BETWEEN $2::date AND $3::date
+		  AND passed_filter = true
+		ORDER BY ticker`,
+		strings.Join(tickers, ","), from.Format("2006-01-02"), to.Format("2006-01-02"))
+	if err != nil {
+		return nil, err
+	}
+	return passed, nil
 }
 
 // FindByTickerWithDate returns a ticker's disclosures (metadata only — the

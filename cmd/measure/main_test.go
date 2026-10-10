@@ -110,3 +110,31 @@ func TestParseGradeScreenOptions(t *testing.T) {
 		t.Fatalf("malformed anchor err = %v, want ErrInvalidArgument", err)
 	}
 }
+
+// TestParseGradeAnomalyOptions — the grade-anomalies boundary accepts repeated
+// anchors and a flow window, passes a holdout seal through, and refuses missing
+// or malformed dates as structured errors.
+func TestParseGradeAnomalyOptions(t *testing.T) {
+	opts, err := parseGradeAnomalyOptions([]string{"2026-06-01", "2026-07-01"}, 15, "2026-04-01")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(opts.Anchors) != 2 ||
+		!opts.Anchors[0].Equal(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)) ||
+		!opts.Anchors[1].Equal(time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("anchors = %v, want 2026-06-01 and 2026-07-01", opts.Anchors)
+	}
+	if opts.FlowWindowDays != 15 {
+		t.Fatalf("flow window = %d, want 15", opts.FlowWindowDays)
+	}
+	if opts.HoldoutStart == nil || !opts.HoldoutStart.Equal(time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("holdout = %v, want 2026-04-01", opts.HoldoutStart)
+	}
+
+	if _, err := parseGradeAnomalyOptions(nil, 0, ""); !errors.Is(err, usecase.ErrInvalidArgument) {
+		t.Fatalf("missing anchor err = %v, want ErrInvalidArgument", err)
+	}
+	if _, err := parseGradeAnomalyOptions([]string{"June"}, 0, ""); !errors.Is(err, usecase.ErrInvalidArgument) {
+		t.Fatalf("malformed anchor err = %v, want ErrInvalidArgument", err)
+	}
+}
