@@ -184,6 +184,15 @@ The `flow_window_days` (default 20) stored Trading Days ending the Trading Day *
 **Anomaly Confluence**:
 The cross of Broker Confirmation with disclosure presence — a `passed_filter` Disclosure for the ticker announced within the anomaly-gate lookback (`DisclosureFilterLookbackDays`) on or before the anchor — the "which anomaly population deserves attention" split. Reported nested inside each Direction Bucket, because confirmed `up` and confirmed `down` are opposite populations and pooling them would average a rise against a fall. _Avoid_: confirmation stack, filter overlap
 
+**Flow Grade**:
+The Grader that scores the Flow Column's claim — whether foreign accumulation precedes outperformance. It buckets the hard-filter-stage universe (the Liquidity Baseline) by stored `foreign_net` and measures each bucket's Forward Returns against that same baseline. Its window and coverage caveats are the Flow Column's, not the Anomaly Grade's Flow Lead-in Window; it grades evidence for a keep/retire/promote decision on the sort key, never an existing tunable. _Avoid_: foreign-flow backtest, bandarmology scan
+
+**Flow Bucket**:
+One `foreign_net` sign population in a Flow Grade: `positive` (net > 0), `negative` (net < 0), `flat` (observed, net = 0), and `unobserved` (no stored footer in the flow window). Flat is its own bucket — a zero net is observed but not accumulation — and unobserved is its own bucket, never zero-imputed; because it usually dominates the baseline, its Excess is near-zero by construction. _Avoid_: flow cohort, flow group
+
+**Signed Magnitude Tercile**:
+A Flow Grade's secondary split: the observed `foreign_net` values cut into thirds by **signed** net (low most-negative → high most-positive), pooled across Replay Dates. Cut on the raw Σ (the shipped Flow Column, absolute like a filter threshold), so `high` is the tail a prospective one-sided `foreign_net >= X` filter would target. _Avoid_: flow quantile, flow decile
+
 ## Fetch transport
 
 **Fetch Mode**:
@@ -211,4 +220,5 @@ _Avoid_: cookie, session cookie
 - **Source Status → Pipeline**: each Wave-1 source has one `source_status` row; `get_pipeline_status` is its MCP-readable face.
 - **Structural Filter → Indicator Registry**: a filter names a registry spec, and the filter's key and the row column's key are the same canonical string (`ma_distance:20:50`) — which is why a filter's own number appears in the row it judged, and why the filter's indicator is computed even when it was not requested as a column.
 - **Flow Column → Broker Stock Summary**: a screen row's `foreign_net` is Σ `f_nval` over the flow window, read from the same stored footer totals `get_sector_flow` aggregates — one source, so a ticker's flow reads the same in a sector breakdown and in a shortlist row.
+- **Flow Grade → Flow Column**: the Flow Grade buckets by exactly the Flow Column's `foreign_net`, over its window ending on the anchor, so a measured edge transfers to the sort key and to any future filter on that column; it is distinct from the Anomaly Grade's Broker Confirmation, which reads total net over a lead-in window ending the day before.
 - **Column Coverage → Flow Column**: every row flags whether its optional column was observed and over how many days, against the response's `flow_days_in_window` denominator (the same covered-vs-spanning shape Coverage names for a Net Flow window).

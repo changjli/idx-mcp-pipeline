@@ -282,6 +282,9 @@ type MeasurementEngine struct {
 	Anomalies   MeasurementAnomalySource
 	Disclosures MeasurementDisclosureSource
 	BrokerNet   MeasurementBrokerNetSource
+	// ForeignFlow is the Flow Grade's read of the Flow Column (Σ f_nval). The
+	// other graders never touch it; GradeFlow requires it to be set.
+	ForeignFlow MeasurementForeignFlowSource
 	// Journal and JournalPrices are the Journal Grade's reads. The screen and
 	// anomaly graders never touch them; GradeJournal requires both to be set.
 	Journal       MeasurementJournalSource

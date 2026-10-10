@@ -681,16 +681,10 @@ func anomalyGradeNotes(flowWindow int) []string {
 	}
 }
 
-// resolveAnomalyFlowWindow resolves the Flow Lead-in Window length, rejecting an
-// over-long ask rather than silently truncating it.
+// resolveAnomalyFlowWindow resolves the Flow Lead-in Window length; it shares
+// one rule with the Flow Column's window so neither grader can drift.
 func resolveAnomalyFlowWindow(days int) (int, error) {
-	if days == 0 {
-		return defaultFlowWindowDays, nil
-	}
-	if days < 1 || days > maxFlowWindowDays {
-		return 0, fmt.Errorf("%w: flow_window_days must be 1..%d, got %d", ErrInvalidArgument, maxFlowWindowDays, days)
-	}
-	return days, nil
+	return resolveFlowWindow(days)
 }
 
 // compile-time checks: the concrete repositories satisfy the Anomaly Grade seams.
