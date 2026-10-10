@@ -282,6 +282,10 @@ type MeasurementEngine struct {
 	Anomalies   MeasurementAnomalySource
 	Disclosures MeasurementDisclosureSource
 	BrokerNet   MeasurementBrokerNetSource
+	// Journal and JournalPrices are the Journal Grade's reads. The screen and
+	// anomaly graders never touch them; GradeJournal requires both to be set.
+	Journal       MeasurementJournalSource
+	JournalPrices JournalPriceSource
 }
 
 func NewMeasurementEngine(db *sqlx.DB, log *logrus.Logger, screen MeasurementScreener, prices MeasurementPriceSource, filters *MeasurementFilterRegistry, revision string) *MeasurementEngine {

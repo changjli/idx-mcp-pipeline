@@ -46,17 +46,19 @@ func main() {
 // built; the other graders are named so a caller gets a clear refusal.
 func runGrade(args []string) {
 	if len(args) == 0 {
-		fatalf("measure: grade requires a grader; expected one of: screen")
+		fatalf("measure: grade requires a grader; expected one of: screen, anomalies, journal")
 	}
 	switch args[0] {
 	case "screen":
 		runGradeScreen(args[1:])
 	case "anomalies":
 		runGradeAnomalies(args[1:])
-	case "flow", "disclosures", "journal":
+	case "journal":
+		runGradeJournal(args[1:])
+	case "flow", "disclosures":
 		fatalf("measure: grade %s is not implemented yet", args[0])
 	default:
-		fatalf("measure: unknown grader %q; known: screen, anomalies", args[0])
+		fatalf("measure: unknown grader %q; known: screen, anomalies, journal", args[0])
 	}
 }
 
@@ -163,6 +165,78 @@ func runGradeAnomalies(args []string) {
 	log.Infof("measure: wrote %s and %s", jsonPath, mdPath)
 
 	fmt.Println(usecase.RenderAnomalyGradeMarkdown(grade))
+}
+
+// runGradeJournal parses and runs the journal grader: the optional decision-date
+// window, and nothing else — the journal grader replays no Screen and reads no
+// Liquidity Baseline, only the agent-written verdicts and stored prices.
+func runGradeJournal(args []string) {
+	flags := flag.NewFlagSet("grade journal", flag.ExitOnError)
+	fromStr := flags.String("from", "", "earliest decision date to grade, YYYY-MM-DD (inclusive, optional)")
+	untilStr := flags.String("until", "", "latest decision date to grade, YYYY-MM-DD (inclusive, optional)")
+	journalDir := flags.String("journal-dir", usecase.MeasurementJournalDir, "directory of <YYYY-MM>.jsonl Decision Journal files")
+	reportsDir := flags.String("reports-dir", usecase.MeasurementReportDir, "directory for the JSON + markdown report")
+	revision := flags.String("revision", "", "git revision to stamp (default: derived from the working tree)")
+	_ = flags.Parse(args)
+
+	vip := config.NewViper()
+	log := config.NewLogger(vip)
+
+	opts, err := parseGradeJournalOptions(*fromStr, *untilStr)
+	if err != nil {
+		log.Fatalf("measure: %v", err)
+	}
+
+	db := config.NewDatabase(vip, log)
+	defer db.Close()
+
+	rev := strings.TrimSpace(*revision)
+	if rev == "" {
+		rev = gitRevision()
+	}
+
+	priceRepo := repository.NewDailyPriceRepository(log)
+	engine := usecase.NewMeasurementEngine(db, log, nil, nil, nil, rev)
+	engine.Journal = usecase.NewJournalFileReader(*journalDir)
+	engine.JournalPrices = priceRepo
+
+	grade, err := engine.GradeJournal(context.Background(), opts)
+	if err != nil {
+		log.Fatalf("measure: %v", err)
+	}
+
+	jsonPath, mdPath, err := grade.WriteFiles(*reportsDir)
+	if err != nil {
+		log.Fatalf("measure: write report: %v", err)
+	}
+	log.Infof("measure: wrote %s and %s", jsonPath, mdPath)
+
+	fmt.Println(usecase.RenderJournalGradeMarkdown(grade))
+}
+
+// parseGradeJournalOptions validates the `grade journal` window flags. Both are
+// optional; when both are given, from must not be after until.
+func parseGradeJournalOptions(fromStr, untilStr string) (usecase.JournalGradeOptions, error) {
+	var opts usecase.JournalGradeOptions
+	if strings.TrimSpace(fromStr) != "" {
+		from, err := parseMeasurementDay(fromStr, "--from")
+		if err != nil {
+			return usecase.JournalGradeOptions{}, err
+		}
+		opts.From = &from
+	}
+	if strings.TrimSpace(untilStr) != "" {
+		until, err := parseMeasurementDay(untilStr, "--until")
+		if err != nil {
+			return usecase.JournalGradeOptions{}, err
+		}
+		opts.Until = &until
+	}
+	if opts.From != nil && opts.Until != nil && opts.From.After(*opts.Until) {
+		return usecase.JournalGradeOptions{}, fmt.Errorf("%w: --from %s is after --until %s",
+			usecase.ErrInvalidArgument, opts.From.Format("2006-01-02"), opts.Until.Format("2006-01-02"))
+	}
+	return opts, nil
 }
 
 // parseGradeAnomalyOptions validates the `grade anomalies` flags. The
@@ -285,6 +359,7 @@ func usage() {
 Usage:
   measure grade screen --as-of <date> [--as-of <date> ...] [--filters <name>] [--compare <name>] [flags]
   measure grade anomalies --as-of <date> [--as-of <date> ...] [--flow-window-days <n>] [flags]
+  measure grade journal [--from <date>] [--until <date>] [flags]
 
 The bare form `+"`measure --as-of <date>`"+` is an alias for `+"`grade screen`"+`.
 
@@ -293,8 +368,11 @@ Flags:
   --filters <name>      named filter set to grade (default: "default")
   --compare <name>      optional second named filter set to compare against
   --flow-window-days <n> Flow Lead-in Window length for the anomaly grader (default: 20)
+  --from <date>         earliest decision date for the journal grader, YYYY-MM-DD (optional)
+  --until <date>        latest decision date for the journal grader, YYYY-MM-DD (optional)
   --holdout-start <date> seal date: restrict anchors to on/after it
   --filtersets-dir <dir> directory of <name>.json filter sets
+  --journal-dir <dir>   directory of <YYYY-MM>.jsonl Decision Journal files
   --reports-dir <dir>   directory for the JSON + markdown report
   --revision <rev>      git revision to stamp (default: derived from the tree)
 `)

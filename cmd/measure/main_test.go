@@ -138,3 +138,31 @@ func TestParseGradeAnomalyOptions(t *testing.T) {
 		t.Fatalf("malformed anchor err = %v, want ErrInvalidArgument", err)
 	}
 }
+
+// TestParseGradeJournalOptions — the journal boundary accepts an optional
+// inclusive window (either bound may be open) and refuses an inverted or
+// malformed date as a structured error.
+func TestParseGradeJournalOptions(t *testing.T) {
+	opts, err := parseGradeJournalOptions("2026-06-01", "2026-06-30")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.From == nil || !opts.From.Equal(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("from = %v, want 2026-06-01", opts.From)
+	}
+	if opts.Until == nil || !opts.Until.Equal(time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("until = %v, want 2026-06-30", opts.Until)
+	}
+
+	open, err := parseGradeJournalOptions("", "")
+	if err != nil || open.From != nil || open.Until != nil {
+		t.Fatalf("open window = %+v / %v, want both bounds nil", open, err)
+	}
+
+	if _, err := parseGradeJournalOptions("2026-07-01", "2026-06-01"); !errors.Is(err, usecase.ErrInvalidArgument) {
+		t.Fatalf("inverted window err = %v, want ErrInvalidArgument", err)
+	}
+	if _, err := parseGradeJournalOptions("June", ""); !errors.Is(err, usecase.ErrInvalidArgument) {
+		t.Fatalf("malformed from err = %v, want ErrInvalidArgument", err)
+	}
+}
