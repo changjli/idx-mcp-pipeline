@@ -355,10 +355,14 @@ var Graph = NewRegistry(
 		Key:  dateKey(TypePipelineDaily),
 		Day:  dateDay(TypePipelineDaily),
 		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
-			dateKey := day.Format("2006-01-02")
+			// TaskIDs are WIB-date-keyed (scheduler.DailyCronSpec is
+			// Asia/Jakarta-anchored), so a fire between 00:00 and 07:00 WIB
+			// dedups against the right trading day, not the previous UTC one.
+			dateKey := day.In(wibLoc()).Format("2006-01-02")
 			taskKey := TaskKey(TypePipelineDaily, dateKey)
 			task := asynq.NewTask(TypePipelineDaily, nil)
-			return enq.Enqueue(task, asynq.TaskID(taskKey), asynq.Queue("default"))
+			base := []asynq.Option{asynq.TaskID(taskKey), asynq.Queue("default")}
+			return enq.Enqueue(task, append(base, opts...)...)
 		},
 		Wave: []string{TypeStockSummary, TypeAnnouncements, TypeRSS, TypeCorporateActions, TypeSuspensions, TypeIndexSummary, TypeKSEIBalancepos, TypeCleanup},
 	},

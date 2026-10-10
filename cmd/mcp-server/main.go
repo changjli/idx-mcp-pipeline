@@ -83,7 +83,7 @@ func main() {
 
 	// Task mux: route task types to handlers
 	mux := asynq.NewServeMux()
-	mux.Handle(tasks.TypePipelineDaily, tasks.NewPipelineDailyHandler(log, asynqClient))
+	mux.Handle(tasks.TypePipelineDaily, tasks.NewPipelineDailyHandler(log, asynqClient, db, dailyPriceRepo))
 	stockSummaryIngest := pipeline.NewStockSummaryIngest(
 		pipeline.NewSQLDailyPriceStore(dailyPriceRepo, db),
 		pipeline.NewSQLTickerRegistrar(tickerRepo, db),

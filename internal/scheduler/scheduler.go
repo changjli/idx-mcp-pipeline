@@ -120,19 +120,61 @@ func LogNextFireTime(sched *asynq.Scheduler, log *logrus.Logger) {
 	log.Infof("scheduler next fire: %s (%s)", next.Format(time.RFC3339), DailyCronSpec)
 }
 
-// SelfHealMissedTick recovers a missed scheduler tick: if today's
-// pipeline:daily task isn't enqueued, enqueue it. TaskID dedup makes a
-// double-fire safe — ErrTaskIDConflict means today's fan-out is already queued.
+// SelfHealMissedTick recovers a missed scheduler tick. A boot BEFORE the wave
+// time is a wake-up, not a missed tick: the cron will fire on its own at
+// 20:05 WIB, so the task is scheduled for the wave time (asynq.ProcessIn)
+// rather than run immediately. Enqueueing immediately would run the wave
+// pre-market — fetching the current day's summary before IDX publishes it
+// (0 rows, recorded as success) — and the completed task then holds its
+// date-keyed TaskID under IngestRetention (24h), deduping the evening cron:
+// the day's data never lands. If the dyno sleeps before the scheduled task
+// fires, the late processing still recovers — the handler's WaveTargetDay
+// picks the latest missing trading day. A boot AFTER the wave time is the
+// genuinely-missed-tick case: enqueue immediately. TaskID dedup makes a
+// double-fire safe — ErrTaskIDConflict means today's fan-out is already
+// queued.
 func SelfHealMissedTick(client *asynq.Client, log *logrus.Logger) {
 	now := time.Now()
-	info, err := tasks.EnqueuePipelineDaily(client, now)
+	var opts []asynq.Option
+	if d := timeUntilWave(now); d > 0 {
+		opts = append(opts, asynq.ProcessIn(d))
+	}
+	info, err := tasks.EnqueuePipelineDaily(client, now, opts...)
 	if errors.Is(err, asynq.ErrTaskIDConflict) {
-		log.Infof("self-heal: pipeline:daily task for %s already enqueued, skipping", now.Format("2006-01-02"))
+		log.Infof("self-heal: pipeline:daily task for %s already enqueued, skipping", now.In(jakartaLoc()).Format("2006-01-02"))
 	} else if err != nil {
 		log.Warnf("self-heal: failed to enqueue pipeline:daily: %v", err)
+	} else if len(opts) > 0 {
+		log.Infof("self-heal: scheduled pipeline:daily for the wave time (in %s), id=%s", timeUntilWave(now), info.ID)
 	} else {
 		log.Infof("self-heal: re-enqueued missed pipeline:daily task id=%s", info.ID)
 	}
+}
+
+// jakartaLoc returns the Asia/Jakarta location (UTC fallback if the tz
+// database is unavailable).
+func jakartaLoc() *time.Location {
+	loc, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+// timeUntilWave returns the duration until the next 20:05 WIB wave time —
+// today's if still ahead, tomorrow's otherwise. Zero or negative means the
+// wave time has passed: a genuinely missed tick, to recover immediately.
+func timeUntilWave(now time.Time) time.Duration {
+	nowLoc := now.In(jakartaLoc())
+	next := time.Date(nowLoc.Year(), nowLoc.Month(), nowLoc.Day(), 20, 5, 0, 0, jakartaLoc())
+	if !nowLoc.Before(next) {
+		next = next.AddDate(0, 0, 1)
+	}
+	// Sub, not time.Until: the duration must be measured against the passed
+	// `now`, not the real wall clock (time.Until ignores the parameter, which
+	// makes the function untestable with fixed times and wrong for a
+	// constructed future "now").
+	return next.Sub(nowLoc)
 }
 
 // SelfHealArchived recovers archived tasks of one registry node. Archived

@@ -57,10 +57,22 @@ func TaskKey(typ, date string) string {
 	return typ + ":" + date
 }
 
+// wibLoc returns the Asia/Jakarta location (UTC fallback if the tz database
+// is unavailable). Shared by wave scheduling that must be WIB-anchored.
+func wibLoc() *time.Location {
+	loc, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
 // EnqueuePipelineDaily enqueues the pipeline:daily fan-out task for the given
-// date with a date-keyed TaskID. The handler ignores the payload and derives
-// "today" from time.Now() server-side; the TaskID is for manual-trigger dedup
-// only. Returns ErrTaskIDConflict if already enqueued for this date.
-func EnqueuePipelineDaily(client *asynq.Client, date time.Time) (*asynq.TaskInfo, error) {
-	return Graph.Node(TypePipelineDaily).Enqueue(client, date, nil)
+// date with a date-keyed TaskID. The handler ignores the payload — it picks
+// its wave target day server-side (WaveTargetDay) — so the TaskID is for
+// dedup only. Returns ErrTaskIDConflict if already enqueued for that date.
+// Extra opts (e.g. asynq.ProcessIn for a boot before the wave time) are
+// appended to the default options.
+func EnqueuePipelineDaily(client *asynq.Client, date time.Time, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+	return Graph.Node(TypePipelineDaily).Enqueue(client, date, nil, opts...)
 }
