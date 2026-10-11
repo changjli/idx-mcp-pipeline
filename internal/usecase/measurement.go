@@ -197,27 +197,32 @@ type SkippedAnchor struct {
 // the label (single date, or `first_to_last`); AsOfStart/AsOfEnd are the
 // structured range.
 type MeasurementReport struct {
-	AsOf                 string                 `json:"as_of"`
-	AsOfStart            string                 `json:"as_of_start,omitempty"`
-	AsOfEnd              string                 `json:"as_of_end,omitempty"`
-	FilterSet            string                 `json:"filter_set"`
-	FilterSetDescription string                 `json:"filter_set_description,omitempty"`
-	HoldoutStart         string                 `json:"holdout_start,omitempty"`
-	SealedWindow         bool                   `json:"sealed_window"`
-	ReplayDates          []string               `json:"replay_dates"`
-	GitRevision          string                 `json:"git_revision"`
-	GeneratedAt          string                 `json:"generated_at"`
-	DistinctTickers      int                    `json:"distinct_tickers"`
-	Params               ReplayParams           `json:"params"`
-	Funnel               ScreenStocksFunnel     `json:"funnel"`
-	Counts               MeasurementCounts      `json:"counts"`
-	Horizons             []HorizonStats         `json:"horizons"`
-	Survivors            []TickerForwardReturns `json:"survivors"`
-	BigCapBasket         []TickerForwardReturns `json:"big_cap_basket"`
-	PerDate              []DateGrade            `json:"per_date,omitempty"`
-	Flags                []string               `json:"flags"`
-	SuccessCriteria      []SuccessCriterion     `json:"success_criteria"`
-	Notes                []string               `json:"notes"`
+	AsOf                 string `json:"as_of"`
+	AsOfStart            string `json:"as_of_start,omitempty"`
+	AsOfEnd              string `json:"as_of_end,omitempty"`
+	FilterSet            string `json:"filter_set"`
+	FilterSetDescription string `json:"filter_set_description,omitempty"`
+	// ConfigHash pins the Active Filter Set's Config Document this report graded;
+	// ActiveFilterSet is the name in force. Both come from R2 (ADR-0016) and are
+	// empty when no document was published.
+	ConfigHash      string                 `json:"config_hash,omitempty"`
+	ActiveFilterSet string                 `json:"active_filter_set,omitempty"`
+	HoldoutStart    string                 `json:"holdout_start,omitempty"`
+	SealedWindow    bool                   `json:"sealed_window"`
+	ReplayDates     []string               `json:"replay_dates"`
+	GitRevision     string                 `json:"git_revision"`
+	GeneratedAt     string                 `json:"generated_at"`
+	DistinctTickers int                    `json:"distinct_tickers"`
+	Params          ReplayParams           `json:"params"`
+	Funnel          ScreenStocksFunnel     `json:"funnel"`
+	Counts          MeasurementCounts      `json:"counts"`
+	Horizons        []HorizonStats         `json:"horizons"`
+	Survivors       []TickerForwardReturns `json:"survivors"`
+	BigCapBasket    []TickerForwardReturns `json:"big_cap_basket"`
+	PerDate         []DateGrade            `json:"per_date,omitempty"`
+	Flags           []string               `json:"flags"`
+	SuccessCriteria []SuccessCriterion     `json:"success_criteria"`
+	Notes           []string               `json:"notes"`
 }
 
 // HorizonDelta is one horizon's two-set comparison. ExcessA and ExcessB are each
@@ -246,19 +251,24 @@ type ScreenComparison struct {
 // result for each filter set, the comparison when two were asked for, and the
 // run-level bookkeeping (dates, revision, skipped anchors).
 type ScreenGradeReport struct {
-	Kind           string              `json:"kind"`
-	AsOfStart      string              `json:"as_of_start"`
-	AsOfEnd        string              `json:"as_of_end"`
-	ReplayDates    []string            `json:"replay_dates"`
-	GitRevision    string              `json:"git_revision"`
-	GeneratedAt    string              `json:"generated_at"`
-	HoldoutStart   string              `json:"holdout_start,omitempty"`
-	SealedWindow   bool                `json:"sealed_window"`
-	SkippedAnchors []SkippedAnchor     `json:"skipped_anchors"`
-	FilterSets     []MeasurementReport `json:"filter_sets"`
-	Comparison     *ScreenComparison   `json:"comparison,omitempty"`
-	Flags          []string            `json:"flags"`
-	Notes          []string            `json:"notes"`
+	Kind        string   `json:"kind"`
+	AsOfStart   string   `json:"as_of_start"`
+	AsOfEnd     string   `json:"as_of_end"`
+	ReplayDates []string `json:"replay_dates"`
+	GitRevision string   `json:"git_revision"`
+	GeneratedAt string   `json:"generated_at"`
+	// ConfigHash pins the Active Filter Set's Config Document this Grade read
+	// (ADR-0016); ActiveFilterSet is the name in force. Empty when no document
+	// was published.
+	ConfigHash      string              `json:"config_hash,omitempty"`
+	ActiveFilterSet string              `json:"active_filter_set,omitempty"`
+	HoldoutStart    string              `json:"holdout_start,omitempty"`
+	SealedWindow    bool                `json:"sealed_window"`
+	SkippedAnchors  []SkippedAnchor     `json:"skipped_anchors"`
+	FilterSets      []MeasurementReport `json:"filter_sets"`
+	Comparison      *ScreenComparison   `json:"comparison,omitempty"`
+	Flags           []string            `json:"flags"`
+	Notes           []string            `json:"notes"`
 }
 
 // MeasurementEngine runs Replays and scores them. It is read-only with respect
@@ -321,6 +331,11 @@ type ScreenGradeOptions struct {
 	Compare string
 	// HoldoutStart seals the window for every anchor.
 	HoldoutStart *time.Time
+	// ConfigHash and ActiveFilterSet are the Active Filter Set's Config Document
+	// the Grade read, stamped into the report so a Grade pins what it graded
+	// (ADR-0016). The CLI supplies them from R2.
+	ConfigHash      string
+	ActiveFilterSet string
 }
 
 // replayResult is one anchor's replay before it is collapsed into a report: the
@@ -521,21 +536,27 @@ func (e *MeasurementEngine) GradeScreen(ctx context.Context, opts ScreenGradeOpt
 	}
 
 	grade := &ScreenGradeReport{
-		Kind:           screenGradeKind,
-		AsOfStart:      gradable[0].Format("2006-01-02"),
-		AsOfEnd:        gradable[len(gradable)-1].Format("2006-01-02"),
-		ReplayDates:    replayDateStrings(gradable),
-		GitRevision:    e.Revision,
-		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
-		HoldoutStart:   formatOptionalDay(opts.HoldoutStart),
-		SealedWindow:   opts.HoldoutStart != nil,
-		SkippedAnchors: skipped,
-		FilterSets:     reports,
-		Flags:          []string{},
+		Kind:            screenGradeKind,
+		AsOfStart:       gradable[0].Format("2006-01-02"),
+		AsOfEnd:         gradable[len(gradable)-1].Format("2006-01-02"),
+		ReplayDates:     replayDateStrings(gradable),
+		GitRevision:     e.Revision,
+		GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
+		ConfigHash:      opts.ConfigHash,
+		ActiveFilterSet: opts.ActiveFilterSet,
+		HoldoutStart:    formatOptionalDay(opts.HoldoutStart),
+		SealedWindow:    opts.HoldoutStart != nil,
+		SkippedAnchors:  skipped,
+		FilterSets:      reports,
+		Flags:           []string{},
 		Notes: []string{
 			"Pooled across Replay Dates: each horizon's median, hit rate, and n are observation counts, not independent-sample counts.",
 			"distinct_tickers beside each set's n is the number of distinct names the observations rest on.",
 		},
+	}
+	for i := range grade.FilterSets {
+		grade.FilterSets[i].ConfigHash = opts.ConfigHash
+		grade.FilterSets[i].ActiveFilterSet = opts.ActiveFilterSet
 	}
 	if len(reports) == 2 {
 		grade.Comparison = compareScreenSets(reports[0], reports[1])

@@ -1,40 +1,16 @@
 package usecase
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-// WriteFiles renders a Journal Grade as JSON and markdown under dir, creating
-// the directory if needed, and returns the two paths. The base name is
-// <from>_journal, <from>_to_<until>_journal, or all_journal when the window is
-// open at both ends.
-func (g *JournalGradeReport) WriteFiles(dir string) (string, string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", "", fmt.Errorf("create report directory %s: %w", dir, err)
-	}
-
-	base := g.reportBaseName()
-	jsonPath := filepath.Join(dir, base+".json")
-	mdPath := filepath.Join(dir, base+".md")
-
-	payload, err := json.MarshalIndent(g, "", "  ")
-	if err != nil {
-		return "", "", fmt.Errorf("marshal journal grade report: %w", err)
-	}
-	payload = append(payload, '\n')
-
-	if err := os.WriteFile(jsonPath, payload, 0o644); err != nil {
-		return "", "", fmt.Errorf("write %s: %w", jsonPath, err)
-	}
-	if err := os.WriteFile(mdPath, []byte(RenderJournalGradeMarkdown(g)), 0o644); err != nil {
-		return "", "", fmt.Errorf("write %s: %w", mdPath, err)
-	}
-	return jsonPath, mdPath, nil
+// Artifact renders a Journal Grade as a ReportArtifact for the report store. The
+// base name is <from>_journal, <from>_to_<until>_journal, or all_journal when the
+// window is open at both ends.
+func (g *JournalGradeReport) Artifact() (ReportArtifact, error) {
+	return newReportArtifact(g.reportBaseName(), g, RenderJournalGradeMarkdown(g))
 }
 
 // reportBaseName derives the filename stem from the decision-date window.
@@ -67,10 +43,10 @@ func RenderJournalGradeMarkdown(g *JournalGradeReport) string {
 		g.EntryWindowDays, g.ResolutionDays)
 
 	b.WriteString("## Counts\n\n")
-	b.WriteString("| Logged | Tradable (SETUP) | WATCH | PASS | Malformed | Duplicates |\n")
-	b.WriteString("|---:|---:|---:|---:|---:|---:|\n")
-	fmt.Fprintf(&b, "| %d | %d | %d | %d | %d | %d |\n\n",
-		g.Counts.Logged, g.Counts.Tradable, g.Counts.Watch, g.Counts.Pass, g.Counts.Malformed, g.Counts.Duplicates)
+	b.WriteString("| Logged | Tradable (SETUP) | WATCH | PASS | Conflicts | Malformed | Duplicates |\n")
+	b.WriteString("|---:|---:|---:|---:|---:|---:|---:|\n")
+	fmt.Fprintf(&b, "| %d | %d | %d | %d | %d | %d | %d |\n\n",
+		g.Counts.Logged, g.Counts.Tradable, g.Counts.Watch, g.Counts.Pass, g.Counts.Conflicts, g.Counts.Malformed, g.Counts.Duplicates)
 
 	b.WriteString("## Outcomes (tradable verdicts)\n\n")
 	b.WriteString("| Wins | Losses | Expired | Unresolved | Unfilled | Win rate | Calibration (no-trade share) |\n")
@@ -105,17 +81,31 @@ func RenderJournalGradeMarkdown(g *JournalGradeReport) string {
 	}
 	b.WriteString("\n")
 
+	if len(g.Conflicts) > 0 {
+		b.WriteString("## Verdict conflicts (excluded from grading)\n\n")
+		for _, conflict := range g.Conflicts {
+			fmt.Fprintf(&b, "- **%s %s** — %d session(s) disagree; mark a Committed Verdict to grade one\n",
+				conflict.DecisionDay, conflict.Ticker, len(conflict.Rows))
+			for _, row := range conflict.Rows {
+				fmt.Fprintf(&b, "  - `%s` **%s** (row %d) — entry %s, TP %s, CL %s\n",
+					row.Session, row.Verdict, row.ID,
+					formatZone(row.EntryLow, row.EntryHigh), formatZone(row.TPLow, row.TPHigh), formatZone(row.CLLow, row.CLHigh))
+			}
+		}
+		b.WriteString("\n")
+	}
+
 	if len(g.Malformed) > 0 {
-		b.WriteString("## Malformed lines (skipped, never graded)\n\n")
+		b.WriteString("## Malformed rows (skipped, never graded)\n\n")
 		for _, issue := range g.Malformed {
-			fmt.Fprintf(&b, "- `%s:%d` — %s\n", issue.File, issue.Line, issue.Reason)
+			fmt.Fprintf(&b, "- `%s` — %s\n", issue.Ref, issue.Reason)
 		}
 		b.WriteString("\n")
 	}
 	if len(g.Duplicates) > 0 {
-		b.WriteString("## Shadowed duplicates (later line graded)\n\n")
+		b.WriteString("## Shadowed rows (one graded)\n\n")
 		for _, issue := range g.Duplicates {
-			fmt.Fprintf(&b, "- `%s:%d` — %s\n", issue.File, issue.Line, issue.Reason)
+			fmt.Fprintf(&b, "- `%s` — %s\n", issue.Ref, issue.Reason)
 		}
 		b.WriteString("\n")
 	}

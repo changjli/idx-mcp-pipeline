@@ -96,3 +96,30 @@ func (s *R2Store) GetObject(ctx context.Context, key string) ([]byte, error) {
 	}
 	return data, nil
 }
+
+// ListObjects returns the keys under prefix. Paginated, so a prefix holding
+// many objects is fully enumerated. It is not part of the minimal ObjectStore
+// interface; the measurement report store reaches it through a narrow lister
+// assertion so the rest of the pipeline keeps its three-method seam.
+func (s *R2Store) ListObjects(ctx context.Context, prefix string) ([]string, error) {
+	var keys []string
+	var token *string
+	for {
+		out, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            aws.String(s.bucket),
+			Prefix:            aws.String(prefix),
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("r2 list %s/%s: %w", s.bucket, prefix, err)
+		}
+		for _, obj := range out.Contents {
+			keys = append(keys, aws.ToString(obj.Key))
+		}
+		if !aws.ToBool(out.IsTruncated) || out.NextContinuationToken == nil {
+			break
+		}
+		token = out.NextContinuationToken
+	}
+	return keys, nil
+}

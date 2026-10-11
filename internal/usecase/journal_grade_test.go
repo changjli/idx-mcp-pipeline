@@ -302,17 +302,15 @@ func TestGradeJournal_NoTradeCalibration(t *testing.T) {
 	}
 }
 
-// TestGradeJournal_DedupeLastWins — a repeated (date, ticker) keeps the later
-// line; the shadowed line is reported, not graded.
+// TestGradeJournal_DedupeLastWins — a repeated (date, ticker) within one session
+// keeps the later row; the shadowed row is reported, not graded.
 func TestGradeJournal_DedupeLastWins(t *testing.T) {
 	anchor, days := journalAnchorAndCalendar()
 	date := anchor.Format("2006-01-02")
 	first := journalSetup(date, "AAA", 100, 105, 90, 95, 120, 125) // would win
-	first.SourceFile = "measurement/journal/2026-06.jsonl"
-	first.SourceLine = 1
+	first.ID, first.Session = 1, "s1"
 	second := journalSetup(date, "AAA", 100, 105, 90, 95, 130, 135) // supersedes: day2 High 121 < 130
-	second.SourceFile = "measurement/journal/2026-06.jsonl"
-	second.SourceLine = 2
+	second.ID, second.Session = 2, "s1"
 	source := &fakeJournalSource{verdicts: []JournalVerdict{first, second}}
 	prices := &fakeJournalPrices{calendar: days, series: map[string][]entity.DailyPrice{
 		"AAA": {journalBar("AAA", days[1], 106, 101), journalBar("AAA", days[2], 121, 102)},
@@ -325,8 +323,8 @@ func TestGradeJournal_DedupeLastWins(t *testing.T) {
 	if report.Counts.Logged != 1 || report.Counts.Duplicates != 1 {
 		t.Fatalf("logged/duplicates = %d/%d, want 1/1", report.Counts.Logged, report.Counts.Duplicates)
 	}
-	if len(report.Duplicates) != 1 || report.Duplicates[0].Line != 1 {
-		t.Fatalf("duplicates = %+v, want the first line shadowed", report.Duplicates)
+	if len(report.Duplicates) != 1 || report.Duplicates[0].Ref != "measurement_journal#1 session=s1" {
+		t.Fatalf("duplicates = %+v, want the first row shadowed", report.Duplicates)
 	}
 	row := findJournalVerdict(t, report, "AAA")
 	if row.Outcome != outcomeExpired || row.TPLow == nil || !almostEqual(*row.TPLow, 130) {
@@ -334,14 +332,14 @@ func TestGradeJournal_DedupeLastWins(t *testing.T) {
 	}
 }
 
-// TestGradeJournal_MalformedReportedNotGraded — issues from the reader surface
+// TestGradeJournal_MalformedReportedNotGraded — issues from the source surface
 // in the report and are counted, never graded.
 func TestGradeJournal_MalformedReportedNotGraded(t *testing.T) {
 	anchor, days := journalAnchorAndCalendar()
 	date := anchor.Format("2006-01-02")
 	source := &fakeJournalSource{
 		verdicts: []JournalVerdict{journalSetup(date, "AAA", 100, 105, 90, 95, 120, 125)},
-		issues:   []JournalIssue{{File: "measurement/journal/2026-06.jsonl", Line: 2, Reason: "invalid JSON"}},
+		issues:   []JournalIssue{{Ref: "measurement_journal#2", Reason: "invalid row"}},
 	}
 	prices := &fakeJournalPrices{calendar: days, series: map[string][]entity.DailyPrice{
 		"AAA": {journalBar("AAA", days[1], 106, 101), journalBar("AAA", days[2], 121, 102)},

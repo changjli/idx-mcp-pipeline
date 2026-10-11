@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -55,9 +56,11 @@ const (
 	plannedRRGate = 2.0
 )
 
-// MeasurementJournalSource is the Journal Grader's read seam: the parsed
-// Verdicts in a decision-date window plus the malformed lines found while
-// reading. The concrete *JournalFileReader satisfies it.
+// MeasurementJournalSource is the Journal Grader's read seam: every raw
+// Verdict row in a decision-date window, ordered oldest-first, plus the rows it
+// could not read. It deliberately returns raw rows, not deduped ones — the
+// session/conflict/committed rule is the Grader's, so a source cannot decide
+// what a Verdict Conflict is. The concrete *JournalSQLSource satisfies it.
 type MeasurementJournalSource interface {
 	ReadVerdicts(from, to *time.Time) ([]JournalVerdict, []JournalIssue, error)
 }
@@ -72,10 +75,10 @@ type JournalPriceSource interface {
 	FindByTickerAndDateRange(db *sqlx.DB, ticker string, from, to time.Time) ([]entity.DailyPrice, error)
 }
 
-// JournalVerdict is one parsed Decision Journal line: a Verdict the agent logged
-// at decision time. A SETUP carries three zones (entry, cut-loss, target);
-// WATCH/PASS carry none. The source fields are provenance for the
-// malformed/duplicate report, never journal data.
+// JournalVerdict is one Decision Journal row: a Verdict the agent logged at
+// decision time. A SETUP carries three zones (entry, cut-loss, target);
+// WATCH/PASS carry none. The provenance fields below are for the
+// duplicate/conflict report, never journal data.
 type JournalVerdict struct {
 	Date      string   `json:"date"`
 	Ticker    string   `json:"ticker"`
@@ -88,16 +91,50 @@ type JournalVerdict struct {
 	TPHigh    *float64 `json:"tpHigh,omitempty"`
 	Rationale string   `json:"rationale"`
 
-	SourceFile string `json:"-"`
-	SourceLine int    `json:"-"`
+	// ID is the row's surrogate key; Session identifies the agent run that wrote
+	// it; Supersedes is the row a deliberate correction replaces; Committed marks
+	// the Verdict the Grader scores on a key that holds more than one; CreatedAt
+	// orders same-session last-wins. Provenance, so never surfaced as journal
+	// data — the report carries what it needs under Duplicates/Conflicts.
+	ID         int64     `json:"-"`
+	Session    string    `json:"-"`
+	Supersedes *int64    `json:"-"`
+	Committed  bool      `json:"-"`
+	CreatedAt  time.Time `json:"-"`
 }
 
-// JournalIssue is one malformed or shadowed journal line, reported so a reader
-// can fix it and so the grader never silently drops evidence.
+// JournalIssue is one malformed or shadowed journal row, reported so a reader
+// can fix it and so the Grader never silently drops evidence. Ref is a
+// source-agnostic pointer to the row (for the SQL table, `measurement_journal#<id>`),
+// not a file and line: the journal is a table.
 type JournalIssue struct {
-	File   string `json:"file"`
-	Line   int    `json:"line"`
+	Ref    string `json:"ref"`
 	Reason string `json:"reason"`
+}
+
+// VerdictConflict is a (decision_day, ticker) key whose Verdicts disagree
+// across sessions and no row is Committed: the Grader excludes the key from
+// grading and reports it for a human to resolve — never picked by timestamp.
+// Rows is one entry per session, so the disagreement is legible.
+type VerdictConflict struct {
+	DecisionDay string        `json:"decision_day"`
+	Ticker      string        `json:"ticker"`
+	Rows        []ConflictRow `json:"rows"`
+}
+
+// ConflictRow is one session's Verdict within a Verdict Conflict.
+type ConflictRow struct {
+	ID         int64    `json:"id"`
+	Session    string   `json:"session"`
+	Verdict    string   `json:"verdict"`
+	Supersedes *int64   `json:"supersedes,omitempty"`
+	EntryLow   *float64 `json:"entry_low,omitempty"`
+	EntryHigh  *float64 `json:"entry_high,omitempty"`
+	CLLow      *float64 `json:"cl_low,omitempty"`
+	CLHigh     *float64 `json:"cl_high,omitempty"`
+	TPLow      *float64 `json:"tp_low,omitempty"`
+	TPHigh     *float64 `json:"tp_high,omitempty"`
+	Rationale  string   `json:"rationale,omitempty"`
 }
 
 // JournalGradeOptions is a parsed `grade journal` request: the inclusive
@@ -107,8 +144,11 @@ type JournalGradeOptions struct {
 	Until *time.Time
 }
 
-// JournalCounts is the run-level journal population: how many lines the source
-// yielded, the verdict split, and how many lines were malformed or shadowed.
+// JournalCounts is the run-level journal population: how many keys the source
+// yielded, the verdict split, and how many rows were malformed, shadowed, or in
+// an unresolved Verdict Conflict. Logged counts every distinct (date, ticker)
+// key, including conflicted ones; Conflicts counts the keys excluded from
+// grading for want of a Committed Verdict.
 type JournalCounts struct {
 	Logged     int `json:"logged"`
 	Tradable   int `json:"tradable"`
@@ -117,6 +157,7 @@ type JournalCounts struct {
 	NoTrade    int `json:"no_trade"`
 	Malformed  int `json:"malformed"`
 	Duplicates int `json:"duplicates"`
+	Conflicts  int `json:"conflicts"`
 }
 
 // TickerVerdict is one logged verdict's drill-down row: the zones as written,
@@ -175,6 +216,7 @@ type JournalGradeReport struct {
 	Counts          JournalCounts      `json:"counts"`
 	Summary         JournalSummary     `json:"summary"`
 	Verdicts        []TickerVerdict    `json:"verdicts"`
+	Conflicts       []VerdictConflict  `json:"conflicts"`
 	Malformed       []JournalIssue     `json:"malformed"`
 	Duplicates      []JournalIssue     `json:"duplicates"`
 	Flags           []string           `json:"flags"`
@@ -208,15 +250,23 @@ func (e *MeasurementEngine) GradeJournal(_ context.Context, opts JournalGradeOpt
 			opts.From.Format("2006-01-02"), opts.Until.Format("2006-01-02"))
 	}
 
-	parsed, issues, err := e.Journal.ReadVerdicts(opts.From, opts.Until)
+	parsed, sourceIssues, err := e.Journal.ReadVerdicts(opts.From, opts.Until)
 	if err != nil {
 		return nil, err
 	}
 
-	verdicts, shadowed := dedupeJournalVerdicts(parsed)
+	valid, normalizeIssues := normalizeJournalVerdicts(parsed)
+	issues := append(sourceIssues, normalizeIssues...)
+
+	verdicts, shadowed, conflicts := dedupeJournalVerdicts(valid)
 
 	rows := make([]TickerVerdict, 0, len(verdicts))
-	counts := JournalCounts{Logged: len(verdicts), Malformed: len(issues), Duplicates: len(shadowed)}
+	counts := JournalCounts{
+		Logged:     len(verdicts) + len(conflicts),
+		Conflicts:  len(conflicts),
+		Malformed:  len(issues),
+		Duplicates: len(shadowed),
+	}
 	var resolvedReturns, winReturns, lossReturns, plannedRRs []float64
 	summary := JournalSummary{}
 
@@ -314,7 +364,10 @@ func (e *MeasurementEngine) GradeJournal(_ context.Context, opts JournalGradeOpt
 			summary.BreakevenWinRate = &breakeven
 		}
 	}
-	summary.Calibration = ratio(counts.NoTrade, counts.Logged)
+	// Calibration is the no-trade share of *classified* Verdicts: a conflicted
+	// key has no single Verdict, so it is counted in Logged (a Verdict exists)
+	// but can be neither no-trade nor tradable, and must not dilute the share.
+	summary.Calibration = ratio(counts.NoTrade, counts.Logged-counts.Conflicts)
 
 	return &JournalGradeReport{
 		Kind:            journalGradeKind,
@@ -327,6 +380,7 @@ func (e *MeasurementEngine) GradeJournal(_ context.Context, opts JournalGradeOpt
 		Counts:          counts,
 		Summary:         summary,
 		Verdicts:        rows,
+		Conflicts:       nonNilConflicts(conflicts),
 		Malformed:       nonNilIssues(issues),
 		Duplicates:      nonNilIssues(shadowed),
 		Flags:           journalGradeFlags(counts, summary, rows),
@@ -471,36 +525,317 @@ func plannedRewardRisk(verdict JournalVerdict) *float64 {
 	return &rr
 }
 
-// dedupeJournalVerdicts collapses the parsed lines to one observation per
-// (date, ticker). The last written line wins — the append-only file's way of
-// correcting itself — and each shadowed line is reported. The result is sorted
-// by (date, ticker) for a deterministic report.
-func dedupeJournalVerdicts(in []JournalVerdict) ([]JournalVerdict, []JournalIssue) {
-	index := make(map[string]int, len(in))
-	out := make([]JournalVerdict, 0, len(in))
-	shadowed := make([]JournalIssue, 0)
+// normalizeJournalVerdict canonicalizes and validates one row. A SETUP must
+// carry three positive, ordered zones — clLow <= clHigh <= entryLow <= entryHigh
+// <= tpLow <= tpHigh — where a point is a zone with low == high. A WATCH or PASS
+// row carries no zones (any present are ignored). Every verdict needs a date, a
+// ticker, and a one-line rationale. The measurement_journal CHECK constraints
+// enforce the same shape; this is the net for a row written out of band.
+func normalizeJournalVerdict(v *JournalVerdict) error {
+	day, err := time.Parse("2006-01-02", strings.TrimSpace(v.Date))
+	if err != nil {
+		return fmt.Errorf("date must be YYYY-MM-DD, got %q", v.Date)
+	}
+	v.Date = day.Format("2006-01-02")
+
+	v.Ticker = strings.ToUpper(strings.TrimSpace(v.Ticker))
+	if v.Ticker == "" {
+		return fmt.Errorf("ticker is required")
+	}
+
+	v.Verdict = strings.ToUpper(strings.TrimSpace(v.Verdict))
+	switch v.Verdict {
+	case verdictSetup, verdictWatch, verdictPass:
+	default:
+		return fmt.Errorf("unknown verdict %q; expected SETUP, WATCH or PASS", v.Verdict)
+	}
+
+	if strings.TrimSpace(v.Rationale) == "" {
+		return fmt.Errorf("rationale is required")
+	}
+
+	if v.Verdict != verdictSetup {
+		v.EntryLow, v.EntryHigh, v.CLLow, v.CLHigh, v.TPLow, v.TPHigh = nil, nil, nil, nil, nil, nil
+		return nil
+	}
+
+	if v.EntryLow == nil || v.EntryHigh == nil || v.CLLow == nil || v.CLHigh == nil || v.TPLow == nil || v.TPHigh == nil {
+		return fmt.Errorf("SETUP requires entryLow, entryHigh, clLow, clHigh, tpLow and tpHigh")
+	}
+	if *v.EntryLow <= 0 || *v.EntryHigh <= 0 || *v.CLLow <= 0 || *v.CLHigh <= 0 || *v.TPLow <= 0 || *v.TPHigh <= 0 {
+		return fmt.Errorf("SETUP zones must be positive")
+	}
+	if *v.CLLow > *v.CLHigh {
+		return fmt.Errorf("SETUP clLow must not exceed clHigh")
+	}
+	if *v.EntryLow > *v.EntryHigh {
+		return fmt.Errorf("SETUP entryLow must not exceed entryHigh")
+	}
+	if *v.TPLow > *v.TPHigh {
+		return fmt.Errorf("SETUP tpLow must not exceed tpHigh")
+	}
+	if *v.CLHigh > *v.EntryLow {
+		return fmt.Errorf("SETUP clHigh must not exceed entryLow (the cut-loss zone must sit below the entry zone)")
+	}
+	if *v.EntryHigh > *v.TPLow {
+		return fmt.Errorf("SETUP entryHigh must not exceed tpLow (the entry zone must sit below the target zone)")
+	}
+	return nil
+}
+
+// normalizeJournalVerdicts canonicalizes and validates every raw row, returning
+// the valid rows and one issue per row that could not be normalized. The table's
+// CHECK constraints already enforce this shape, so on a clean journal it is a
+// no-op; it is the net for a row written out of band.
+func normalizeJournalVerdicts(in []JournalVerdict) ([]JournalVerdict, []JournalIssue) {
+	valid := make([]JournalVerdict, 0, len(in))
+	issues := make([]JournalIssue, 0)
 	for _, verdict := range in {
-		key := verdict.Date + "|" + verdict.Ticker
-		if at, ok := index[key]; ok {
-			shadowed = append(shadowed, JournalIssue{
-				File: out[at].SourceFile,
-				Line: out[at].SourceLine,
-				Reason: fmt.Sprintf("duplicate %s %s; shadowed by line %d in %s",
-					verdict.Date, verdict.Ticker, verdict.SourceLine, verdict.SourceFile),
-			})
-			out[at] = verdict
+		if err := normalizeJournalVerdict(&verdict); err != nil {
+			issues = append(issues, JournalIssue{Ref: verdictRef(verdict), Reason: err.Error()})
 			continue
 		}
-		index[key] = len(out)
-		out = append(out, verdict)
+		valid = append(valid, verdict)
 	}
+	return valid, issues
+}
+
+// verdictRef names a journal row in a report without assuming a file: the
+// table row's id and the session that wrote it.
+func verdictRef(verdict JournalVerdict) string {
+	ref := fmt.Sprintf("measurement_journal#%d", verdict.ID)
+	if verdict.Session != "" {
+		ref += " session=" + verdict.Session
+	}
+	return ref
+}
+
+// dedupeJournalVerdicts collapses the raw rows to one observation per
+// (decision_day, ticker) under ADR-0016's rule:
+//
+//   - rows of one session are an accidental double-write: last-wins by
+//     (created_at, id), each shadowed row reported;
+//   - rows of different sessions that agree on (verdict, zones) are a benign
+//     duplicate: one graded, the rest reported — rationale alone is never a
+//     disagreement, it is not graded;
+//   - rows of different sessions that disagree are a Verdict Conflict. Exactly
+//     one committed row is scored, the rest retained as audit; with none
+//     committed the key is excluded from grading and returned as a conflict for
+//     a human to resolve — never picked by timestamp.
+//
+// Observations and conflicts are each sorted by (date, ticker) for a
+// deterministic report.
+func dedupeJournalVerdicts(in []JournalVerdict) ([]JournalVerdict, []JournalIssue, []VerdictConflict) {
+	groups := groupJournalVerdicts(in)
+	out := make([]JournalVerdict, 0, len(groups))
+	shadowed := make([]JournalIssue, 0)
+	conflicts := make([]VerdictConflict, 0)
+
+	for _, group := range groups {
+		current, dupIssues := collapseSessionDuplicates(group.rows)
+		shadowed = append(shadowed, dupIssues...)
+
+		switch {
+		case len(current) == 1:
+			out = append(out, current[0])
+		case journalVerdictsAgree(current):
+			kept, rest := agreeingVerdict(current)
+			shadowed = append(shadowed, rest...)
+			out = append(out, kept)
+		default:
+			if committed, ok := committedVerdict(current); ok {
+				out = append(out, committed)
+				continue
+			}
+			conflicts = append(conflicts, buildVerdictConflict(current))
+		}
+	}
+
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Date != out[j].Date {
 			return out[i].Date < out[j].Date
 		}
 		return out[i].Ticker < out[j].Ticker
 	})
-	return out, shadowed
+	sort.Slice(conflicts, func(i, j int) bool {
+		if conflicts[i].DecisionDay != conflicts[j].DecisionDay {
+			return conflicts[i].DecisionDay < conflicts[j].DecisionDay
+		}
+		return conflicts[i].Ticker < conflicts[j].Ticker
+	})
+	return out, shadowed, conflicts
+}
+
+// journalGroup is the raw rows sharing one (decision_day, ticker) key.
+type journalGroup struct {
+	rows []JournalVerdict
+}
+
+// groupJournalVerdicts buckets rows by key, preserving first-seen order.
+func groupJournalVerdicts(in []JournalVerdict) []journalGroup {
+	index := make(map[string]int, len(in))
+	groups := make([]journalGroup, 0, len(in))
+	for _, verdict := range in {
+		key := verdict.Date + "|" + verdict.Ticker
+		if at, ok := index[key]; ok {
+			groups[at].rows = append(groups[at].rows, verdict)
+			continue
+		}
+		index[key] = len(groups)
+		groups = append(groups, journalGroup{rows: []JournalVerdict{verdict}})
+	}
+	return groups
+}
+
+// collapseSessionDuplicates keeps the last row of each session (by created_at,
+// id) and reports every shadowed row. The result keeps session first-seen order.
+func collapseSessionDuplicates(rows []JournalVerdict) ([]JournalVerdict, []JournalIssue) {
+	order := make([]string, 0, len(rows))
+	latest := make(map[string]JournalVerdict, len(rows))
+	issues := make([]JournalIssue, 0)
+
+	record := func(loser, winner JournalVerdict) {
+		issues = append(issues, JournalIssue{
+			Ref: verdictRef(loser),
+			Reason: fmt.Sprintf("duplicate %s %s in session %s; shadowed by %s",
+				loser.Date, loser.Ticker, loser.Session, verdictRef(winner)),
+		})
+	}
+
+	for _, verdict := range rows {
+		prev, ok := latest[verdict.Session]
+		if !ok {
+			order = append(order, verdict.Session)
+			latest[verdict.Session] = verdict
+			continue
+		}
+		if journalVerdictNewer(verdict, prev) {
+			record(prev, verdict)
+			latest[verdict.Session] = verdict
+		} else {
+			record(verdict, prev)
+		}
+	}
+
+	current := make([]JournalVerdict, 0, len(order))
+	for _, session := range order {
+		current = append(current, latest[session])
+	}
+	return current, issues
+}
+
+// journalVerdictNewer reports whether a is the later write than b: by
+// created_at, then by id (the row's insert order).
+func journalVerdictNewer(a, b JournalVerdict) bool {
+	if !a.CreatedAt.Equal(b.CreatedAt) {
+		return a.CreatedAt.After(b.CreatedAt)
+	}
+	return a.ID > b.ID
+}
+
+// journalVerdictsAgree reports whether every row shares the first row's graded
+// content (verdict and the six zones); rationale is not graded, so a re-worded
+// rationale is not a disagreement.
+func journalVerdictsAgree(rows []JournalVerdict) bool {
+	for _, verdict := range rows[1:] {
+		if !sameVerdictContent(rows[0], verdict) {
+			return false
+		}
+	}
+	return true
+}
+
+// sameVerdictContent compares the graded content of two Verdicts.
+func sameVerdictContent(a, b JournalVerdict) bool {
+	return a.Verdict == b.Verdict &&
+		sameFloat(a.EntryLow, b.EntryLow) && sameFloat(a.EntryHigh, b.EntryHigh) &&
+		sameFloat(a.CLLow, b.CLLow) && sameFloat(a.CLHigh, b.CLHigh) &&
+		sameFloat(a.TPLow, b.TPLow) && sameFloat(a.TPHigh, b.TPHigh)
+}
+
+// sameFloat compares two optional levels.
+func sameFloat(a, b *float64) bool {
+	switch {
+	case a == nil && b == nil:
+		return true
+	case a == nil || b == nil:
+		return false
+	default:
+		return *a == *b
+	}
+}
+
+// committedVerdict returns the single committed row among session-current rows,
+// or false when none is committed (a Committed Verdict is the only resolution
+// signal the Grader reads; supersedes is provenance the writer sets alongside
+// it). More than one committed row is prevented by the table's partial unique
+// index; if it happens anyway the conflict stays unresolved rather than guess.
+func committedVerdict(rows []JournalVerdict) (JournalVerdict, bool) {
+	var found JournalVerdict
+	ok := false
+	for _, verdict := range rows {
+		if !verdict.Committed {
+			continue
+		}
+		if ok {
+			return JournalVerdict{}, false
+		}
+		found, ok = verdict, true
+	}
+	return found, ok
+}
+
+// agreeingVerdict picks the observation among session-current rows that agree on
+// graded content: the committed row if one is marked, else the newest write.
+func agreeingVerdict(rows []JournalVerdict) (JournalVerdict, []JournalIssue) {
+	kept := rows[0]
+	for _, verdict := range rows[1:] {
+		if journalVerdictNewer(verdict, kept) {
+			kept = verdict
+		}
+	}
+	if committed, ok := committedVerdict(rows); ok {
+		kept = committed
+	}
+
+	rest := make([]JournalIssue, 0, len(rows)-1)
+	for _, verdict := range rows {
+		if verdict.Session == kept.Session {
+			continue
+		}
+		rest = append(rest, JournalIssue{
+			Ref: verdictRef(verdict),
+			Reason: fmt.Sprintf("identical %s %s from another session; %s graded",
+				verdict.Date, verdict.Ticker, verdictRef(kept)),
+		})
+	}
+	return kept, rest
+}
+
+// buildVerdictConflict renders one unresolved conflict: the competing
+// session-current rows, so a reader can see the disagreement and commit one.
+func buildVerdictConflict(rows []JournalVerdict) VerdictConflict {
+	conflict := VerdictConflict{
+		DecisionDay: rows[0].Date,
+		Ticker:      rows[0].Ticker,
+		Rows:        make([]ConflictRow, 0, len(rows)),
+	}
+	for _, verdict := range rows {
+		conflict.Rows = append(conflict.Rows, ConflictRow{
+			ID:         verdict.ID,
+			Session:    verdict.Session,
+			Verdict:    verdict.Verdict,
+			Supersedes: verdict.Supersedes,
+			EntryLow:   verdict.EntryLow,
+			EntryHigh:  verdict.EntryHigh,
+			CLLow:      verdict.CLLow,
+			CLHigh:     verdict.CLHigh,
+			TPLow:      verdict.TPLow,
+			TPHigh:     verdict.TPHigh,
+			Rationale:  verdict.Rationale,
+		})
+	}
+	return conflict
 }
 
 // ratio is n/d, or nil when d is zero so an empty population never reads as 0%.
@@ -529,18 +864,31 @@ func nonNilIssues(issues []JournalIssue) []JournalIssue {
 	return issues
 }
 
+// nonNilConflicts keeps the conflict list an empty JSON array, not null.
+func nonNilConflicts(conflicts []VerdictConflict) []VerdictConflict {
+	if conflicts == nil {
+		return []VerdictConflict{}
+	}
+	return conflicts
+}
+
 // journalGradeFlags renders the discipline warnings: malformed and shadowed
-// lines, unresolved verdicts awaiting their window, and SETUP plans below the
-// skill's 1:2 worst-case reward-to-risk gate. Flags, never refusals.
+// rows, unresolved Verdict Conflicts, unresolved verdicts awaiting their window,
+// and SETUP plans below the skill's 1:2 worst-case reward-to-risk gate. Flags,
+// never refusals.
 func journalGradeFlags(counts JournalCounts, summary JournalSummary, rows []TickerVerdict) []string {
 	flags := []string{}
 	if counts.Malformed > 0 {
 		flags = append(flags, fmt.Sprintf(
-			"malformed: %d journal line(s) could not be parsed or validated; reported and skipped, never graded", counts.Malformed))
+			"malformed: %d journal row(s) could not be validated; reported and skipped, never graded", counts.Malformed))
 	}
 	if counts.Duplicates > 0 {
 		flags = append(flags, fmt.Sprintf(
-			"duplicate: %d journal line(s) shadowed by a later line for the same (date, ticker); the later line was graded", counts.Duplicates))
+			"duplicate: %d journal row(s) shadowed by another for the same (date, ticker); one was graded", counts.Duplicates))
+	}
+	if counts.Conflicts > 0 {
+		flags = append(flags, fmt.Sprintf(
+			"conflict: %d (date, ticker) key(s) hold Verdicts from different sessions that disagree; each is excluded from grading until a Committed Verdict is marked", counts.Conflicts))
 	}
 	if counts.Logged == 0 {
 		flags = append(flags, "no data: no journal verdicts found in the requested window")
@@ -593,11 +941,12 @@ func breakevenAnswer(summary JournalSummary) string {
 }
 
 func calibrationAnswer(summary JournalSummary, counts JournalCounts) string {
-	if counts.Logged == 0 {
-		return "Unresolved — no verdicts logged."
+	classified := counts.Logged - counts.Conflicts
+	if classified == 0 {
+		return "Unresolved — no classified verdicts logged."
 	}
-	return fmt.Sprintf("The gate declined %d of %d verdict(s) (%.1f%%) — %d WATCH, %d PASS.",
-		counts.NoTrade, counts.Logged, *summary.Calibration*100, counts.Watch, counts.Pass)
+	return fmt.Sprintf("The gate declined %d of %d classified verdict(s) (%.1f%%) — %d WATCH, %d PASS.",
+		counts.NoTrade, classified, *summary.Calibration*100, counts.Watch, counts.Pass)
 }
 
 // journalGradeNotes are the standing caveats every Journal Grade carries.
@@ -608,14 +957,16 @@ func journalGradeNotes() []string {
 		"Booking is conservative: a fill is taken at entryHigh, a win at tpLow, a loss at clHigh (the near edge of each zone).",
 		"An unfilled verdict (the entry zone is never tapped in the entry window) is neither win nor loss; its shadow read (missed_tp / dodged_cl / flat) shows what the thesis would have done, and is excluded from the win rate.",
 		"Win rate is wins / (wins + losses): expired, unresolved and unfilled verdicts are reported separately and excluded.",
+		"Verdicts sharing a (decision day, ticker) from one session are last-wins; from different sessions that disagree they are a Verdict Conflict, excluded from grading until a Committed Verdict is marked — the Grader never picks by timestamp.",
+		"Calibration is the no-trade share of classified verdicts: a conflicted key counts as logged but is neither no-trade nor tradable, so it is excluded from the share's denominator.",
 		"Journal grading is absolute — a plan's own zones are its counterfactual, so no Liquidity Baseline is read.",
-		"One line per deep-dive is logged for every verdict, including WATCH/PASS, so Calibration is meaningful.",
+		"One Verdict per deep-dive is logged for every verdict, including WATCH/PASS, so Calibration is meaningful.",
 	}
 }
 
-// compile-time checks: the concrete repository and reader satisfy the Journal
+// compile-time checks: the concrete repository and source satisfy the Journal
 // Grader's seams.
 var (
-	_ MeasurementJournalSource = (*JournalFileReader)(nil)
+	_ MeasurementJournalSource = (*JournalSQLSource)(nil)
 	_ JournalPriceSource       = (*repository.DailyPriceRepository)(nil)
 )

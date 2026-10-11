@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -98,6 +99,21 @@ func (f *fakeObjectStore) DeleteObject(_ context.Context, key string) error {
 	defer f.mu.Unlock()
 	delete(f.objects, key)
 	return nil
+}
+
+// ListObjects completes the optional lister the measurement report store reaches
+// through; it is not part of storage.ObjectStore.
+func (f *fakeObjectStore) ListObjects(_ context.Context, prefix string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	keys := make([]string, 0, len(f.objects))
+	for key := range f.objects {
+		if strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 func newFetchDisclosureTestUC(t *testing.T, db *sqlx.DB, fetcher extract.PDFFetcher, store storage.ObjectStore, extractor extract.Extractor) *FetchDisclosureUseCase {

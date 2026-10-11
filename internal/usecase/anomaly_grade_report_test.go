@@ -3,18 +3,16 @@ package usecase
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-// TestAnomalyGradeReport_WriteFiles — a single-anchor Anomaly Grade writes
+// TestAnomalyGradeReport_Artifact — a single-anchor Anomaly Grade renders
 // <as-of>_anomalies, the JSON round-trips with its direction blocks, and the
 // markdown carries the counts, all three direction sections, and the
 // confluence splits.
-func TestAnomalyGradeReport_WriteFiles(t *testing.T) {
+func TestAnomalyGradeReport_Artifact(t *testing.T) {
 	anchor, _, prices, anomalies, disclosures, brokers := anomalyGradeScenario()
 	grade, err := newAnomalyGradeEngine(prices, anomalies, disclosures, brokers).
 		GradeAnomalies(context.Background(), AnomalyGradeOptions{Anchors: []time.Time{anchor}})
@@ -22,22 +20,15 @@ func TestAnomalyGradeReport_WriteFiles(t *testing.T) {
 		t.Fatalf("build grade: %v", err)
 	}
 
-	dir := t.TempDir()
-	jsonPath, mdPath, err := grade.WriteFiles(dir)
+	artifact, err := grade.Artifact()
 	if err != nil {
-		t.Fatalf("WriteFiles: %v", err)
+		t.Fatalf("Artifact: %v", err)
 	}
-	if filepath.Base(jsonPath) != "2026-06-01_anomalies.json" {
-		t.Fatalf("json path = %s, want 2026-06-01_anomalies.json", filepath.Base(jsonPath))
-	}
-	if filepath.Base(mdPath) != "2026-06-01_anomalies.md" {
-		t.Fatalf("md path = %s, want 2026-06-01_anomalies.md", filepath.Base(mdPath))
+	if artifact.Base != "2026-06-01_anomalies" {
+		t.Fatalf("base = %s, want 2026-06-01_anomalies", artifact.Base)
 	}
 
-	payload, err := os.ReadFile(jsonPath)
-	if err != nil {
-		t.Fatalf("read json: %v", err)
-	}
+	payload := artifact.JSON
 	var decoded AnomalyGradeReport
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		t.Fatalf("reparse json: %v", err)
@@ -56,7 +47,7 @@ func TestAnomalyGradeReport_WriteFiles(t *testing.T) {
 		t.Fatalf("JSON missing the unobserved count:\n%s", payload)
 	}
 
-	md := RenderAnomalyGradeMarkdown(grade)
+	md := string(artifact.Markdown)
 	for _, want := range []string{
 		"# Anomaly grade @ 2026-06-01",
 		"## Counts",
@@ -87,13 +78,13 @@ func TestAnomalyGradeReport_RangeFilename(t *testing.T) {
 		t.Fatalf("build grade: %v", err)
 	}
 
-	jsonPath, _, err := grade.WriteFiles(t.TempDir())
+	artifact, err := grade.Artifact()
 	if err != nil {
-		t.Fatalf("WriteFiles: %v", err)
+		t.Fatalf("Artifact: %v", err)
 	}
-	want := "2026-06-01_to_2026-07-01_anomalies.json"
-	if filepath.Base(jsonPath) != want {
-		t.Fatalf("json path = %s, want %s", filepath.Base(jsonPath), want)
+	want := "2026-06-01_to_2026-07-01_anomalies"
+	if artifact.Base != want {
+		t.Fatalf("base = %s, want %s", artifact.Base, want)
 	}
 	if !strings.Contains(RenderAnomalyGradeMarkdown(grade), "2026-06-01 → 2026-07-01") {
 		t.Fatalf("range label missing:\n%s", RenderAnomalyGradeMarkdown(grade))

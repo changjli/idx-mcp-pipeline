@@ -142,8 +142,20 @@ At one horizon, the difference between two filter sets' Excess, each measured ag
 **Holdout**:
 The most recent ~3 months of Trading Days, sealed: filter changes are tuned on older data and must pass exactly one validation on Holdout data before adoption. Prevents tuning that memorizes the past. _Avoid_: validation set, test window
 
+**Active Filter Set**:
+The filter set the live screen runs. On R2 it lives inside one **Config Document** as a named entry, and the document's `active` pointer names which entry is in force; a bare `grade screen` grades the active entry unless another is named. Tuning edits the document, never the code repo (ADR-0016). _Avoid_: live config, current filters
+
+**Config Document**:
+The single R2 object holding every named filter set plus the `active` pointer. Read whole, so a named set resolves in-process; each accepted edit is stored as a new immutable, content-addressed version and the `active.json` pointer moves to it, so no version is overwritten and a past report's Config Hash still resolves to the exact document it graded (ADR-0016). _Avoid_: config file, settings, filtersets dir
+
+**Config Hash**:
+The `sha256` of a Config Document's bytes, recorded on every screen Grade report. Two reports sharing a Config Hash graded the same document, and the hash addresses that document's immutable version — so a Grade stays reproducible after the Active Filter Set has moved. _Avoid_: version number, etag
+
+**Report Version**:
+One sealed, immutable copy of a Grade report on R2, stored under a content-and-time id; the bare `<as-of>_<name>.{json,md}` key always addresses the newest version. Nothing a run writes is overwritten, so a report that graded a since-changed filter set survives — the journal Grader's re-grades never destroy earlier evidence (ADR-0016). _Avoid_: snapshot, revision
+
 **Decision Journal**:
-The append-only log of the AI's Verdicts — date, ticker, verdict, zones, rationale — written at decision time so history can grade them later. Reasoning is subjective; the logged verdict is falsifiable. _Avoid_: trade log, diary
+The append-only log of the AI's Verdicts — date, ticker, verdict, zones, rationale — written at decision time so history can grade them later. Reasoning is subjective; the logged verdict is falsifiable. Since ADR-0016 it is a Postgres table (`measurement_journal`) read and written over MCP, not a file in the repo. _Avoid_: trade log, diary
 
 **Verdict**:
 One deep-dive outcome, appended to the Decision Journal at decision time: `SETUP` (a trade plan exists), `WATCH` (interesting, no plan yet), or `PASS` (rejected — a hard gate failed or no setup exists). Exactly one Verdict per deep-dive. _Avoid_: pass verdict (the tradable one is SETUP; "pass" never means "passed the gate")
@@ -153,6 +165,15 @@ A `SETUP` Verdict — the only kind that carries the three Tradable Zones, and t
 
 **No-Trade Verdict**:
 A `WATCH` or `PASS` Verdict — no zones, never resolved against prices; counted so the journal reports how often the gate declined to trade. _Avoid_: reject, skip, abstention
+
+**Verdict Session**:
+The identity of one agent run that writes Verdicts; every journal row carries it. It separates an accidental double-write (same session → last-wins) from a Verdict Conflict. _Avoid_: run id, invocation
+
+**Verdict Conflict**:
+Two Verdicts sharing `(decision day, ticker)` but written by different Verdict Sessions — two independent deep-dives disagreed. Never auto-resolved by timestamp; surfaced so the user marks the Committed Verdict. Distinct from a same-session duplicate (last-wins). _Avoid_: duplicate, collision
+
+**Committed Verdict**:
+The Verdict the user actually acted on — the one the journal Grader scores when a `(decision day, ticker)` holds more than one. Marked on the row; every other Verdict on the key is retained as audit, not graded. _Avoid_: final verdict, latest verdict (the committed one need not be the last written)
 
 **Calibration**:
 The share of logged Verdicts that were no-trade — how often the deep-dive gate declined — reported with the WATCH/PASS split so "wait" and "reject" stay distinguishable. _Avoid_: accuracy, precision (the disclosure Grader's subject)

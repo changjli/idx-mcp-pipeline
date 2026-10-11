@@ -1,39 +1,15 @@
 package usecase
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
-// WriteFiles renders a Disclosure Grade as JSON and markdown under dir, creating
-// the directory if needed, and returns the two paths. The base name is
-// <as-of>_disclosures for one filing day and <first>_to_<last>_disclosures for a
-// range.
-func (g *DisclosureGradeReport) WriteFiles(dir string) (string, string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", "", fmt.Errorf("create report directory %s: %w", dir, err)
-	}
-
-	base := g.reportBaseName()
-	jsonPath := filepath.Join(dir, base+".json")
-	mdPath := filepath.Join(dir, base+".md")
-
-	payload, err := json.MarshalIndent(g, "", "  ")
-	if err != nil {
-		return "", "", fmt.Errorf("marshal disclosure grade report: %w", err)
-	}
-	payload = append(payload, '\n')
-
-	if err := os.WriteFile(jsonPath, payload, 0o644); err != nil {
-		return "", "", fmt.Errorf("write %s: %w", jsonPath, err)
-	}
-	if err := os.WriteFile(mdPath, []byte(RenderDisclosureGradeMarkdown(g)), 0o644); err != nil {
-		return "", "", fmt.Errorf("write %s: %w", mdPath, err)
-	}
-	return jsonPath, mdPath, nil
+// Artifact renders a Disclosure Grade as a ReportArtifact for the report store.
+// The base name is <as-of>_disclosures for one filing day and
+// <first>_to_<last>_disclosures for a range.
+func (g *DisclosureGradeReport) Artifact() (ReportArtifact, error) {
+	return newReportArtifact(g.reportBaseName(), g, RenderDisclosureGradeMarkdown(g))
 }
 
 // reportBaseName derives the filename stem from the Grade's Filing Day range.

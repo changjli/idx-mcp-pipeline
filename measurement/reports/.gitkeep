@@ -1,5 +1,0 @@
-# Measurement reports land here as <as-of>_<filter-set>.{json,md}.
-#
-# These files are git-tracked primary evidence (a deliberate exception to the
-# repo's no-artifacts-in-git pattern): they snapshot filter sets that will since
-# have changed, so they cannot be regenerated later. Written by `cmd/measure`.

@@ -1,44 +1,14 @@
 package usecase
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
-// MeasurementReportDir is where reports land, relative to the repo root. Reports
-// are git-tracked primary evidence (spec: a deliberate exception to the repo's
-// no-artifacts-in-git pattern) because they snapshot filter sets that will since
-// have changed and cannot be regenerated.
-const MeasurementReportDir = "measurement/reports"
-
-// WriteFiles renders the report as JSON and markdown under dir, creating the
-// directory if needed, and returns the two paths. Filenames are
-// <as-of>_<filter-set>.{json,md} so a report is addressable from its own name.
-func (r *MeasurementReport) WriteFiles(dir string) (string, string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", "", fmt.Errorf("create report directory %s: %w", dir, err)
-	}
-
-	base := fmt.Sprintf("%s_%s", r.AsOf, sanitizeReportName(r.FilterSet))
-	jsonPath := filepath.Join(dir, base+".json")
-	mdPath := filepath.Join(dir, base+".md")
-
-	payload, err := json.MarshalIndent(r, "", "  ")
-	if err != nil {
-		return "", "", fmt.Errorf("marshal measurement report: %w", err)
-	}
-	payload = append(payload, '\n')
-
-	if err := os.WriteFile(jsonPath, payload, 0o644); err != nil {
-		return "", "", fmt.Errorf("write %s: %w", jsonPath, err)
-	}
-	if err := os.WriteFile(mdPath, []byte(RenderMeasurementMarkdown(r)), 0o644); err != nil {
-		return "", "", fmt.Errorf("write %s: %w", mdPath, err)
-	}
-	return jsonPath, mdPath, nil
+// Artifact renders the report as a ReportArtifact for the report store. The
+// base name is <as-of>_<filter-set> so a report is addressable from its own name.
+func (r *MeasurementReport) Artifact() (ReportArtifact, error) {
+	return newReportArtifact(fmt.Sprintf("%s_%s", r.AsOf, sanitizeReportName(r.FilterSet)), r, RenderMeasurementMarkdown(r))
 }
 
 // sanitizeReportName keeps a filter-set name safe as a filename segment. Names
@@ -157,33 +127,12 @@ func formatFlag(flag bool) string {
 	return "no"
 }
 
-// WriteFiles renders a Grade as JSON and markdown under dir, creating the
-// directory if needed, and returns the two paths. The base name is
-// <as-of>_<set> for one anchor and <first>_to_<last>_<set> for a range, with
-// `_vs_<other>` appended when the run compares two sets — so a tuning decision
-// is a readable diff between two reports.
-func (g *ScreenGradeReport) WriteFiles(dir string) (string, string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", "", fmt.Errorf("create report directory %s: %w", dir, err)
-	}
-
-	base := gradeReportBaseName(g)
-	jsonPath := filepath.Join(dir, base+".json")
-	mdPath := filepath.Join(dir, base+".md")
-
-	payload, err := json.MarshalIndent(g, "", "  ")
-	if err != nil {
-		return "", "", fmt.Errorf("marshal screen grade report: %w", err)
-	}
-	payload = append(payload, '\n')
-
-	if err := os.WriteFile(jsonPath, payload, 0o644); err != nil {
-		return "", "", fmt.Errorf("write %s: %w", jsonPath, err)
-	}
-	if err := os.WriteFile(mdPath, []byte(RenderScreenGradeMarkdown(g)), 0o644); err != nil {
-		return "", "", fmt.Errorf("write %s: %w", mdPath, err)
-	}
-	return jsonPath, mdPath, nil
+// Artifact renders a Grade as a ReportArtifact for the report store. The base
+// name is <as-of>_<set> for one anchor and <first>_to_<last>_<set> for a range,
+// with `_vs_<other>` appended when the run compares two sets — so a tuning
+// decision is a readable diff between two reports.
+func (g *ScreenGradeReport) Artifact() (ReportArtifact, error) {
+	return newReportArtifact(gradeReportBaseName(g), g, RenderScreenGradeMarkdown(g))
 }
 
 // gradeReportBaseName derives the report filename stem from the Grade's dates,

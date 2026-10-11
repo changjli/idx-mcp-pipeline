@@ -19,14 +19,28 @@ func writeFilterSet(t *testing.T, filename, content string) string {
 	return dir
 }
 
-// TestMeasurementFilterRegistry_BuiltinDefault — with no directory the registry
-// still resolves the built-in default for empty and explicit names, and refuses
-// anything else with a structured error naming the known sets.
-func TestMeasurementFilterRegistry_BuiltinDefault(t *testing.T) {
-	registry, err := NewMeasurementFilterRegistry("")
+// registryFromDir builds the registry a Config Document would from the
+// filter-set files in dir, active "default" — mirroring SeedFromDir, the path
+// `measure migrate` seeds and a Grade resolves through.
+func registryFromDir(t *testing.T, dir string) (*MeasurementFilterRegistry, error) {
+	t.Helper()
+	files, err := readMeasurementFilterSetFiles(dir)
 	if err != nil {
-		t.Fatalf("build registry: %v", err)
+		return nil, err
 	}
+	sets := map[string]measurementFilterSetFile{defaultMeasurementFilterSet: {}}
+	for name, file := range files {
+		sets[name] = file
+	}
+	doc := measurementConfigDocument{Active: defaultMeasurementFilterSet, Sets: sets}
+	return doc.registry()
+}
+
+// TestMeasurementFilterRegistry_BuiltinDefault — with no Config Document the
+// registry still resolves the built-in default for empty and explicit names, and
+// refuses anything else with a structured error naming the known sets.
+func TestMeasurementFilterRegistry_BuiltinDefault(t *testing.T) {
+	registry := NewMeasurementFilterRegistry()
 
 	for _, name := range []string{"", "default", "DEFAULT", "  Default "} {
 		set, err := registry.Resolve(name)
@@ -43,6 +57,47 @@ func TestMeasurementFilterRegistry_BuiltinDefault(t *testing.T) {
 	}
 	if _, err := registry.Resolve("momentum"); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("unknown set err = %v, want ErrInvalidArgument", err)
+	}
+}
+
+// TestMeasurementFilterRegistry_ActiveResolves — an empty name resolves to the
+// document's active set, not a hard-coded "default".
+func TestMeasurementFilterRegistry_ActiveResolves(t *testing.T) {
+	doc := measurementConfigDocument{
+		Active: "momentum",
+		Sets: map[string]measurementFilterSetFile{
+			"momentum": {Description: "rsi >= 60"},
+			"value":    {Description: "low pe"},
+		},
+	}
+	registry, err := doc.registry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	set, err := registry.Resolve("")
+	if err != nil {
+		t.Fatalf("resolve active: %v", err)
+	}
+	if set.Name != "momentum" || set.Description != "rsi >= 60" {
+		t.Fatalf("active set = %+v, want momentum", set)
+	}
+	if names := strings.Join(registry.Names(), ","); names != "default,momentum,value" {
+		t.Fatalf("names = %q, want default,momentum,value", names)
+	}
+	if _, err := registry.Resolve("default"); err != nil {
+		t.Fatalf("built-in default should still resolve: %v", err)
+	}
+}
+
+// TestMeasurementConfigDocument_ActiveNotInSets — an active naming a set the
+// document does not carry is refused rather than silently falling back.
+func TestMeasurementConfigDocument_ActiveNotInSets(t *testing.T) {
+	doc := measurementConfigDocument{
+		Active: "ghost",
+		Sets:   map[string]measurementFilterSetFile{"momentum": {}},
+	}
+	if _, err := doc.registry(); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("err = %v, want ErrInvalidArgument", err)
 	}
 }
 
@@ -65,7 +120,7 @@ func TestMeasurementFilterRegistry_LoadsFiles(t *testing.T) {
 		"order": "desc"
 	}`)
 
-	registry, err := NewMeasurementFilterRegistry(dir)
+	registry, err := registryFromDir(t, dir)
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
@@ -105,7 +160,7 @@ func TestMeasurementFilterRegistry_LoadsFiles(t *testing.T) {
 // TestMeasurementFilterRegistry_MissingDirIsFine — a checkout with no filtersets
 // directory is not an error; the built-in default still resolves.
 func TestMeasurementFilterRegistry_MissingDirIsFine(t *testing.T) {
-	registry, err := NewMeasurementFilterRegistry(filepath.Join(t.TempDir(), "nope"))
+	registry, err := registryFromDir(t, filepath.Join(t.TempDir(), "nope"))
 	if err != nil {
 		t.Fatalf("missing dir: %v", err)
 	}
@@ -118,7 +173,7 @@ func TestMeasurementFilterRegistry_MissingDirIsFine(t *testing.T) {
 // shipped defaults (nil), while an explicit `[]` asks for no structural filters.
 // The distinction is the DSL's, preserved across JSON.
 func TestMeasurementFilterRegistry_FiltersThreeStates(t *testing.T) {
-	omitted, err := NewMeasurementFilterRegistry(writeFilterSet(t, "omitted.json", `{"description":"x"}`))
+	omitted, err := registryFromDir(t, writeFilterSet(t, "omitted.json", `{"description":"x"}`))
 	if err != nil {
 		t.Fatalf("omitted: %v", err)
 	}
@@ -127,7 +182,7 @@ func TestMeasurementFilterRegistry_FiltersThreeStates(t *testing.T) {
 		t.Fatalf("omitted filters = %v, want nil (ship the defaults)", set.Params.Filters)
 	}
 
-	empty, err := NewMeasurementFilterRegistry(writeFilterSet(t, "empty.json", `{"description":"x","filters":[]}`))
+	empty, err := registryFromDir(t, writeFilterSet(t, "empty.json", `{"description":"x","filters":[]}`))
 	if err != nil {
 		t.Fatalf("empty: %v", err)
 	}
@@ -140,7 +195,7 @@ func TestMeasurementFilterRegistry_FiltersThreeStates(t *testing.T) {
 // TestMeasurementFilterRegistry_MinValueZero — `min_value: 0` is a legitimate
 // "no floor" and stays distinct from an omitted key (the shipped floor).
 func TestMeasurementFilterRegistry_MinValueZero(t *testing.T) {
-	registry, err := NewMeasurementFilterRegistry(writeFilterSet(t, "zero.json", `{"description":"x","min_value":0}`))
+	registry, err := registryFromDir(t, writeFilterSet(t, "zero.json", `{"description":"x","min_value":0}`))
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -161,7 +216,7 @@ func TestMeasurementFilterRegistry_IgnoresNonJSON(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	registry, err := NewMeasurementFilterRegistry(dir)
+	registry, err := registryFromDir(t, dir)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -184,7 +239,7 @@ func TestMeasurementFilterRegistry_MalformedFile(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewMeasurementFilterRegistry(writeFilterSet(t, "broken.json", tc.content))
+			_, err := registryFromDir(t, writeFilterSet(t, "broken.json", tc.content))
 			if !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("err = %v, want ErrInvalidArgument", err)
 			}
@@ -204,7 +259,7 @@ func TestMeasurementFilterRegistry_DuplicateCaseNames(t *testing.T) {
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}
-	if _, err := NewMeasurementFilterRegistry(dir); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := registryFromDir(t, dir); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("err = %v, want ErrInvalidArgument for duplicate names", err)
 	}
 }

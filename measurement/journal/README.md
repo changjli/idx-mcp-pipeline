@@ -1,59 +1,53 @@
 # Decision Journal
 
 The append-only log of the AI's deep-dive **Verdicts**, written at decision time
-by the `idx-deep-dive` skill so the grader can score them later. Reasoning is
-subjective; a logged verdict is falsifiable. See `CONTEXT.md` (Decision Journal)
-and `docs/adr/0014-journal-grading-resolves-tradable-verdicts-on-intraday-touch.md`.
+so the grader can score them later. Reasoning is subjective; a logged verdict is
+falsifiable. See `CONTEXT.md` (Decision Journal, Verdict Conflict, Committed
+Verdict) and ADR-0016.
 
-## Layout
+> **Where it lives now (ADR-0016):** the journal is a Postgres table,
+> `measurement_journal` (migration `000019`), read and written over MCP — no
+> Verdict is a repo file. This document is the row schema and the grading rules;
+> the write path is the MCP `log_verdict` tool (ticket 08b), not a local append.
 
-One JSONL file per decision month, named `YYYY-MM.jsonl`:
+## Rows
 
-```
-measurement/journal/2026-06.jsonl
-measurement/journal/2026-07.jsonl
-```
+One row per Verdict write, append-only. A `SETUP` carries three **zones** (each a
+low/high pair; use the same number for both for a point):
 
-The month is the month of the **decision date** — the **last stored Trading Day
-whose close the plan reads**, not the wall-clock day you happened to run it. The
-grader's entry search always starts the next trading day, so this one rule covers
-a plan made after a close and a plan made before an open.
-
-## Line format
-
-One JSON object per line, no trailing commas, one Verdict per deep-dive. A
-`SETUP` carries three **zones** (each a low/high pair; use the same number for
-both for a point):
-
-```json
-{"date":"2026-06-01","ticker":"BBRI","verdict":"SETUP","entryLow":4200,"entryHigh":4300,"clLow":3950,"clHigh":4000,"tpLow":4800,"tpHigh":4900,"rationale":"breakout from base at bandar avg cost 4150"}
-{"date":"2026-06-01","ticker":"TLKM","verdict":"WATCH","rationale":"coiling but flow coverage too thin to size"}
-{"date":"2026-06-01","ticker":"GOTO","verdict":"PASS","rationale":"markdown, no base — falling knife"}
-```
-
-| Field | Required | Rule |
+| Column | Required | Rule |
 |---|---|---|
-| `date` | yes | `YYYY-MM-DD`; the last stored Trading Day the plan reads. |
-| `ticker` | yes | The IDX code; stored upper-cased. |
+| `decision_day` | yes | `DATE`; the last stored Trading Day the plan reads. |
+| `ticker` | yes | The IDX code; stored upper-cased (enforced by a CHECK). |
 | `verdict` | yes | `SETUP` (tradable), `WATCH`, or `PASS`. |
-| `entryLow` / `entryHigh` | SETUP only | Positive; the entry zone (`entryLow ≤ entryHigh`). |
-| `clLow` / `clHigh` | SETUP only | Positive; the cut-loss zone, below entry (`clHigh ≤ entryLow`). |
-| `tpLow` / `tpHigh` | SETUP only | Positive; the target zone, above entry (`entryHigh ≤ tpLow`). |
+| `entry_low` / `entry_high` | SETUP only | Positive; the entry zone (`entry_low ≤ entry_high`). |
+| `cl_low` / `cl_high` | SETUP only | Positive; the cut-loss zone, below entry (`cl_high ≤ entry_low`). |
+| `tp_low` / `tp_high` | SETUP only | Positive; the target zone, above entry (`entry_high ≤ tp_low`). |
 | `rationale` | yes | One line of why. |
+| `session` | yes | The agent run that wrote the row; distinguishes a double-write from a conflict. |
+| `supersedes` | no | The `id` of the row a deliberate correction replaces; provenance. |
+| `committed` | no | Marks the Verdict the grader scores on a key that holds more than one. |
+| `created_at` | default | Insert time; same-session last-wins orders on `(created_at, id)`. |
 
-Zones must be ordered `clLow ≤ clHigh ≤ entryLow ≤ entryHigh ≤ tpLow ≤ tpHigh`.
-A `WATCH` or `PASS` is a **No-Trade Verdict**: no zones, never resolved; logged
-so the report can show how often the gate declined (Calibration).
+Zones must be ordered `cl_low ≤ cl_high ≤ entry_low ≤ entry_high ≤ tp_low ≤
+tp_high`; the table's CHECK constraints enforce the verdict enum and the SETUP
+zone shape, so a malformed row cannot be stored. A `WATCH` or `PASS` is a
+**No-Trade Verdict**: no zones, never resolved; logged so the report can show how
+often the gate declined (Calibration).
 
 ## Rules
 
-- **Append only.** Never edit or delete a written line. To correct one, append a
-  new line for the same `date`+`ticker`; the grader keeps the **last** line and
-  reports the shadowed one as a duplicate.
-- **Log every verdict**, including `WATCH`/`PASS` — a skipped line is invisible
-  to the grader forever.
-- A malformed or schema-invalid line is reported (with file and line) and
-  skipped, never silently dropped.
+- **Append only.** Never edit or delete a written row. To correct one, insert a
+  new row for the same `(decision_day, ticker)` carrying `supersedes`.
+- **One session's duplicate is last-wins.** Two rows of the *same* `session` on
+  one key are an accidental double-write; the later one is graded and the other
+  is reported as a shadowed duplicate.
+- **Different sessions that disagree are a Verdict Conflict.** Rows from
+  different sessions whose `(verdict, zones)` differ are surfaced, never resolved
+  by timestamp; the key is excluded from grading until a **Committed Verdict** is
+  marked. Rows that agree (rationale wording aside) are a benign duplicate.
+- **Log every verdict**, including `WATCH`/`PASS` — a skipped row is invisible to
+  the grader forever.
 
 ## Grading
 

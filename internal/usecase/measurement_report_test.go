@@ -3,8 +3,6 @@ package usecase
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -107,59 +105,43 @@ func TestMeasurementReport_MarkdownSummary(t *testing.T) {
 	}
 }
 
-// TestMeasurementReport_WriteFiles — the writer creates
-// <as-of>_<filter-set>.{json,md} under the given directory and the JSON parses
-// back into the report.
-func TestMeasurementReport_WriteFiles(t *testing.T) {
+// TestMeasurementReport_Artifact — the artifact's base name is
+// <as-of>_<filter-set> and the JSON parses back into the report.
+func TestMeasurementReport_Artifact(t *testing.T) {
 	report := measurementReportForTest(t)
-	dir := t.TempDir()
 
-	jsonPath, mdPath, err := report.WriteFiles(dir)
+	artifact, err := report.Artifact()
 	if err != nil {
-		t.Fatalf("WriteFiles: %v", err)
+		t.Fatalf("Artifact: %v", err)
 	}
-	if filepath.Base(jsonPath) != "2026-06-01_default.json" {
-		t.Fatalf("json path = %s, want 2026-06-01_default.json", jsonPath)
-	}
-	if filepath.Base(mdPath) != "2026-06-01_default.md" {
-		t.Fatalf("md path = %s, want 2026-06-01_default.md", mdPath)
+	if artifact.Base != "2026-06-01_default" {
+		t.Fatalf("base = %s, want 2026-06-01_default", artifact.Base)
 	}
 
-	payload, err := os.ReadFile(jsonPath)
-	if err != nil {
-		t.Fatalf("read json: %v", err)
-	}
 	var decoded MeasurementReport
-	if err := json.Unmarshal(payload, &decoded); err != nil {
+	if err := json.Unmarshal(artifact.JSON, &decoded); err != nil {
 		t.Fatalf("reparse json: %v", err)
 	}
 	if decoded.AsOf != "2026-06-01" || decoded.FilterSet != "default" || decoded.GitRevision != "testrev" {
 		t.Fatalf("round-tripped report = %+v", decoded)
 	}
 
-	md, err := os.ReadFile(mdPath)
-	if err != nil {
-		t.Fatalf("read markdown: %v", err)
-	}
-	if !strings.Contains(string(md), "## Success criteria") {
-		t.Fatalf("markdown summary is missing the success criteria:\n%s", md)
+	if !strings.Contains(string(artifact.Markdown), "## Success criteria") {
+		t.Fatalf("markdown summary is missing the success criteria:\n%s", artifact.Markdown)
 	}
 }
 
 // TestMeasurementReport_FileNameSanitized — a filter-set name can never escape
-// the reports directory.
+// the reports prefix.
 func TestMeasurementReport_FileNameSanitized(t *testing.T) {
 	report := measurementReportForTest(t)
 	report.FilterSet = "../escape"
-	jsonPath, _, err := report.WriteFiles(t.TempDir())
+	artifact, err := report.Artifact()
 	if err != nil {
-		t.Fatalf("WriteFiles: %v", err)
+		t.Fatalf("Artifact: %v", err)
 	}
-	if filepath.Dir(jsonPath) != filepath.Clean(filepath.Dir(jsonPath)) {
-		t.Fatalf("json path = %s, want a clean path inside the directory", jsonPath)
-	}
-	if strings.Contains(filepath.Base(jsonPath), "..") {
-		t.Fatalf("json path = %s, want a sanitized name", jsonPath)
+	if strings.Contains(artifact.Base, "..") || strings.Contains(artifact.Base, "/") {
+		t.Fatalf("base = %s, want a sanitized name", artifact.Base)
 	}
 }
 

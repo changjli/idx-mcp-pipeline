@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -533,10 +531,10 @@ func TestScreenGradeReport_JSONShape(t *testing.T) {
 	}
 }
 
-// TestScreenGradeReport_WriteFiles — a single-anchor Grade writes
-// <as-of>_<set>, a comparison writes <as-of>_<A>_vs_<B>, and both markdown
-// summaries carry the per-date table, comparison table, and per-set sections.
-func TestScreenGradeReport_WriteFiles(t *testing.T) {
+// TestScreenGradeReport_Artifact — a single-anchor Grade renders <as-of>_<set>,
+// a comparison renders <as-of>_<A>_vs_<B>, and both markdown summaries carry the
+// per-date table, comparison table, and per-set sections.
+func TestScreenGradeReport_Artifact(t *testing.T) {
 	days, screener, prices := measurementGradeScenario()
 	grade, err := newGradeEngine(screener, prices, nil).GradeScreen(context.Background(), ScreenGradeOptions{
 		Anchors:   []time.Time{days[0]},
@@ -546,31 +544,23 @@ func TestScreenGradeReport_WriteFiles(t *testing.T) {
 		t.Fatalf("build grade: %v", err)
 	}
 
-	dir := t.TempDir()
-	jsonPath, mdPath, err := grade.WriteFiles(dir)
+	artifact, err := grade.Artifact()
 	if err != nil {
-		t.Fatalf("WriteFiles: %v", err)
+		t.Fatalf("Artifact: %v", err)
 	}
-	if filepath.Base(jsonPath) != "2026-06-01_default.json" {
-		t.Fatalf("json path = %s, want 2026-06-01_default.json", jsonPath)
-	}
-	if filepath.Base(mdPath) != "2026-06-01_default.md" {
-		t.Fatalf("md path = %s, want 2026-06-01_default.md", mdPath)
+	if artifact.Base != "2026-06-01_default" {
+		t.Fatalf("base = %s, want 2026-06-01_default", artifact.Base)
 	}
 
-	payload, err := os.ReadFile(jsonPath)
-	if err != nil {
-		t.Fatalf("read json: %v", err)
-	}
 	var decoded ScreenGradeReport
-	if err := json.Unmarshal(payload, &decoded); err != nil {
+	if err := json.Unmarshal(artifact.JSON, &decoded); err != nil {
 		t.Fatalf("reparse json: %v", err)
 	}
 	if decoded.Kind != screenGradeKind || decoded.GitRevision != "testrev" {
 		t.Fatalf("round-tripped grade = %+v", decoded)
 	}
 
-	md := RenderScreenGradeMarkdown(grade)
+	md := string(artifact.Markdown)
 	for _, want := range []string{
 		"# Screen grade — default @ 2026-06-01",
 		"## Per-date breakdown",
@@ -582,16 +572,16 @@ func TestScreenGradeReport_WriteFiles(t *testing.T) {
 		}
 	}
 
-	// The comparison filename carries both set names.
+	// The comparison base name carries both set names.
 	comparison := measurementComparisonGrade(t)
-	cjson, _, err := comparison.WriteFiles(t.TempDir())
+	cartifact, err := comparison.Artifact()
 	if err != nil {
-		t.Fatalf("comparison WriteFiles: %v", err)
+		t.Fatalf("comparison Artifact: %v", err)
 	}
-	if filepath.Base(cjson) != "2026-06-01_momentum_vs_rsi.json" {
-		t.Fatalf("comparison path = %s, want 2026-06-01_momentum_vs_rsi.json", filepath.Base(cjson))
+	if cartifact.Base != "2026-06-01_momentum_vs_rsi" {
+		t.Fatalf("comparison base = %s, want 2026-06-01_momentum_vs_rsi", cartifact.Base)
 	}
-	cmd := RenderScreenGradeMarkdown(comparison)
+	cmd := string(cartifact.Markdown)
 	for _, want := range []string{"# Screen grade — momentum vs rsi", "## Comparison (Excess Delta)", "Excess Delta"} {
 		if !strings.Contains(cmd, want) {
 			t.Fatalf("comparison markdown missing %q\n---\n%s", want, cmd)

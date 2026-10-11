@@ -3,8 +3,6 @@ package usecase
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,11 +10,11 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 )
 
-// TestJournalGradeReport_WriteFiles — a windowed Journal Grade writes
+// TestJournalGradeReport_Artifact — a windowed Journal Grade renders
 // <from>_to_<until>_journal, the JSON round-trips, and the markdown carries the
 // counts, outcomes, unfilled shadow, return distribution, per-verdict zones,
 // malformed section, and the journal's standing questions.
-func TestJournalGradeReport_WriteFiles(t *testing.T) {
+func TestJournalGradeReport_Artifact(t *testing.T) {
 	anchor, days := journalAnchorAndCalendar()
 	date := anchor.Format("2006-01-02")
 	source := &fakeJournalSource{
@@ -24,7 +22,7 @@ func TestJournalGradeReport_WriteFiles(t *testing.T) {
 			journalSetup(date, "AAA", 100, 105, 90, 95, 120, 125),
 			{Date: date, Ticker: "BBB", Verdict: verdictWatch, Rationale: "wait"},
 		},
-		issues: []JournalIssue{{File: "measurement/journal/2026-06.jsonl", Line: 9, Reason: "invalid JSON"}},
+		issues: []JournalIssue{{Ref: "measurement_journal#9", Reason: "invalid row"}},
 	}
 	prices := &fakeJournalPrices{calendar: days, series: map[string][]entity.DailyPrice{
 		"AAA": {journalBar("AAA", days[1], 106, 101), journalBar("AAA", days[2], 121, 102)},
@@ -38,22 +36,15 @@ func TestJournalGradeReport_WriteFiles(t *testing.T) {
 		t.Fatalf("build grade: %v", err)
 	}
 
-	dir := t.TempDir()
-	jsonPath, mdPath, err := grade.WriteFiles(dir)
+	artifact, err := grade.Artifact()
 	if err != nil {
-		t.Fatalf("WriteFiles: %v", err)
+		t.Fatalf("Artifact: %v", err)
 	}
-	if filepath.Base(jsonPath) != "2026-06-01_to_2026-06-30_journal.json" {
-		t.Fatalf("json path = %s", filepath.Base(jsonPath))
-	}
-	if filepath.Base(mdPath) != "2026-06-01_to_2026-06-30_journal.md" {
-		t.Fatalf("md path = %s", filepath.Base(mdPath))
+	if artifact.Base != "2026-06-01_to_2026-06-30_journal" {
+		t.Fatalf("base = %s", artifact.Base)
 	}
 
-	payload, err := os.ReadFile(jsonPath)
-	if err != nil {
-		t.Fatalf("read json: %v", err)
-	}
+	payload := artifact.JSON
 	var decoded JournalGradeReport
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		t.Fatalf("reparse json: %v", err)
@@ -71,7 +62,7 @@ func TestJournalGradeReport_WriteFiles(t *testing.T) {
 		t.Fatalf("summary = %+v", decoded.Summary)
 	}
 
-	md := RenderJournalGradeMarkdown(grade)
+	md := string(artifact.Markdown)
 	for _, want := range []string{
 		"# Journal grade — 2026-06-01 → 2026-06-30",
 		"## Counts",
@@ -79,7 +70,7 @@ func TestJournalGradeReport_WriteFiles(t *testing.T) {
 		"## Unfilled shadow (never in the win rate)",
 		"## Return distribution (resolved verdicts)",
 		"## Verdicts",
-		"## Malformed lines (skipped, never graded)",
+		"## Malformed rows (skipped, never graded)",
 		"## Discipline flags",
 		"## Success criteria",
 		"## Notes",
@@ -99,12 +90,12 @@ func TestJournalGradeReport_OpenWindowFilename(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build grade: %v", err)
 	}
-	jsonPath, _, err := grade.WriteFiles(t.TempDir())
+	artifact, err := grade.Artifact()
 	if err != nil {
-		t.Fatalf("WriteFiles: %v", err)
+		t.Fatalf("Artifact: %v", err)
 	}
-	if filepath.Base(jsonPath) != "all_journal.json" {
-		t.Fatalf("json path = %s, want all_journal.json", filepath.Base(jsonPath))
+	if artifact.Base != "all_journal" {
+		t.Fatalf("base = %s, want all_journal", artifact.Base)
 	}
 	if !strings.Contains(RenderJournalGradeMarkdown(grade), "# Journal grade — all") {
 		t.Fatalf("open-window label missing:\n%s", RenderJournalGradeMarkdown(grade))

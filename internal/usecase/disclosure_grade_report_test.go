@@ -3,8 +3,6 @@ package usecase
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,10 +10,10 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 )
 
-// TestDisclosureGradeReport_WriteFiles — a single-filing-day Disclosure Grade
-// writes <as-of>_disclosures, the JSON round-trips with its rows and reject
+// TestDisclosureGradeReport_Artifact — a single-filing-day Disclosure Grade
+// renders <as-of>_disclosures, the JSON round-trips with its rows and reject
 // sample, and the markdown carries every section a reader follows.
-func TestDisclosureGradeReport_WriteFiles(t *testing.T) {
+func TestDisclosureGradeReport_Artifact(t *testing.T) {
 	anchor, _, prices, source := disclosureGradeScenario()
 	grade, err := newDisclosureGradeEngine(prices, source).
 		GradeDisclosures(context.Background(), DisclosureGradeOptions{Anchors: []time.Time{anchor}})
@@ -23,22 +21,15 @@ func TestDisclosureGradeReport_WriteFiles(t *testing.T) {
 		t.Fatalf("build grade: %v", err)
 	}
 
-	dir := t.TempDir()
-	jsonPath, mdPath, err := grade.WriteFiles(dir)
+	artifact, err := grade.Artifact()
 	if err != nil {
-		t.Fatalf("WriteFiles: %v", err)
+		t.Fatalf("Artifact: %v", err)
 	}
-	if filepath.Base(jsonPath) != "2026-06-01_disclosures.json" {
-		t.Fatalf("json path = %s, want 2026-06-01_disclosures.json", filepath.Base(jsonPath))
-	}
-	if filepath.Base(mdPath) != "2026-06-01_disclosures.md" {
-		t.Fatalf("md path = %s, want 2026-06-01_disclosures.md", filepath.Base(mdPath))
+	if artifact.Base != "2026-06-01_disclosures" {
+		t.Fatalf("base = %s, want 2026-06-01_disclosures", artifact.Base)
 	}
 
-	payload, err := os.ReadFile(jsonPath)
-	if err != nil {
-		t.Fatalf("read json: %v", err)
-	}
+	payload := artifact.JSON
 	var decoded DisclosureGradeReport
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		t.Fatalf("reparse json: %v", err)
@@ -56,7 +47,7 @@ func TestDisclosureGradeReport_WriteFiles(t *testing.T) {
 		t.Fatalf("JSON missing the unfilled material slots:\n%s", payload)
 	}
 
-	md := RenderDisclosureGradeMarkdown(grade)
+	md := string(artifact.Markdown)
 	for _, want := range []string{
 		"# Disclosure grade @ 2026-06-01",
 		"## Counts",
@@ -91,13 +82,13 @@ func TestDisclosureGradeReport_RangeFilename(t *testing.T) {
 		t.Fatalf("build grade: %v", err)
 	}
 
-	jsonPath, _, err := grade.WriteFiles(t.TempDir())
+	artifact, err := grade.Artifact()
 	if err != nil {
-		t.Fatalf("WriteFiles: %v", err)
+		t.Fatalf("Artifact: %v", err)
 	}
-	want := "2026-06-01_to_2026-06-16_disclosures.json"
-	if filepath.Base(jsonPath) != want {
-		t.Fatalf("json path = %s, want %s", filepath.Base(jsonPath), want)
+	want := "2026-06-01_to_2026-06-16_disclosures"
+	if artifact.Base != want {
+		t.Fatalf("base = %s, want %s", artifact.Base, want)
 	}
 	if !strings.Contains(RenderDisclosureGradeMarkdown(grade), "2026-06-01 → 2026-06-16") {
 		t.Fatalf("range label missing:\n%s", RenderDisclosureGradeMarkdown(grade))

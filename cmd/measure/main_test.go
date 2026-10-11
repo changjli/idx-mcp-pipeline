@@ -1,12 +1,93 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/storage"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/usecase"
 )
+
+// fakeObjectStore is an in-memory storage.ObjectStore for the migration test.
+type fakeObjectStore struct {
+	objects map[string][]byte
+}
+
+func (f *fakeObjectStore) PutObject(_ context.Context, key string, data []byte) error {
+	f.objects[key] = append([]byte(nil), data...)
+	return nil
+}
+
+func (f *fakeObjectStore) GetObject(_ context.Context, key string) ([]byte, error) {
+	data, ok := f.objects[key]
+	if !ok {
+		return nil, storage.ErrObjectNotFound
+	}
+	return data, nil
+}
+
+func (f *fakeObjectStore) DeleteObject(_ context.Context, key string) error {
+	delete(f.objects, key)
+	return nil
+}
+
+// TestMigrateReports — every <base>.{json,md} pair is sealed (version + latest),
+// non-JSON files are ignored, and a second run is an idempotent no-op.
+func TestMigrateReports(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"2026-06-01_default.json", "2026-06-01_default.md"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("report "+name), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitkeep"), nil, 0o644); err != nil {
+		t.Fatalf("write .gitkeep: %v", err)
+	}
+	// A .json with no .md pair is an error, never a silent skip.
+	if err := os.WriteFile(filepath.Join(dir, "orphan.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write orphan: %v", err)
+	}
+
+	objects := &fakeObjectStore{objects: map[string][]byte{}}
+	store := usecase.NewMeasurementReportStore(objects)
+	if _, err := migrateReports(context.Background(), store, dir); err == nil {
+		t.Fatal("expected an error for a .json with no .md pair")
+	}
+	if err := os.Remove(filepath.Join(dir, "orphan.json")); err != nil {
+		t.Fatalf("remove orphan: %v", err)
+	}
+
+	sealed, err := migrateReports(context.Background(), store, dir)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if sealed != 1 {
+		t.Fatalf("sealed = %d, want 1", sealed)
+	}
+	if _, ok := objects.objects["measurement/reports/2026-06-01_default.json"]; !ok {
+		t.Fatalf("latest json key missing; keys: %v", keysOf(objects.objects))
+	}
+
+	after := len(objects.objects)
+	if _, err := migrateReports(context.Background(), store, dir); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	if len(objects.objects) != after {
+		t.Fatalf("second migrate added objects: %d -> %d", after, len(objects.objects))
+	}
+}
+
+func keysOf(m map[string][]byte) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	return keys
+}
 
 // TestParseMeasurementOptions — the CLI boundary validates its dates as
 // structured errors (never a panic), and an omitted anchor is refused.

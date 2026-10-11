@@ -1,15 +1,40 @@
 # Filter sets
 
-One file per named filter set: `<name>.json`. The filename stem **is** the
-name — it is what you pass to `cmd/measure --filters <name>`, what appears in
-the report's `filter_set`, and the `<name>` segment of the report filename
-`measurement/reports/<as-of>_<name>.{json,md}`.
+A **named filter set** is one tuning candidate: a `description` plus a
+`ScreenStocks` request. Named sets are how a tuning decision is versioned — a
+report snapshots the resolved params and the **Config Hash**, so a later edit
+shows up as a diff against the report that graded the previous version.
 
-Filter sets are data, not code: adding or tuning one is a small JSON edit, not a
-Go edit, so the loop's "learning" (filter changes committed to the repo) never
-risks breaking a build.
+> **Where they live now (ADR-0016):** the sets are carried by the **Active Filter
+> Set**'s Config Document on R2 (`measurement/config/versions/<sha256>.json`),
+> read whole on every screen run. Tuning edits the document, never the repo. This
+> directory is a **format reference** and the one-shot source `measure migrate`
+> reads to seed the document; it is no longer read by a Grade.
 
-## Fields
+A filter-set entry is data, not code: adding or tuning one is a small JSON edit,
+so the loop's "learning" never risks breaking a build.
+
+## The Config Document
+
+One document holds every named set and the name in force:
+
+```json
+{
+  "active": "volume-tolerant",
+  "sets": {
+    "default": {},
+    "volume-tolerant": {"description": "volume_ratio:20 lte 1.5", "window": 60}
+  }
+}
+```
+
+`GET` follows the `active.json` pointer to the current immutable version; `PUT`
+writes a new version and moves the pointer. The `sha256` of the version bytes is
+the document's **Config Hash**, recorded in every screen Grade report. The
+built-in `default` (the zero-value request) is always available, so an empty
+bucket grades the shipped screener defaults.
+
+## Set fields
 
 Every field is optional. An omitted field means the shipped screener default
 applies (the same defaults the live `screen_stocks` tool uses).
@@ -37,8 +62,6 @@ meaning:
 
 ## Example
 
-`measurement/filtersets/momentum.json`:
-
 ```json
 {
   "description": "rsi >= 60 and above the 20/50 MA, ranked by RSI",
@@ -53,6 +76,8 @@ meaning:
 ```
 
 ```sh
+# Publish this directory's sets as the Config Document, then grade the active set.
+go run ./cmd/measure migrate --filtersets-dir measurement/filtersets --active momentum
 go run ./cmd/measure --as-of 2026-05-04 --filters momentum
 ```
 
@@ -64,12 +89,14 @@ listed.
 ## The built-in `default`
 
 `default` is built in and always available (it is the zero-value request: run
-the shipped screener). A `default.json` file overrides it if present. A missing
-`filtersets` directory is fine — the tool still runs the default set.
+the shipped screener). A `default` entry in the Config Document overrides it. A
+missing `filtersets` directory is fine — `migrate` then seeds the document with
+the built-in default alone.
 
 ## Validation
 
-Files are decoded strictly: an unknown field (a typo), invalid JSON, a wrong
-type, or trailing content is a structured error naming the file — never a
-silently skipped or partially applied set. Two filenames differing only by case
-are refused as ambiguous.
+The document is decoded strictly: an unknown field (a typo), invalid JSON, a
+wrong type, or trailing content is a structured error — never a silently skipped
+or partially applied set. A pointed-at version whose bytes do not hash to the
+pointer is refused as corrupt. Two set names differing only by case are one
+name, and the registry cannot decide between them.

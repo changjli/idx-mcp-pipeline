@@ -203,6 +203,11 @@ func (r *cleanupRunner) run(ctx context.Context, taskID string) error {
 // large backlog is processed incrementally. A failed R2 delete is logged and
 // skipped — the row stays undeleted so the next run retries. Returns objects
 // evicted.
+//
+// The measurement and config objects (measurement/reports/… and
+// measurement/config/…) are deliberately out of scope: eviction is driven by
+// raw_files rows, and no measurement object has one, so they are indefinite by
+// construction and can never be evicted here (ADR-0016).
 func (r *cleanupRunner) evictExpiredRawFiles(ctx context.Context) (int, error) {
 	evicted := 0
 	for {

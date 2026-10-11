@@ -12,25 +12,26 @@ import (
 	"strings"
 )
 
-// MeasurementFilterSetDir is where named filter sets live, relative to the repo
-// root. Filter sets are data, not code: the AI and the user tune by adding or
-// editing a <name>.json file, so a filter change is a small data edit rather
-// than a Go edit that can break a build.
+// MeasurementFilterSetDir is the pre-R2 location of the named filter sets. A
+// Grade never reads it — the Active Filter Set comes from the Config Document on
+// R2 (ADR-0016) — but `measure migrate` reads it once to seed the document, and
+// the file shape below is exactly the shape a document's sets entry uses.
 const MeasurementFilterSetDir = "measurement/filtersets"
 
-// defaultMeasurementFilterSet is the built-in name a bare `cmd/measure` grades.
-// Its zero-value request means "the shipped screener defaults", so it can never
-// drift from the screen_stocks tool the way a copied file could.
+// defaultMeasurementFilterSet is the built-in name: the shipped screener
+// defaults. Its zero-value request means "the shipped screener defaults", so it
+// can never drift from the screen_stocks tool the way a copied file could. It is
+// also the fallback active set when no Config Document is published.
 const defaultMeasurementFilterSet = "default"
 
 // MeasurementFilterSet is one named Replay configuration: the ScreenStocks
 // request a Replay runs, minus the anchor and the row cap the engine supplies.
 // A name is how a tuning decision is versioned — reports snapshot the resolved
-// params, so a later edit shows up as a diff against the report that graded the
-// previous version.
+// params and the Config Hash, so a later edit shows up as a diff against the
+// report that graded the previous version.
 type MeasurementFilterSet struct {
-	// Name is the registry key — the filename stem for a loaded file, or
-	// "default" for the built-in set.
+	// Name is the registry key — a Config Document's sets key, or "default"
+	// for the built-in set.
 	Name string
 	// Description is a one-line human label rendered in the report.
 	Description string
@@ -39,61 +40,64 @@ type MeasurementFilterSet struct {
 	Params ScreenStocksRequest
 }
 
-// MeasurementFilterRegistry is the set of named filter sets the engine can
-// grade: the built-in "default" plus one <name>.json per file in the filter-set
-// directory. Files are the tuning surface; the built-in default is the fallback
-// that keeps `cmd/measure` working on a checkout with no files.
+// MeasurementFilterRegistry is the set of named filter sets a screen run can
+// grade: the built-in "default" plus every set the Active Filter Set's Config
+// Document carries, with `active` naming the one a bare run grades.
 type MeasurementFilterRegistry struct {
-	sets map[string]MeasurementFilterSet
+	sets   map[string]MeasurementFilterSet
+	active string
 }
 
-// NewMeasurementFilterRegistry builds the registry from the built-in default and
-// every <name>.json under dir. An empty dir (or one that does not exist) yields
-// just the built-in default — a fresh checkout is never broken by the absence of
-// the tuning files. Any other read or parse failure is an error naming the file.
-func NewMeasurementFilterRegistry(dir string) (*MeasurementFilterRegistry, error) {
-	registry := newBuiltinMeasurementFilterRegistry()
-	if strings.TrimSpace(dir) == "" {
-		return registry, nil
-	}
-	files, err := loadMeasurementFilterSetFiles(dir)
-	if err != nil {
-		return nil, err
-	}
-	for name, set := range files {
-		// A file may override the built-in default; the file is the more
-		// specific statement and the report snapshots whatever ran.
-		registry.sets[name] = set
-	}
-	return registry, nil
+// NewMeasurementFilterRegistry returns the built-in registry: the shipped
+// screener defaults under the name "default", active. It is what a run uses when
+// no Config Document is published — a fresh bucket is a valid fresh start, not
+// an error.
+func NewMeasurementFilterRegistry() *MeasurementFilterRegistry {
+	return newBuiltinMeasurementFilterRegistry()
 }
 
 // newBuiltinMeasurementFilterRegistry is the registry with only the shipped
 // default set.
 func newBuiltinMeasurementFilterRegistry() *MeasurementFilterRegistry {
-	return &MeasurementFilterRegistry{sets: map[string]MeasurementFilterSet{
-		defaultMeasurementFilterSet: {
-			Name:        defaultMeasurementFilterSet,
-			Description: "the shipped screener default set (ma_distance:20:50 > 0; range_position:60 in [0.70, 0.95]; volume_ratio:20 <= 1)",
-			Params:      ScreenStocksRequest{},
+	return &MeasurementFilterRegistry{
+		active: defaultMeasurementFilterSet,
+		sets: map[string]MeasurementFilterSet{
+			defaultMeasurementFilterSet: {
+				Name:        defaultMeasurementFilterSet,
+				Description: "the shipped screener default set (ma_distance:20:50 > 0; range_position:60 in [0.70, 0.95]; volume_ratio:20 <= 1)",
+				Params:      ScreenStocksRequest{},
+			},
 		},
-	}}
+	}
 }
 
-// Resolve looks a named set up case-insensitively. An unknown name is a
-// structured INVALID_ARGUMENT naming the known sets, never a silent fallback to
-// the default — grading the wrong filter set while reporting the asked-for name
-// would corrupt the loop's evidence.
+// Resolve looks a named set up case-insensitively. An empty name resolves to the
+// Active Filter Set (or the built-in default when none is set), so a bare run
+// grades what is in force rather than a hard-coded name. An unknown name is a
+// structured INVALID_ARGUMENT naming the known sets, never a silent fallback —
+// grading the wrong filter set while reporting the asked-for name would corrupt
+// the loop's evidence.
 func (r *MeasurementFilterRegistry) Resolve(name string) (MeasurementFilterSet, error) {
 	norm := strings.ToLower(strings.TrimSpace(name))
 	if norm == "" {
-		norm = defaultMeasurementFilterSet
+		norm = r.active
+		if norm == "" {
+			norm = defaultMeasurementFilterSet
+		}
 	}
 	if set, ok := r.sets[norm]; ok {
 		return set, nil
 	}
 	return MeasurementFilterSet{}, fmt.Errorf("%w: unknown filter set %q; known: %s",
 		ErrInvalidArgument, name, strings.Join(r.Names(), ", "))
+}
+
+// Active returns the name a bare Resolve grades.
+func (r *MeasurementFilterRegistry) Active() string {
+	if r.active == "" {
+		return defaultMeasurementFilterSet
+	}
+	return r.active
 }
 
 // Names returns the registry keys sorted, for stable "known sets" error text
@@ -107,12 +111,12 @@ func (r *MeasurementFilterRegistry) Names() []string {
 	return names
 }
 
-// measurementFilterSetFile is the on-disk shape of a named filter set. Every
-// field is optional: an omitted knob means the shipped screener default applies.
-// The two pointer fields preserve the DSL's three-state semantics crossing JSON —
-// `"filters": []` is an explicit "no structural filters" while an absent
-// `filters` key runs the defaults, and `"min_value": 0` is a legitimate "no
-// floor" while an absent key uses the shipped floor.
+// measurementFilterSetFile is the on-disk / on-R2 shape of a named filter set.
+// Every field is optional: an omitted knob means the shipped screener default
+// applies. The two pointer fields preserve the DSL's three-state semantics
+// crossing JSON — `"filters": []` is an explicit "no structural filters" while an
+// absent `filters` key runs the defaults, and `"min_value": 0` is a legitimate
+// "no floor" while an absent key uses the shipped floor.
 type measurementFilterSetFile struct {
 	Description          string                `json:"description"`
 	Window               int                   `json:"window"`
@@ -139,20 +143,20 @@ func (f measurementFilterSetFile) params() ScreenStocksRequest {
 	}
 }
 
-// loadMeasurementFilterSetFiles reads every <name>.json under dir. A missing
-// directory is not an error — it is how a checkout that never tuned anything
-// looks. A malformed file is a structured error naming the file, so a typo is
-// fixed rather than silently skipped.
-func loadMeasurementFilterSetFiles(dir string) (map[string]MeasurementFilterSet, error) {
+// readMeasurementFilterSetFiles reads every <name>.json under dir into the file
+// shape. A missing directory is not an error — it is how a checkout that never
+// tuned anything looks. A malformed file is a structured error naming the file,
+// so a typo is fixed rather than silently skipped. Only `migrate` calls this.
+func readMeasurementFilterSetFiles(dir string) (map[string]measurementFilterSetFile, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return map[string]MeasurementFilterSet{}, nil
+			return map[string]measurementFilterSetFile{}, nil
 		}
 		return nil, fmt.Errorf("read filter sets directory %s: %w", dir, err)
 	}
 
-	sets := make(map[string]MeasurementFilterSet)
+	sets := make(map[string]measurementFilterSetFile)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
 			continue
@@ -172,33 +176,37 @@ func loadMeasurementFilterSetFiles(dir string) (map[string]MeasurementFilterSet,
 		if err != nil {
 			return nil, err
 		}
-		sets[name] = MeasurementFilterSet{
-			Name:        name,
-			Description: file.Description,
-			Params:      file.params(),
-		}
+		sets[name] = file
 	}
 	return sets, nil
 }
 
-// readMeasurementFilterSetFile decodes one file strictly: unknown fields are
-// rejected (a mistyped knob is an error, never silently ignored) and trailing
-// content after the object is rejected.
+// readMeasurementFilterSetFile decodes one file strictly.
 func readMeasurementFilterSetFile(path string) (measurementFilterSetFile, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return measurementFilterSetFile{}, fmt.Errorf("read filter set %s: %w", path, err)
 	}
+	file, err := decodeMeasurementFilterSet(raw)
+	if err != nil {
+		return measurementFilterSetFile{}, fmt.Errorf("filter set %s: %w", path, err)
+	}
+	return file, nil
+}
 
+// decodeMeasurementFilterSet decodes one filter-set document strictly: unknown
+// fields are rejected (a mistyped knob is an error, never silently ignored) and
+// trailing content after the object is rejected.
+func decodeMeasurementFilterSet(raw []byte) (measurementFilterSetFile, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 
 	var file measurementFilterSetFile
 	if err := decoder.Decode(&file); err != nil {
-		return measurementFilterSetFile{}, fmt.Errorf("%w: filter set %s: %v", ErrInvalidArgument, path, err)
+		return measurementFilterSetFile{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return measurementFilterSetFile{}, fmt.Errorf("%w: filter set %s: unexpected trailing content", ErrInvalidArgument, path)
+		return measurementFilterSetFile{}, fmt.Errorf("%w: unexpected trailing content", ErrInvalidArgument)
 	}
 	return file, nil
 }
