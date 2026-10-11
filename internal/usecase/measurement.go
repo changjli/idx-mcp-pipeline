@@ -272,8 +272,8 @@ type ScreenGradeReport struct {
 }
 
 // MeasurementEngine runs Replays and scores them. It is read-only with respect
-// to app behavior: it never writes to the database, and the MCP server never
-// depends on it.
+// to app behavior: it never writes to the database. It is the engine
+// MeasurementHarness exposes to both cmd/measure and the MCP server (ADR-0017).
 type MeasurementEngine struct {
 	DB     *sqlx.DB
 	Log    *logrus.Logger

@@ -337,6 +337,16 @@ func main() {
 	// Nothing persisted.
 	screenStocksUC := usecase.NewScreenStocksUseCase(db, log, dailyPriceRepo, brokerStockSummaryRepo)
 
+	// Measurement Harness (ticket 08, ADR-0017): the same facade cmd/measure
+	// builds, so the MCP measurement tools and the CLI grade identically. r2Store
+	// is nil when R2 is unconfigured; the harness then grades the built-in
+	// default set and the config/report tools return a structured error.
+	measurementRevision := os.Getenv("GIT_REVISION")
+	if measurementRevision == "" {
+		measurementRevision = "unknown"
+	}
+	measurementUC := usecase.NewMeasurementHarness(db, log, r2Store, measurementRevision)
+
 	// ─── HTTP router ────────────────────────────────────────────
 
 	router := chi.NewRouter()
@@ -392,6 +402,7 @@ func main() {
 		SectorFlowUC:            sectorFlowUC,
 		ComputeIndicatorsUC:     computeIndicatorsUC,
 		ScreenStocksUC:          screenStocksUC,
+		MeasurementUC:           measurementUC,
 		SourceStatusRepo:        sourceStatusRepo,
 		TickerRepo:              tickerRepo,
 	})

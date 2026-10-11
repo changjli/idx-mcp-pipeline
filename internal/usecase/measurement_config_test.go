@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-func configDocForTest(active string, sets map[string]measurementFilterSetFile) measurementConfigDocument {
-	return measurementConfigDocument{Active: active, Sets: sets}
+func configDocForTest(active string, sets map[string]MeasurementFilterSetFile) MeasurementConfigDocument {
+	return MeasurementConfigDocument{Active: active, Sets: sets}
 }
 
 // newFakeObjectStore builds the shared in-memory ObjectStore used by the config
@@ -26,7 +26,7 @@ func TestMeasurementConfigStore_PutGetRoundTrip(t *testing.T) {
 	store := NewMeasurementConfigStore(objects)
 	ctx := context.Background()
 
-	doc := configDocForTest("volume-tolerant", map[string]measurementFilterSetFile{
+	doc := configDocForTest("volume-tolerant", map[string]MeasurementFilterSetFile{
 		"default":         {},
 		"volume-tolerant": {Description: "volume_ratio:20 lte 1.5"},
 	})
@@ -82,11 +82,11 @@ func TestMeasurementConfigStore_VersionsKept(t *testing.T) {
 	store := NewMeasurementConfigStore(objects)
 	ctx := context.Background()
 
-	first, err := store.Put(ctx, configDocForTest("default", map[string]measurementFilterSetFile{"default": {Description: "v1"}}))
+	first, err := store.Put(ctx, configDocForTest("default", map[string]MeasurementFilterSetFile{"default": {Description: "v1"}}))
 	if err != nil {
 		t.Fatalf("put v1: %v", err)
 	}
-	second, err := store.Put(ctx, configDocForTest("momentum", map[string]measurementFilterSetFile{
+	second, err := store.Put(ctx, configDocForTest("momentum", map[string]MeasurementFilterSetFile{
 		"default":  {},
 		"momentum": {Description: "v2"},
 	}))
@@ -159,7 +159,7 @@ func TestMeasurementConfigStore_CorruptConfig(t *testing.T) {
 	t.Run("tampered version", func(t *testing.T) {
 		objects := newFakeObjectStore()
 		store := NewMeasurementConfigStore(objects)
-		hash, err := store.Put(ctx, configDocForTest("default", map[string]measurementFilterSetFile{"default": {}}))
+		hash, err := store.Put(ctx, configDocForTest("default", map[string]MeasurementFilterSetFile{"default": {}}))
 		if err != nil {
 			t.Fatalf("put: %v", err)
 		}

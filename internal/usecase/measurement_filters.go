@@ -111,13 +111,13 @@ func (r *MeasurementFilterRegistry) Names() []string {
 	return names
 }
 
-// measurementFilterSetFile is the on-disk / on-R2 shape of a named filter set.
+// MeasurementFilterSetFile is the on-disk / on-R2 shape of a named filter set.
 // Every field is optional: an omitted knob means the shipped screener default
 // applies. The two pointer fields preserve the DSL's three-state semantics
 // crossing JSON — `"filters": []` is an explicit "no structural filters" while an
 // absent `filters` key runs the defaults, and `"min_value": 0` is a legitimate
 // "no floor" while an absent key uses the shipped floor.
-type measurementFilterSetFile struct {
+type MeasurementFilterSetFile struct {
 	Description          string                `json:"description"`
 	Window               int                   `json:"window"`
 	MinValue             *int64                `json:"min_value"`
@@ -130,7 +130,7 @@ type measurementFilterSetFile struct {
 }
 
 // params maps the file shape onto the ScreenStocks request.
-func (f measurementFilterSetFile) params() ScreenStocksRequest {
+func (f MeasurementFilterSetFile) params() ScreenStocksRequest {
 	return ScreenStocksRequest{
 		Window:               f.Window,
 		MinValue:             f.MinValue,
@@ -147,16 +147,16 @@ func (f measurementFilterSetFile) params() ScreenStocksRequest {
 // shape. A missing directory is not an error — it is how a checkout that never
 // tuned anything looks. A malformed file is a structured error naming the file,
 // so a typo is fixed rather than silently skipped. Only `migrate` calls this.
-func readMeasurementFilterSetFiles(dir string) (map[string]measurementFilterSetFile, error) {
+func readMeasurementFilterSetFiles(dir string) (map[string]MeasurementFilterSetFile, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return map[string]measurementFilterSetFile{}, nil
+			return map[string]MeasurementFilterSetFile{}, nil
 		}
 		return nil, fmt.Errorf("read filter sets directory %s: %w", dir, err)
 	}
 
-	sets := make(map[string]measurementFilterSetFile)
+	sets := make(map[string]MeasurementFilterSetFile)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
 			continue
@@ -182,14 +182,14 @@ func readMeasurementFilterSetFiles(dir string) (map[string]measurementFilterSetF
 }
 
 // readMeasurementFilterSetFile decodes one file strictly.
-func readMeasurementFilterSetFile(path string) (measurementFilterSetFile, error) {
+func readMeasurementFilterSetFile(path string) (MeasurementFilterSetFile, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return measurementFilterSetFile{}, fmt.Errorf("read filter set %s: %w", path, err)
+		return MeasurementFilterSetFile{}, fmt.Errorf("read filter set %s: %w", path, err)
 	}
 	file, err := decodeMeasurementFilterSet(raw)
 	if err != nil {
-		return measurementFilterSetFile{}, fmt.Errorf("filter set %s: %w", path, err)
+		return MeasurementFilterSetFile{}, fmt.Errorf("filter set %s: %w", path, err)
 	}
 	return file, nil
 }
@@ -197,16 +197,16 @@ func readMeasurementFilterSetFile(path string) (measurementFilterSetFile, error)
 // decodeMeasurementFilterSet decodes one filter-set document strictly: unknown
 // fields are rejected (a mistyped knob is an error, never silently ignored) and
 // trailing content after the object is rejected.
-func decodeMeasurementFilterSet(raw []byte) (measurementFilterSetFile, error) {
+func decodeMeasurementFilterSet(raw []byte) (MeasurementFilterSetFile, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 
-	var file measurementFilterSetFile
+	var file MeasurementFilterSetFile
 	if err := decoder.Decode(&file); err != nil {
-		return measurementFilterSetFile{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+		return MeasurementFilterSetFile{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return measurementFilterSetFile{}, fmt.Errorf("%w: unexpected trailing content", ErrInvalidArgument)
+		return MeasurementFilterSetFile{}, fmt.Errorf("%w: unexpected trailing content", ErrInvalidArgument)
 	}
 	return file, nil
 }

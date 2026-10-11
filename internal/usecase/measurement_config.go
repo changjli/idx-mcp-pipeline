@@ -25,13 +25,13 @@ const (
 	measurementConfigVersionKey = MeasurementConfigPrefix + "/versions/%s.json"
 )
 
-// measurementConfigDocument is the whole Active Filter Set: every named filter
+// MeasurementConfigDocument is the whole Active Filter Set: every named filter
 // set plus the name in force. Read whole on a screen run, so a named set
 // resolves in-process and the built-in default still works on an empty bucket.
 // Each accepted edit publishes it as a new immutable version, keyed by its hash.
-type measurementConfigDocument struct {
+type MeasurementConfigDocument struct {
 	Active string                              `json:"active"`
-	Sets   map[string]measurementFilterSetFile `json:"sets"`
+	Sets   map[string]MeasurementFilterSetFile `json:"sets"`
 }
 
 // measurementConfigPointer is the mutable pointer: which content-addressed
@@ -42,8 +42,8 @@ type measurementConfigPointer struct {
 }
 
 // MeasurementConfigStore reads and publishes the Config Document on object
-// storage. The read path is cmd/measure's; the MCP config tools (ticket 08b)
-// will use the same store.
+// storage. The Graders read it through MeasurementHarness; the MCP
+// get_screener_config / put_screener_config tools (ticket 08) write through it.
 type MeasurementConfigStore struct {
 	Objects storage.ObjectStore
 }
@@ -76,7 +76,7 @@ func (s *MeasurementConfigStore) Registry(ctx context.Context) (*MeasurementFilt
 // published yet. A pointer that is malformed, dangling, or whose version bytes
 // do not hash to the pointer is a structured error — a corrupt config must never
 // silently grade the wrong set.
-func (s *MeasurementConfigStore) Get(ctx context.Context) (*measurementConfigDocument, string, error) {
+func (s *MeasurementConfigStore) Get(ctx context.Context) (*MeasurementConfigDocument, string, error) {
 	if s.Objects == nil {
 		return nil, "", fmt.Errorf("config store: no object storage")
 	}
@@ -109,7 +109,7 @@ func (s *MeasurementConfigStore) Get(ctx context.Context) (*measurementConfigDoc
 		return nil, "", fmt.Errorf("%w: config version %s hashes to %s; the pointer is stale", ErrInvalidArgument, pointer.Hash, got)
 	}
 
-	var doc measurementConfigDocument
+	var doc MeasurementConfigDocument
 	if err := decodeConfigJSON(data, &doc); err != nil {
 		return nil, "", fmt.Errorf("%w: config version %s: %v", ErrInvalidArgument, pointer.Hash, err)
 	}
@@ -122,7 +122,7 @@ func (s *MeasurementConfigStore) Get(ctx context.Context) (*measurementConfigDoc
 // Put publishes doc as a new immutable version and repoints active.json at it,
 // returning the Config Hash. Re-publishing identical content is idempotent (the
 // same version key holds the same bytes).
-func (s *MeasurementConfigStore) Put(ctx context.Context, doc measurementConfigDocument) (string, error) {
+func (s *MeasurementConfigStore) Put(ctx context.Context, doc MeasurementConfigDocument) (string, error) {
 	if s.Objects == nil {
 		return "", fmt.Errorf("config store: no object storage")
 	}
@@ -161,19 +161,19 @@ func (s *MeasurementConfigStore) SeedFromDir(ctx context.Context, dir, active st
 	if err != nil {
 		return "", err
 	}
-	sets := make(map[string]measurementFilterSetFile, len(files)+1)
+	sets := make(map[string]MeasurementFilterSetFile, len(files)+1)
 	// The built-in default as an empty document entry: every field omitted, so it
 	// resolves to the shipped screener defaults — identical to name "default".
-	sets[defaultMeasurementFilterSet] = measurementFilterSetFile{}
+	sets[defaultMeasurementFilterSet] = MeasurementFilterSetFile{}
 	for name, file := range files {
 		sets[name] = file
 	}
-	return s.Put(ctx, measurementConfigDocument{Active: active, Sets: sets})
+	return s.Put(ctx, MeasurementConfigDocument{Active: active, Sets: sets})
 }
 
 // registry validates the document's shape and builds the filter-set registry it
 // describes: the built-in default plus every set, with active in force.
-func (d measurementConfigDocument) registry() (*MeasurementFilterRegistry, error) {
+func (d MeasurementConfigDocument) registry() (*MeasurementFilterRegistry, error) {
 	if err := d.validate(); err != nil {
 		return nil, err
 	}
@@ -187,7 +187,7 @@ func (d measurementConfigDocument) registry() (*MeasurementFilterRegistry, error
 }
 
 // registryActive is the active name, defaulting to "default" when unset.
-func (d measurementConfigDocument) registryActive() string {
+func (d MeasurementConfigDocument) registryActive() string {
 	active := strings.ToLower(strings.TrimSpace(d.Active))
 	if active == "" {
 		return defaultMeasurementFilterSet
@@ -196,7 +196,7 @@ func (d measurementConfigDocument) registryActive() string {
 }
 
 // validate rejects a document that could not resolve every name.
-func (d measurementConfigDocument) validate() error {
+func (d MeasurementConfigDocument) validate() error {
 	if len(d.Sets) == 0 {
 		return fmt.Errorf("%w: config document has no filter sets", ErrInvalidArgument)
 	}

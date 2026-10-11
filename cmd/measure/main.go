@@ -2,24 +2,32 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/jmoiron/sqlx"
+	"github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
+
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/config"
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/storage"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/usecase"
 )
 
 // cmd/measure is the Measurement Harness — the offline, read-only grader of the
 // pipeline's claims. It replays named filter sets as of past Trading Days,
 // scores the survivors against the Liquidity Baseline and the Big-Cap Basket at
-// 5/10/20-day Forward Returns, and writes a JSON + markdown report under
-// measurement/reports/. It never writes to the database and the MCP server never
-// depends on it.
+// 5/10/20-day Forward Returns, and writes a sealed JSON + markdown report to R2
+// (ADR-0016). It never writes to the database and the MCP server never depends
+// on it. The named filter sets come from the Active Filter Set's Config Document
+// on R2; the Decision Journal comes from the measurement_journal table. `migrate`
+// is the one-shot upload of the pre-R2 artifacts.
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -29,6 +37,8 @@ func main() {
 	switch args[0] {
 	case "grade":
 		runGrade(args[1:])
+	case "migrate":
+		runMigrate(args[1:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -38,8 +48,35 @@ func main() {
 			runGradeScreen(args)
 			return
 		}
-		fatalf("measure: unknown command %q; expected `grade screen`", args[0])
+		fatalf("measure: unknown command %q; expected `grade screen` or `migrate`", args[0])
 	}
+}
+
+// newHarness builds the shared Measurement Harness (ADR-0017) around an R2 store
+// and a database. db may be nil for the R2-only `migrate` command.
+func newHarness(vip *viper.Viper, log *logrus.Logger, db *sqlx.DB, revision string) *usecase.MeasurementHarness {
+	client := config.NewR2Client(vip, log)
+	objects := storage.NewR2Store(client, vip.GetString("r2.bucket"))
+	return usecase.NewMeasurementHarness(db, log, objects, revision)
+}
+
+// resolveRevision returns the flag value when set, else the working-tree
+// revision. The harness is a local, in-repo tool, so a missing git binary
+// degrades to "unknown" rather than failing a measurement.
+func resolveRevision(flagValue string) string {
+	if rev := strings.TrimSpace(flagValue); rev != "" {
+		return rev
+	}
+	return gitRevision()
+}
+
+// publishReport seals a rendered report to R2, updating the bare latest keys.
+func publishReport(store *usecase.MeasurementReportStore, artifact usecase.ReportArtifact, log *logrus.Logger) {
+	jsonKey, mdKey, err := store.Sealed(context.Background(), artifact)
+	if err != nil {
+		log.Fatalf("measure: write report: %v", err)
+	}
+	log.Infof("measure: wrote %s and %s", jsonKey, mdKey)
 }
 
 // runGrade dispatches the `grade <grader>` group. The screen, anomaly, journal,
@@ -65,16 +102,15 @@ func runGrade(args []string) {
 }
 
 // runGradeScreen parses and runs the screen grader: one or more anchors, one
-// named filter set, and optionally a second to compare against.
+// named filter set, and optionally a second to compare against. The filter sets
+// and the Config Hash come from the Active Filter Set on R2.
 func runGradeScreen(args []string) {
 	flags := flag.NewFlagSet("grade screen", flag.ExitOnError)
 	var asOfs stringList
 	flags.Var(&asOfs, "as-of", "Replay anchor Trading Day, YYYY-MM-DD (repeatable, required)")
-	filters := flags.String("filters", "default", "named filter set to grade")
+	filters := flags.String("filters", "", "named filter set to grade (default: the Active Filter Set)")
 	compare := flags.String("compare", "", "optional second named filter set to compare against")
-	filtersetsDir := flags.String("filtersets-dir", usecase.MeasurementFilterSetDir, "directory of <name>.json filter sets")
 	holdoutStartStr := flags.String("holdout-start", "", "seal date, YYYY-MM-DD: restrict anchors to on/after it (optional)")
-	reportsDir := flags.String("reports-dir", usecase.MeasurementReportDir, "directory for the JSON + markdown report")
 	revision := flags.String("revision", "", "git revision to stamp (default: derived from the working tree)")
 	_ = flags.Parse(args)
 
@@ -86,36 +122,29 @@ func runGradeScreen(args []string) {
 		log.Fatalf("measure: %v", err)
 	}
 
-	filterSets, err := usecase.NewMeasurementFilterRegistry(*filtersetsDir)
-	if err != nil {
-		log.Fatalf("measure: %v", err)
-	}
-
 	db := config.NewDatabase(vip, log)
 	defer db.Close()
 
-	rev := strings.TrimSpace(*revision)
-	if rev == "" {
-		rev = gitRevision()
-	}
+	h := newHarness(vip, log, db, resolveRevision(*revision))
 
-	priceRepo := repository.NewDailyPriceRepository(log)
-	screen := usecase.NewScreenStocksUseCase(db, log, priceRepo, repository.NewBrokerStockSummaryRepository(log))
-	engine := usecase.NewMeasurementEngine(db, log, screen, priceRepo, filterSets, rev)
-
-	grade, err := engine.GradeScreen(context.Background(), opts)
+	grade, err := h.GradeScreen(context.Background(), opts)
 	if err != nil {
 		log.Fatalf("measure: %v", err)
 	}
-
-	jsonPath, mdPath, err := grade.WriteFiles(*reportsDir)
-	if err != nil {
-		log.Fatalf("measure: write report: %v", err)
+	if grade.ConfigHash == "" {
+		log.Infof("measure: no Active Filter Set published on R2; graded the built-in default set")
+	} else {
+		log.Infof("measure: graded the Active Filter Set %q (config %s)", grade.ActiveFilterSet, grade.ConfigHash)
 	}
-	log.Infof("measure: wrote %s and %s", jsonPath, mdPath)
+
+	artifact, err := grade.Artifact()
+	if err != nil {
+		log.Fatalf("measure: render report: %v", err)
+	}
+	publishReport(h.Reports, artifact, log)
 
 	// The markdown summary also goes to stdout: the tool computes, the reader
-	// interprets — no need to open the file to see the headline.
+	// interprets — no need to open the object to see the headline.
 	fmt.Println(usecase.RenderScreenGradeMarkdown(grade))
 }
 
@@ -127,7 +156,6 @@ func runGradeAnomalies(args []string) {
 	flags.Var(&asOfs, "as-of", "Replay anchor Trading Day, YYYY-MM-DD (repeatable, required)")
 	flowWindow := flags.Int("flow-window-days", 0, "Flow Lead-in Window length in trading days (default: 20)")
 	holdoutStartStr := flags.String("holdout-start", "", "seal date, YYYY-MM-DD: restrict anchors to on/after it (optional)")
-	reportsDir := flags.String("reports-dir", usecase.MeasurementReportDir, "directory for the JSON + markdown report")
 	revision := flags.String("revision", "", "git revision to stamp (default: derived from the working tree)")
 	_ = flags.Parse(args)
 
@@ -142,29 +170,18 @@ func runGradeAnomalies(args []string) {
 	db := config.NewDatabase(vip, log)
 	defer db.Close()
 
-	rev := strings.TrimSpace(*revision)
-	if rev == "" {
-		rev = gitRevision()
-	}
+	h := newHarness(vip, log, db, resolveRevision(*revision))
 
-	// The anomaly grader needs no screener: its Liquidity Baseline is the
-	// hard-filter stage read directly, so the structural funnel never runs.
-	priceRepo := repository.NewDailyPriceRepository(log)
-	engine := usecase.NewMeasurementEngine(db, log, nil, priceRepo, nil, rev)
-	engine.Anomalies = repository.NewAnomalyRepository(log)
-	engine.Disclosures = repository.NewDisclosureRepository(log)
-	engine.BrokerNet = repository.NewBrokerStockSummaryRepository(log)
-
-	grade, err := engine.GradeAnomalies(context.Background(), opts)
+	grade, err := h.GradeAnomalies(context.Background(), opts)
 	if err != nil {
 		log.Fatalf("measure: %v", err)
 	}
 
-	jsonPath, mdPath, err := grade.WriteFiles(*reportsDir)
+	artifact, err := grade.Artifact()
 	if err != nil {
-		log.Fatalf("measure: write report: %v", err)
+		log.Fatalf("measure: render report: %v", err)
 	}
-	log.Infof("measure: wrote %s and %s", jsonPath, mdPath)
+	publishReport(h.Reports, artifact, log)
 
 	fmt.Println(usecase.RenderAnomalyGradeMarkdown(grade))
 }
@@ -179,7 +196,6 @@ func runGradeFlow(args []string) {
 	flags.Var(&asOfs, "as-of", "Replay anchor Trading Day, YYYY-MM-DD (repeatable, required)")
 	flowWindow := flags.Int("flow-window-days", 0, "Flow Column window length in trading days (default: 20)")
 	holdoutStartStr := flags.String("holdout-start", "", "seal date, YYYY-MM-DD: restrict anchors to on/after it (optional)")
-	reportsDir := flags.String("reports-dir", usecase.MeasurementReportDir, "directory for the JSON + markdown report")
 	revision := flags.String("revision", "", "git revision to stamp (default: derived from the working tree)")
 	_ = flags.Parse(args)
 
@@ -194,29 +210,18 @@ func runGradeFlow(args []string) {
 	db := config.NewDatabase(vip, log)
 	defer db.Close()
 
-	rev := strings.TrimSpace(*revision)
-	if rev == "" {
-		rev = gitRevision()
-	}
+	h := newHarness(vip, log, db, resolveRevision(*revision))
 
-	// The flow grader needs no screener: its Liquidity Baseline is the
-	// hard-filter stage read directly, so the structural funnel never runs. It
-	// reads the Flow Column through the same broker-footer query the screener
-	// uses.
-	priceRepo := repository.NewDailyPriceRepository(log)
-	engine := usecase.NewMeasurementEngine(db, log, nil, priceRepo, nil, rev)
-	engine.ForeignFlow = repository.NewBrokerStockSummaryRepository(log)
-
-	grade, err := engine.GradeFlow(context.Background(), opts)
+	grade, err := h.GradeFlow(context.Background(), opts)
 	if err != nil {
 		log.Fatalf("measure: %v", err)
 	}
 
-	jsonPath, mdPath, err := grade.WriteFiles(*reportsDir)
+	artifact, err := grade.Artifact()
 	if err != nil {
-		log.Fatalf("measure: write report: %v", err)
+		log.Fatalf("measure: render report: %v", err)
 	}
-	log.Infof("measure: wrote %s and %s", jsonPath, mdPath)
+	publishReport(h.Reports, artifact, log)
 
 	fmt.Println(usecase.RenderFlowGradeMarkdown(grade))
 }
@@ -230,7 +235,6 @@ func runGradeDisclosures(args []string) {
 	flags.Var(&asOfs, "as-of", "Filing Day (disclosure announcement date), YYYY-MM-DD (repeatable, required)")
 	rejectSample := flags.Int("reject-sample", 0, "manual Reject Sample size in rejected filings (default: 20)")
 	holdoutStartStr := flags.String("holdout-start", "", "seal date, YYYY-MM-DD: restrict filing days to on/after it (optional)")
-	reportsDir := flags.String("reports-dir", usecase.MeasurementReportDir, "directory for the JSON + markdown report")
 	revision := flags.String("revision", "", "git revision to stamp (default: derived from the working tree)")
 	_ = flags.Parse(args)
 
@@ -245,38 +249,30 @@ func runGradeDisclosures(args []string) {
 	db := config.NewDatabase(vip, log)
 	defer db.Close()
 
-	rev := strings.TrimSpace(*revision)
-	if rev == "" {
-		rev = gitRevision()
-	}
+	h := newHarness(vip, log, db, resolveRevision(*revision))
 
-	priceRepo := repository.NewDailyPriceRepository(log)
-	engine := usecase.NewMeasurementEngine(db, log, nil, priceRepo, nil, rev)
-	engine.DisclosureFilings = repository.NewDisclosureRepository(log)
-
-	grade, err := engine.GradeDisclosures(context.Background(), opts)
+	grade, err := h.GradeDisclosures(context.Background(), opts)
 	if err != nil {
 		log.Fatalf("measure: %v", err)
 	}
 
-	jsonPath, mdPath, err := grade.WriteFiles(*reportsDir)
+	artifact, err := grade.Artifact()
 	if err != nil {
-		log.Fatalf("measure: write report: %v", err)
+		log.Fatalf("measure: render report: %v", err)
 	}
-	log.Infof("measure: wrote %s and %s", jsonPath, mdPath)
+	publishReport(h.Reports, artifact, log)
 
 	fmt.Println(usecase.RenderDisclosureGradeMarkdown(grade))
 }
 
 // runGradeJournal parses and runs the journal grader: the optional decision-date
 // window, and nothing else — the journal grader replays no Screen and reads no
-// Liquidity Baseline, only the agent-written verdicts and stored prices.
+// Liquidity Baseline, only the logged Verdicts in measurement_journal and stored
+// prices.
 func runGradeJournal(args []string) {
 	flags := flag.NewFlagSet("grade journal", flag.ExitOnError)
 	fromStr := flags.String("from", "", "earliest decision date to grade, YYYY-MM-DD (inclusive, optional)")
 	untilStr := flags.String("until", "", "latest decision date to grade, YYYY-MM-DD (inclusive, optional)")
-	journalDir := flags.String("journal-dir", usecase.MeasurementJournalDir, "directory of <YYYY-MM>.jsonl Decision Journal files")
-	reportsDir := flags.String("reports-dir", usecase.MeasurementReportDir, "directory for the JSON + markdown report")
 	revision := flags.String("revision", "", "git revision to stamp (default: derived from the working tree)")
 	_ = flags.Parse(args)
 
@@ -291,28 +287,84 @@ func runGradeJournal(args []string) {
 	db := config.NewDatabase(vip, log)
 	defer db.Close()
 
-	rev := strings.TrimSpace(*revision)
-	if rev == "" {
-		rev = gitRevision()
-	}
+	h := newHarness(vip, log, db, resolveRevision(*revision))
 
-	priceRepo := repository.NewDailyPriceRepository(log)
-	engine := usecase.NewMeasurementEngine(db, log, nil, nil, nil, rev)
-	engine.Journal = usecase.NewJournalFileReader(*journalDir)
-	engine.JournalPrices = priceRepo
-
-	grade, err := engine.GradeJournal(context.Background(), opts)
+	grade, err := h.GradeJournal(context.Background(), opts)
 	if err != nil {
 		log.Fatalf("measure: %v", err)
 	}
 
-	jsonPath, mdPath, err := grade.WriteFiles(*reportsDir)
+	artifact, err := grade.Artifact()
 	if err != nil {
-		log.Fatalf("measure: write report: %v", err)
+		log.Fatalf("measure: render report: %v", err)
 	}
-	log.Infof("measure: wrote %s and %s", jsonPath, mdPath)
+	publishReport(h.Reports, artifact, log)
 
 	fmt.Println(usecase.RenderJournalGradeMarkdown(grade))
+}
+
+// runMigrate is the one-shot upload of the pre-R2 artifacts (ticket 07b): every
+// `measurement/reports/<base>.{json,md}` pair is sealed to R2, and the local
+// filter sets are published as the Active Filter Set's Config Document. It is
+// idempotent — report versions are content-addressed and the config version is
+// hashed — so it can be re-run safely from any checkout that still has the files.
+func runMigrate(args []string) {
+	flags := flag.NewFlagSet("migrate", flag.ExitOnError)
+	reportsDir := flags.String("reports-dir", "measurement/reports", "directory of pre-R2 report files to seal")
+	filtersetsDir := flags.String("filtersets-dir", usecase.MeasurementFilterSetDir, "directory of pre-R2 filter sets to seed the Config Document")
+	active := flags.String("active", "default", "the filter set to mark active in the seeded Config Document")
+	_ = flags.Parse(args)
+
+	vip := config.NewViper()
+	log := config.NewLogger(vip)
+
+	h := newHarness(vip, log, nil, "unknown")
+	ctx := context.Background()
+
+	reports, err := migrateReports(ctx, h.Reports, *reportsDir)
+	if err != nil {
+		log.Fatalf("measure: migrate reports: %v", err)
+	}
+	log.Infof("measure: sealed %d report(s) from %s", reports, *reportsDir)
+
+	hash, err := h.Config.SeedFromDir(ctx, *filtersetsDir, *active)
+	if err != nil {
+		log.Fatalf("measure: migrate config: %v", err)
+	}
+	log.Infof("measure: seeded Active Filter Set from %s, active %q, config %s", *filtersetsDir, *active, hash)
+}
+
+// migrateReports seals every <base>.{json,md} pair under dir to R2.
+func migrateReports(ctx context.Context, store *usecase.MeasurementReportStore, dir string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	sealed := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(name), ".json") {
+			continue
+		}
+		base := strings.TrimSuffix(name, filepath.Ext(name))
+		payload, err := os.ReadFile(filepath.Join(dir, base+".json"))
+		if err != nil {
+			return sealed, err
+		}
+		markdown, err := os.ReadFile(filepath.Join(dir, base+".md"))
+		if err != nil {
+			return sealed, fmt.Errorf("report %s has no .md pair: %w", base, err)
+		}
+		if _, _, err := store.Sealed(ctx, usecase.ReportArtifact{Base: base, JSON: payload, Markdown: markdown}); err != nil {
+			return sealed, err
+		}
+		sealed++
+	}
+	return sealed, nil
 }
 
 // parseGradeJournalOptions validates the `grade journal` window flags. Both are
@@ -516,21 +568,27 @@ Usage:
   measure grade flow --as-of <date> [--as-of <date> ...] [--flow-window-days <n>] [flags]
   measure grade disclosures --as-of <date> [--as-of <date> ...] [--reject-sample <n>] [flags]
   measure grade journal [--from <date>] [--until <date>] [flags]
+  measure migrate [--reports-dir <dir>] [--filtersets-dir <dir>] [--active <name>]
 
 The bare form `+"`measure --as-of <date>`"+` is an alias for `+"`grade screen`"+`.
 
+Reports are sealed to R2 (measurement/reports/<as-of>_<name>.{json,md} plus an
+immutable version); the named filter sets come from the Active Filter Set's
+Config Document on R2 and the Decision Journal from the measurement_journal
+table. `+"`migrate`"+` uploads the pre-R2 files once.
+
 Flags:
   --as-of <date>        Replay anchor Trading Day, or a disclosure Filing Day, YYYY-MM-DD (repeatable, required)
-  --filters <name>      named filter set to grade (default: "default")
+  --filters <name>      named filter set to grade (default: the Active Filter Set)
   --compare <name>      optional second named filter set to compare against
   --flow-window-days <n> Flow window length in trading days: Flow Lead-in Window for the anomaly grader, Flow Column window for the flow grader (default: 20)
   --reject-sample <n>   manual Reject Sample size for the disclosure grader (default: 20)
   --from <date>         earliest decision date for the journal grader, YYYY-MM-DD (optional)
   --until <date>        latest decision date for the journal grader, YYYY-MM-DD (optional)
   --holdout-start <date> seal date: restrict anchors to on/after it
-  --filtersets-dir <dir> directory of <name>.json filter sets
-  --journal-dir <dir>   directory of <YYYY-MM>.jsonl Decision Journal files
-  --reports-dir <dir>   directory for the JSON + markdown report
+  --reports-dir <dir>   migrate: directory of pre-R2 report files (default: measurement/reports)
+  --filtersets-dir <dir> migrate: directory of pre-R2 filter sets (default: measurement/filtersets)
+  --active <name>       migrate: filter set to mark active (default: default)
   --revision <rev>      git revision to stamp (default: derived from the tree)
 `)
 }

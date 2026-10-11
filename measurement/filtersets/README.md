@@ -9,7 +9,9 @@ shows up as a diff against the report that graded the previous version.
 > Set**'s Config Document on R2 (`measurement/config/versions/<sha256>.json`),
 > read whole on every screen run. Tuning edits the document, never the repo. This
 > directory is a **format reference** and the one-shot source `measure migrate`
-> reads to seed the document; it is no longer read by a Grade.
+> reads to seed the document; it is no longer read by a Grade. Over MCP,
+> `get_screener_config` reads the document and `put_screener_config` writes a new
+> version (optionally guarded by the `expected_hash` you read).
 
 A filter-set entry is data, not code: adding or tuning one is a small JSON edit,
 so the loop's "learning" never risks breaking a build.

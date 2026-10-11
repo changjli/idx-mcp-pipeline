@@ -33,6 +33,7 @@ type Deps struct {
 	SectorFlowUC            usecase.SectorFlowReader
 	ComputeIndicatorsUC     usecase.ComputeIndicatorsReader
 	ScreenStocksUC          usecase.ScreenStocksReader
+	MeasurementUC           MeasurementHarness
 	SourceStatusRepo        *repository.SourceStatusRepository
 	TickerRepo              *repository.TickerRepository
 }
@@ -59,6 +60,7 @@ type Server struct {
 	sectorFlowUC             usecase.SectorFlowReader
 	computeIndicatorsUC      usecase.ComputeIndicatorsReader
 	screenStocksUC           usecase.ScreenStocksReader
+	measurementUC            MeasurementHarness
 	sourceStatusRepo         *repository.SourceStatusRepository
 	tickers                  *TickerValidator
 }
@@ -84,6 +86,7 @@ func NewServer(deps Deps) *Server {
 		sectorFlowUC:             deps.SectorFlowUC,
 		computeIndicatorsUC:      deps.ComputeIndicatorsUC,
 		screenStocksUC:           deps.ScreenStocksUC,
+		measurementUC:            deps.MeasurementUC,
 		sourceStatusRepo:         deps.SourceStatusRepo,
 		tickers:                  NewTickerValidator(deps.DB, deps.TickerRepo, deps.Log),
 	}
@@ -114,5 +117,15 @@ func (s *Server) Handler() http.Handler {
 	srv.AddTool(toolGetSectorFlow, s.handleGetSectorFlow)
 	srv.AddTool(toolComputeIndicators, s.handleComputeIndicators)
 	srv.AddTool(toolScreenStocks, s.handleScreenStocks)
+	srv.AddTool(toolMeasureScreen, s.handleMeasureScreen)
+	srv.AddTool(toolMeasureAnomalies, s.handleMeasureAnomalies)
+	srv.AddTool(toolMeasureFlow, s.handleMeasureFlow)
+	srv.AddTool(toolMeasureDisclosures, s.handleMeasureDisclosures)
+	srv.AddTool(toolMeasureJournal, s.handleMeasureJournal)
+	srv.AddTool(toolLogVerdict, s.handleLogVerdict)
+	srv.AddTool(toolGetScreenerConfig, s.handleGetScreenerConfig)
+	srv.AddTool(toolPutScreenerConfig, s.handlePutScreenerConfig)
+	srv.AddTool(toolListMeasurementReports, s.handleListMeasurementReports)
+	srv.AddTool(toolGetMeasurementReport, s.handleGetMeasurementReport)
 	return server.NewStreamableHTTPServer(srv)
 }

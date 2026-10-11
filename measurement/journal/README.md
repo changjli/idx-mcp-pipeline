@@ -8,7 +8,8 @@ Verdict) and ADR-0016.
 > **Where it lives now (ADR-0016):** the journal is a Postgres table,
 > `measurement_journal` (migration `000019`), read and written over MCP — no
 > Verdict is a repo file. This document is the row schema and the grading rules;
-> the write path is the MCP `log_verdict` tool (ticket 08b), not a local append.
+> the write path is the MCP `log_verdict` tool (ticket 08), the read/grade path
+> is `measure_journal` over MCP and `measure grade journal` on the CLI.
 
 ## Rows
 

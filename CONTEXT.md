@@ -113,7 +113,7 @@ _Avoid_: completeness, data quality, null flag
 ## Measurement
 
 **Measurement Harness**:
-The offline grader for the pipeline's claims — a read-only CLI that Replays Screens as of past Trading Days and scores survivors, Anomalies, flow signals, Disclosures, and journal verdicts against a Baseline using Forward Returns. The tool computes, the AI interprets, the user tunes. _Avoid_: backtester, bot, monitor
+The offline grader for the pipeline's claims: it Replays Screens as of past Trading Days and scores survivors, Anomalies, flow signals, Disclosures, and journal verdicts against a Baseline using Forward Returns. One implementation behind two interfaces — the local `cmd/measure` CLI for humans and the MCP measurement surface for the AI — so the two can never grade differently. The Graders are read-only (they compute and return a report); the only writes are the Decision Journal (`log_verdict`) and the Active Filter Set. The tool computes, the AI interprets, the user tunes. _Avoid_: backtester, bot, monitor
 
 **Grader**:
 One claim-scorer in the Measurement Harness — the screen, Anomaly, flow, Disclosure, or journal Grader. Each Grader reuses the shared engine and stands alone: it can land without the others. _Avoid_: monitor, test, benchmark

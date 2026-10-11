@@ -12,7 +12,7 @@ import (
 
 // instructions is the server-level instructions string (draft from spec §11,
 // trimmed to the tools actually wired — read_idx_disclosure is ticket 12).
-const instructions = "IDX Market Analyzer co-pilot. Tools read a daily-persisted IDX pipeline (no live network fetch in V1, except get_stock_broker_summary and fetch_disclosure_pdf which fetch on demand, and get_financials which fetches financial statements live from IPOT — nothing persisted). get_market_anomalies — volume/price anomalies for a trading day, each with disclosure_ids to follow into list_idx_disclosures or read_idx_disclosure. list_idx_disclosures — browse a ticker's filings (metadata only). search_disclosures — cross-ticker disclosure search by keyword over titles and categories, with date range (e.g. which issuers announced a dividend this week). read_idx_disclosure — one disclosure's metadata plus pre-extracted text (truncated to 64KB); check its status field (ok/pending/failed/evicted) before assuming text is present. fetch_disclosure_pdf — on-demand PDF extraction. Cached text → return it. Otherwise enqueue an async extraction job and return pending; poll read_idx_disclosure until status leaves pending (ok | failed). get_ticker_news — RSS headlines tagged to a ticker. get_broker_summary — aggregate per-broker activity for a date. get_stock_broker_summary — per-stock top buyers/sellers for a ticker+day (fetches + persists). get_stock_broker_summary_history — stored per-stock broker history over a date range. backfill_stock_broker_summary — enqueue a per-stock broker summary backfill over a date range (async; poll get_stock_broker_summary_history for completion). get_broker_net_flow — per-broker cumulative net flow over a window (omit ticker for market-wide stance); rows read from stored history, coverage declared. get_sector_flow — the same stored flow aggregated to sector level (group_by sektor/sub_sector/industry), with per-sector listed net, unlisted tail, foreign net, coverage and top brokers. get_daily_prices — stored Daily Price (OHLCV) series for a ticker over a date range. get_financials — normalized financial statements fetched live; periods are cumulative YTD, use the same-duration columns for comparison. get_corporate_actions — stored corporate-actions calendar for a date range (dividends, stock splits, rights issues, warrants, ...), refreshed daily by the pipeline. get_ticker_metadata — stored sector/industry taxonomy + point-in-time index membership per ticker (or the full active universe when ticker is omitted); refreshed ~6-monthly by the sector/index seeder. get_suspensions — stored BEI UMA/suspension events for a date range (type SPT/UPT/UMA; a ticker's presence on a date = suspended or UMA'd that day), refreshed daily by the pipeline. get_shareholder_composition — stored monthly KSEI shareholder composition for one ticker (local/foreign × investor-type share counts, month-end positions, refreshed monthly by the pipeline); for named ≥5% holders use search_disclosures + fetch_disclosure_pdf on demand. get_pipeline_status — pipeline health / staleness. compute_indicators — registered indicators (sma/ema/rsi/... , each with a period) computed on demand from stored Daily Price rows: screen mode returns the latest value per ticker for up to 50 tickers, series mode returns one ticker's full per-day arrays for reading trajectory; insufficient warm-up history is flagged, never short-computed. screen_stocks — whole-universe funnel screener: SQL hard filters over stored Daily Price rows (still trading on the anchor day, at least min_value rupiah of anchor-day transaction value, no suspension/UMA event in the last suspension_window_days trading days), then the requested indicators computed on the survivors only, then the structural filter set ({indicator, op, value} threshold comparisons on registered indicators, AND-combined — omit to run the shipped default breakout-zone set, pass [] for none); returns a ranked, capped shortlist with a funnel block (universe, after_value, after_structure) and total_matches reporting the pre-cap cut; every row also carries the broker-flow column foreign_net with a per-row coverage flag (stored broker rows are anomaly-gated and sparse, so an uncovered row is null and flagged, never zero), sortable via sort=foreign_net. All outputs carry data_stale + last_good_date; if stale, note it to the user."
+const instructions = "IDX Market Analyzer co-pilot. Tools read a daily-persisted IDX pipeline (no live network fetch in V1, except get_stock_broker_summary and fetch_disclosure_pdf which fetch on demand, and get_financials which fetches financial statements live from IPOT — nothing persisted). get_market_anomalies — volume/price anomalies for a trading day, each with disclosure_ids to follow into list_idx_disclosures or read_idx_disclosure. list_idx_disclosures — browse a ticker's filings (metadata only). search_disclosures — cross-ticker disclosure search by keyword over titles and categories, with date range (e.g. which issuers announced a dividend this week). read_idx_disclosure — one disclosure's metadata plus pre-extracted text (truncated to 64KB); check its status field (ok/pending/failed/evicted) before assuming text is present. fetch_disclosure_pdf — on-demand PDF extraction. Cached text → return it. Otherwise enqueue an async extraction job and return pending; poll read_idx_disclosure until status leaves pending (ok | failed). get_ticker_news — RSS headlines tagged to a ticker. get_broker_summary — aggregate per-broker activity for a date. get_stock_broker_summary — per-stock top buyers/sellers for a ticker+day (fetches + persists). get_stock_broker_summary_history — stored per-stock broker history over a date range. backfill_stock_broker_summary — enqueue a per-stock broker summary backfill over a date range (async; poll get_stock_broker_summary_history for completion). get_broker_net_flow — per-broker cumulative net flow over a window (omit ticker for market-wide stance); rows read from stored history, coverage declared. get_sector_flow — the same stored flow aggregated to sector level (group_by sektor/sub_sector/industry), with per-sector listed net, unlisted tail, foreign net, coverage and top brokers. get_daily_prices — stored Daily Price (OHLCV) series for a ticker over a date range. get_financials — normalized financial statements fetched live; periods are cumulative YTD, use the same-duration columns for comparison. get_corporate_actions — stored corporate-actions calendar for a date range (dividends, stock splits, rights issues, warrants, ...), refreshed daily by the pipeline. get_ticker_metadata — stored sector/industry taxonomy + point-in-time index membership per ticker (or the full active universe when ticker is omitted); refreshed ~6-monthly by the sector/index seeder. get_suspensions — stored BEI UMA/suspension events for a date range (type SPT/UPT/UMA; a ticker's presence on a date = suspended or UMA'd that day), refreshed daily by the pipeline. get_shareholder_composition — stored monthly KSEI shareholder composition for one ticker (local/foreign × investor-type share counts, month-end positions, refreshed monthly by the pipeline); for named ≥5% holders use search_disclosures + fetch_disclosure_pdf on demand. get_pipeline_status — pipeline health / staleness. compute_indicators — registered indicators (sma/ema/rsi/... , each with a period) computed on demand from stored Daily Price rows: screen mode returns the latest value per ticker for up to 50 tickers, series mode returns one ticker's full per-day arrays for reading trajectory; insufficient warm-up history is flagged, never short-computed. screen_stocks — whole-universe funnel screener: SQL hard filters over stored Daily Price rows (still trading on the anchor day, at least min_value rupiah of anchor-day transaction value, no suspension/UMA event in the last suspension_window_days trading days), then the requested indicators computed on the survivors only, then the structural filter set ({indicator, op, value} threshold comparisons on registered indicators, AND-combined — omit to run the shipped default breakout-zone set, pass [] for none); returns a ranked, capped shortlist with a funnel block (universe, after_value, after_structure) and total_matches reporting the pre-cap cut; every row also carries the broker-flow column foreign_net with a per-row coverage flag (stored broker rows are anomaly-gated and sparse, so an uncovered row is null and flagged, never zero), sortable via sort=foreign_net. All outputs carry data_stale + last_good_date; if stale, note it to the user. Measurement Harness (ADR-0017): measure_screen / measure_anomalies / measure_flow / measure_disclosures / measure_journal replay past trading days and return the report body (read-only — they grade, they do not seal a report to R2); log_verdict appends one Verdict to the Decision Journal at decision time; get_screener_config / put_screener_config read and publish the Active Filter Set; list_measurement_reports / get_measurement_report read the stored Grade reports."
 
 // readOnlyAnnotations marks a tool read-only: clients skip confirmation
 // prompts. Every tool declares readOnlyHint=true, destructiveHint=false,
@@ -307,5 +307,105 @@ var toolGetTickerMetadata = mcpgo.NewTool("get_ticker_metadata",
 	mcpgo.WithDescription("Stored ticker metadata: sector/industry taxonomy (IDX stock screener's canonical English labels — sector, industry, sub_sector, sub_industry, sub_industry_code) plus point-in-time index membership (e.g. LQ45, IDX30, COMPOSITE). Pure DB read — no upstream call. Refreshed by the pipeline's sector/index seeder on the Feb+Jul index-rebalance cadence. Pass ticker (e.g. BBRI or BBRI.JK) for one ticker; omit for the full active universe. Pass date (YYYY-MM-DD) to pin the index-membership snapshot (e.g. a historical screen); default is the latest snapshot, whose date is returned in effective_date. Sector columns are current state — not dated by effective_date. Staleness shows in data_stale / last_good_date."),
 	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. BBRI or BBRI.JK). Omit for the full active universe.")),
 	mcpgo.WithString("date", mcpgo.Description("Effective date for index membership, YYYY-MM-DD. Default: latest snapshot.")),
+	readOnlyAnnotations(),
+)
+
+// ─── Measurement Harness (ticket 08, ADR-0017) ─────────────────────────────
+//
+// The five grader tools reuse the same usecases the local `cmd/measure` CLI
+// runs, so the two interfaces can never grade differently. They are read-only:
+// each computes a report and returns its body; it does NOT seal the report to
+// R2 (uploading stays `cmd/measure`'s job, ADR-0016). The journal is the one
+// read/write area — measure_journal reads, log_verdict writes.
+
+// toolMeasureScreen — the screen grader: survivors vs the Liquidity Baseline.
+var toolMeasureScreen = mcpgo.NewTool("measure_screen",
+	mcpgo.WithDescription("Replay the whole-universe screen as of past trading days and score its survivors against the Liquidity Baseline at 5/10/20-day Forward Returns — the harness's answer to \"are my screen picks any good?\". Reuses the exact screener the daily `screen_stocks` tool runs, so a Grade can never drift from what runs live. Pass one or more as_of anchors (20 post-anchor trading days of stored prices are required; too-recent anchors are skipped and reported). filters names a filter set; default is the Active Filter Set. compare names a second set for an Excess Delta read. Returns the same report body `measure grade screen` renders. Read-only: it does not seal a report to R2."),
+	mcpgo.WithArray("as_of", mcpgo.WithStringItems(), mcpgo.Description("Replay anchor trading days, YYYY-MM-DD (one or more)."), mcpgo.Required()),
+	mcpgo.WithString("filters", mcpgo.Description("Named filter set to grade. Default: the Active Filter Set.")),
+	mcpgo.WithString("compare", mcpgo.Description("Optional second named filter set to compare against (Excess Delta).")),
+	mcpgo.WithString("holdout_start", mcpgo.Description("Seal date, YYYY-MM-DD: restrict anchors to on/after it (a Holdout validation run).")),
+	readOnlyAnnotations(),
+)
+
+// toolMeasureAnomalies — the anomaly grader, split by direction/confluence.
+var toolMeasureAnomalies = mcpgo.NewTool("measure_anomalies",
+	mcpgo.WithDescription("Score market Anomalies: each anomaly ticker-day's Forward Returns against the Liquidity Baseline, split by Direction Bucket (up / down / volume_spike) and by Anomaly Confluence (broker confirmation × passed-filter disclosure) — the harness's answer to \"which anomaly population deserves attention?\". Read-only: it does not seal a report to R2."),
+	mcpgo.WithArray("as_of", mcpgo.WithStringItems(), mcpgo.Description("Replay anchor trading days, YYYY-MM-DD (one or more)."), mcpgo.Required()),
+	mcpgo.WithNumber("flow_window_days", mcpgo.Description("Flow Lead-in Window length in trading days (default 20).")),
+	mcpgo.WithString("holdout_start", mcpgo.Description("Seal date, YYYY-MM-DD: restrict anchors to on/after it.")),
+	readOnlyAnnotations(),
+)
+
+// toolMeasureFlow — the foreign-net grader.
+var toolMeasureFlow = mcpgo.NewTool("measure_flow",
+	mcpgo.WithDescription("Score the Flow Column's claim — that foreign accumulation precedes outperformance. It buckets the Liquidity Baseline by stored foreign_net (sign, and a signed-magnitude tercile) and measures each bucket's Forward Returns against that same baseline; unobserved rows are their own bucket, never zero-imputed. Read-only: it does not seal a report to R2."),
+	mcpgo.WithArray("as_of", mcpgo.WithStringItems(), mcpgo.Description("Replay anchor trading days, YYYY-MM-DD (one or more)."), mcpgo.Required()),
+	mcpgo.WithNumber("flow_window_days", mcpgo.Description("Flow Column window length in trading days (default 20).")),
+	mcpgo.WithString("holdout_start", mcpgo.Description("Seal date, YYYY-MM-DD: restrict anchors to on/after it.")),
+	readOnlyAnnotations(),
+)
+
+// toolMeasureDisclosures — the disclosure-precision grader.
+var toolMeasureDisclosures = mcpgo.NewTool("measure_disclosures",
+	mcpgo.WithDescription("Score the 3-layer disclosure filter's precision: each passed-filter Disclosure's ticker Forward Returns from its Filing Day against the Liquidity Baseline, split by whitelist category, plus a deterministic manual Reject Sample for the false-negative check. Read-only: it does not seal a report to R2."),
+	mcpgo.WithArray("as_of", mcpgo.WithStringItems(), mcpgo.Description("Disclosure Filing Days (announcement dates), YYYY-MM-DD (one or more)."), mcpgo.Required()),
+	mcpgo.WithNumber("reject_sample", mcpgo.Description("Manual Reject Sample size in rejected filings (default 20).")),
+	mcpgo.WithString("holdout_start", mcpgo.Description("Seal date, YYYY-MM-DD: restrict filing days to on/after it.")),
+	readOnlyAnnotations(),
+)
+
+// toolMeasureJournal — the Decision Journal grader.
+var toolMeasureJournal = mcpgo.NewTool("measure_journal",
+	mcpgo.WithDescription("Grade the AI's logged Verdicts: resolve every SETUP's entry zone and TP/CL race against stored prices (win / loss / expired / unfilled / unresolved) and report win rate, Expectancy, Breakeven Win Rate, Calibration and any Verdict Conflicts. Reads the measurement_journal table and stored prices; replays nothing. Read-only: it does not seal a report to R2."),
+	mcpgo.WithString("from", mcpgo.Description("Earliest decision date to grade, YYYY-MM-DD (inclusive). Optional.")),
+	mcpgo.WithString("until", mcpgo.Description("Latest decision date to grade, YYYY-MM-DD (inclusive). Optional.")),
+	readOnlyAnnotations(),
+)
+
+// toolLogVerdict — the Decision Journal writer.
+var toolLogVerdict = mcpgo.NewTool("log_verdict",
+	mcpgo.WithDescription("Append one Verdict to the Decision Journal (measurement_journal) at decision time: SETUP (a trade plan exists, carrying the three zones), WATCH (interesting, no plan), or PASS (rejected). Every deep-dive logs exactly one Verdict, not only trades taken. session identifies this agent run. date is the last stored trading day the plan reads. supersedes names the row a deliberate correction replaces and implies committed (the Grader scores the committed Verdict when a key holds more than one). A same-session duplicate is last-wins; a cross-session disagreement is a Verdict Conflict — appended, never auto-resolved, and surfaced in the response. Appends only: it never touches the pipeline."),
+	mcpgo.WithString("session", mcpgo.Description("Identifier of this agent run (e.g. a UUID or a descriptive run id). Required."), mcpgo.Required()),
+	mcpgo.WithString("date", mcpgo.Description("Decision day — the last stored trading day whose close the plan reads, YYYY-MM-DD."), mcpgo.Required()),
+	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. RAJA or RAJA.JK)."), mcpgo.Required()),
+	mcpgo.WithString("verdict", mcpgo.Description("SETUP, WATCH or PASS."), mcpgo.Required()),
+	mcpgo.WithNumber("entryLow", mcpgo.Description("Entry zone low (SETUP only).")),
+	mcpgo.WithNumber("entryHigh", mcpgo.Description("Entry zone high (SETUP only).")),
+	mcpgo.WithNumber("clLow", mcpgo.Description("Cut-loss zone low (SETUP only).")),
+	mcpgo.WithNumber("clHigh", mcpgo.Description("Cut-loss zone high (SETUP only).")),
+	mcpgo.WithNumber("tpLow", mcpgo.Description("Target zone low (SETUP only).")),
+	mcpgo.WithNumber("tpHigh", mcpgo.Description("Target zone high (SETUP only).")),
+	mcpgo.WithString("rationale", mcpgo.Description("One-line rationale."), mcpgo.Required()),
+	mcpgo.WithNumber("supersedes", mcpgo.Description("Row id this Verdict deliberately corrects (provenance; implies committed).")),
+	mcpgo.WithBoolean("committed", mcpgo.Description("Mark this the Committed Verdict the Grader scores when the key holds more than one.")),
+	writeAnnotations(),
+)
+
+// toolGetScreenerConfig — read the Active Filter Set's Config Document.
+var toolGetScreenerConfig = mcpgo.NewTool("get_screener_config",
+	mcpgo.WithDescription("Read the Active Filter Set: the Config Document ({active, sets}) the screen Grades run, plus its Config Hash. The document is one R2 object holding every named filter set and the active pointer; a Grade pins this hash so it stays reproducible after the set moves (ADR-0016). Read-only."),
+	readOnlyAnnotations(),
+)
+
+// toolPutScreenerConfig — publish a new Config Document version.
+var toolPutScreenerConfig = mcpgo.NewTool("put_screener_config",
+	mcpgo.WithDescription("Publish the Active Filter Set: writes a new immutable, content-addressed Config Document version and repoints the active pointer, returning the new Config Hash. Reads whole and writes whole — get_screener_config first, edit, then put. Pass expected_hash (the hash you read) to reject the write if another writer has moved the pointer; omit to overwrite unconditionally. This is the loop's tuning write; Holdout gating of writes is a separate ticket."),
+	mcpgo.WithString("active", mcpgo.Description("Name of the filter set in force."), mcpgo.Required()),
+	mcpgo.WithObject("sets", mcpgo.Description("Named filter sets, keyed by name. Each value is a filter-set document (description, window, min_value, suspension_window_days, flow_window_days, indicators, filters, sort, order) — the same shape as measurement/filtersets/<name>.json."), mcpgo.Required()),
+	mcpgo.WithString("expected_hash", mcpgo.Description("Optional Config Hash you read; the write is rejected if the active pointer has since moved.")),
+	writeAnnotations(),
+)
+
+// toolListMeasurementReports — the stored Grade reports.
+var toolListMeasurementReports = mcpgo.NewTool("list_measurement_reports",
+	mcpgo.WithDescription("List the stored Grade report base names on R2, newest-first (e.g. 2026-07-01_to_2026-09-07_volume-tolerant — the range and filter-set name). Each is the latest copy of a report; sealed versions are audit and are not listed. Read-only."),
+	readOnlyAnnotations(),
+)
+
+// toolGetMeasurementReport — one stored Grade report.
+var toolGetMeasurementReport = mcpgo.NewTool("get_measurement_report",
+	mcpgo.WithDescription("Read one stored Grade report by its base name (from list_measurement_reports): the report JSON body plus the human markdown summary. Returns the latest copy; the body carries its own Config Hash and git revision. Read-only."),
+	mcpgo.WithString("base", mcpgo.Description("Report base name, e.g. 2026-07-01_to_2026-09-07_volume-tolerant."), mcpgo.Required()),
 	readOnlyAnnotations(),
 )

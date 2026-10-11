@@ -28,11 +28,11 @@ func registryFromDir(t *testing.T, dir string) (*MeasurementFilterRegistry, erro
 	if err != nil {
 		return nil, err
 	}
-	sets := map[string]measurementFilterSetFile{defaultMeasurementFilterSet: {}}
+	sets := map[string]MeasurementFilterSetFile{defaultMeasurementFilterSet: {}}
 	for name, file := range files {
 		sets[name] = file
 	}
-	doc := measurementConfigDocument{Active: defaultMeasurementFilterSet, Sets: sets}
+	doc := MeasurementConfigDocument{Active: defaultMeasurementFilterSet, Sets: sets}
 	return doc.registry()
 }
 
@@ -63,9 +63,9 @@ func TestMeasurementFilterRegistry_BuiltinDefault(t *testing.T) {
 // TestMeasurementFilterRegistry_ActiveResolves — an empty name resolves to the
 // document's active set, not a hard-coded "default".
 func TestMeasurementFilterRegistry_ActiveResolves(t *testing.T) {
-	doc := measurementConfigDocument{
+	doc := MeasurementConfigDocument{
 		Active: "momentum",
-		Sets: map[string]measurementFilterSetFile{
+		Sets: map[string]MeasurementFilterSetFile{
 			"momentum": {Description: "rsi >= 60"},
 			"value":    {Description: "low pe"},
 		},
@@ -92,9 +92,9 @@ func TestMeasurementFilterRegistry_ActiveResolves(t *testing.T) {
 // TestMeasurementConfigDocument_ActiveNotInSets — an active naming a set the
 // document does not carry is refused rather than silently falling back.
 func TestMeasurementConfigDocument_ActiveNotInSets(t *testing.T) {
-	doc := measurementConfigDocument{
+	doc := MeasurementConfigDocument{
 		Active: "ghost",
-		Sets:   map[string]measurementFilterSetFile{"momentum": {}},
+		Sets:   map[string]MeasurementFilterSetFile{"momentum": {}},
 	}
 	if _, err := doc.registry(); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("err = %v, want ErrInvalidArgument", err)
