@@ -140,10 +140,16 @@ a public repo no longer risks exposing your verdicts.
 
 - Default: `0 1 * * 1-5` UTC = **08:00 WIB, Mon–Fri**, before the open, reading
   the prior close. GitHub cron is UTC and best-effort (can be delayed minutes).
-- **Watch `data_stale`.** The prompt aborts the screen if the pipeline is stale,
-  so a mistimed run reports "pipeline stale" over Telegram instead of screening
-  old data — a signal to retune the cron or check ingestion.
-- **IDX holidays** produce no new trading day; the freshness gate catches it.
+- **The pipeline ingests on trading days only**, at 20:05 WIB (`DailyCronSpec`).
+  On weekends and holidays it logs "no missing daily_prices day" and no-ops, so
+  `last_success_at` does not advance and the time-based `data_stale` lapses even
+  though the stored prices are current. The gate therefore checks **content
+  recency** (the latest stored trading day, via a liquid proxy), not the clock:
+  it stops only when that anchor is more than 4 calendar days old (a broken
+  ingest), and otherwise runs, reporting the anchor day and staleness in the
+  digest. A Friday anchor on a Monday is normal.
+- **IDX holidays** produce no new trading day; the content gate tolerates a short
+  holiday (anchor up to 4 days back) instead of mistaking it for breakage.
 - **Catch-up**: Actions → IDX daily flow → Run workflow, optionally with an
   `as_of` date.
 - GitHub auto-disables schedules after ~60 days of repo inactivity (it emails a
@@ -173,8 +179,9 @@ a public repo no longer risks exposing your verdicts.
   50 lines of `flow.err` are printed under "Job-log the digest".
 - **`log_verdict` / harness tool not found**: the deployed server predates ticket
   08 (see step 1). Redeploy.
-- **"pipeline stale" digest**: the ingest didn't land before the run; check the
-  pipeline and re-time the cron.
+- **"pipeline stale" digest**: the latest stored trading day is more than 4 days
+  old — the ingest is genuinely behind. Check `heroku logs` for fetch errors
+  (a weekend `no missing daily_prices day` no-op is expected, not a failure).
 - **Journal empty after a run**: the screen returned no survivors (a valid
   result) or the run aborted at the freshness gate.
 - **`No model is available for session …` / auth error**: `OPENCODE_AUTH` is

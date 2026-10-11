@@ -6,10 +6,26 @@ Never guarantee profits; frame in probabilities.
 
 Follow this exactly:
 
-1. **Freshness gate.** Call `get_pipeline_status`. If the market data source is
-   stale (`data_stale` true) or `last_good_date` is not the most recent trading
-   day, STOP after writing a short "pipeline stale" digest that names the source,
-   its `last_good_date`, and what you expected. Do not screen over stale data.
+1. **Freshness gate — content, not clock.** The pipeline ingests only on
+   trading days: on weekends and holidays it logs "no missing daily_prices day"
+   and does not refresh `last_success_at`, so the time-based `data_stale` flag
+   lapses over a normal weekend even though the stored prices are current. Gate
+   on the data's actual recency instead.
+
+   Call `get_daily_prices` for a liquid proxy (e.g. `BBCA`) over the last ~12
+   calendar days and take the **latest trading day** it returns — that is the
+   anchor the screen will use. Also call `get_pipeline_status` for the
+   stale-source picture.
+
+   - If that anchor is **more than 4 calendar days before today**, STOP and write
+     a short "pipeline stale" digest: name the stale sources with their
+     `last_success_at`, state `last_good_date`, and note that no screen, no deep
+     dives, and no verdicts were produced. (A Friday anchor on Monday is 3 days —
+     normal; 5+ days means a broken ingest.)
+   - Otherwise proceed, and state the anchor trading day, `data_stale`,
+     `last_good_date`, and any stale sources in the digest as context. Never
+     treat `last_good_date` as the last trading day — it is the newest ingestion
+     timestamp.
 
 2. **Screen (stage 1).** Load the `idx-daily-screen` skill and follow it exactly
    with the **default** criteria (no user criteria were given — say so).
