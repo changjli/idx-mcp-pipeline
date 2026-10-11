@@ -1,0 +1,108 @@
+name: IDX daily flow
+
+# Stage 1 (screen) + stages 2-4 (deep dives), unattended, notified over Telegram.
+# Setup and design notes: .github/automation.md
+#
+# OpenCode has no built-in cron; this external schedule is the scheduler. The run
+# is an agent (opencode run), not a plain HTTP call, because the idx-* skills are
+# reasoning, not endpoints.
+#
+# Persistence is entirely server-side since ticket 08: the journal is the
+# measurement_journal Postgres table (written via the log_verdict MCP tool) and
+# config/reports live on R2. The runner is ephemeral and writes nothing to git,
+# so it needs read-only repo access (for the skills only).
+
+on:
+  schedule:
+    # 01:00 UTC = 08:00 WIB, Mon-Fri: before the IDX open, after the pipeline's
+    # overnight ingest. Re-tune if your ingest lands later (watch data_stale).
+    - cron: "0 1 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      as_of:
+        description: "Optional anchor date (YYYY-MM-DD) for a catch-up run"
+        required: false
+
+# Read-only: the runner never pushes.
+permissions:
+  contents: read
+
+concurrency:
+  group: idx-daily-flow
+  cancel-in-progress: false
+
+jobs:
+  flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      TZ: Asia/Jakarta
+      MCP_TOKEN: ${{ secrets.MCP_TOKEN }}
+      # OpenCode Go is a subscription API key (not an env-var provider key).
+      # Export it locally and import it here; see .github/automation.md.
+      OPENCODE_AUTH: ${{ secrets.OPENCODE_AUTH }}
+      OPENCODE_MODEL: ${{ vars.OPENCODE_MODEL || 'opencode-go/deepseek-v4.1-flash' }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - name: Checkout (skills only; the run writes nothing here)
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install OpenCode
+        run: |
+          npm install -g @opencode/cli
+          opencode --version
+
+      - name: Import OpenCode Go credentials
+        # OpenCode Go is a $10/mo subscription keyed by its own API key — no
+        # Anthropic account needed. It is a stored credential, so import the
+        # `opencode auth export` JSON from the OPENCODE_AUTH secret.
+        run: printf '%s' "$OPENCODE_AUTH" | opencode auth import --standalone
+
+      - name: Configure MCP from secret
+        # opencode.json is not tracked (it holds a token locally). The runner is
+        # ephemeral, so generate it here; the token comes from the environment.
+        run: |
+          cat > opencode.json <<'JSON'
+          {
+            "$schema": "https://opencode.ai/config.json",
+            "mcp": {
+              "servers": {
+                "idx-pipeline": {
+                  "type": "remote",
+                  "url": "https://idx-mcp-pipeline-e9100439789e.herokuapp.com/mcp",
+                  "oauth": false,
+                  "headers": { "Authorization": "Bearer {env:MCP_TOKEN}" }
+                }
+              }
+            }
+          }
+          JSON
+
+      - name: Run daily flow
+        run: |
+          prompt="$(cat .github/prompts/daily-flow.md)"
+          if [ -n "${{ inputs.as_of }}" ]; then
+            prompt="$prompt"$'\n\n'"Catch-up run: screen as of ${{ inputs.as_of }} instead of the default anchor."
+          fi
+          opencode run --standalone --auto \
+            --model "$OPENCODE_MODEL" \
+            --title "IDX daily flow $(date +%F)" \
+            "$prompt" \
+            > digest.md 2> flow.err
+          echo "opencode exit code: $?"
+
+      - name: Job-log the digest
+        if: always()
+        run: |
+          echo "----- digest.md -----"; cat digest.md 2>/dev/null || true
+          echo "----- flow.err (tail) -----"; tail -n 50 flow.err 2>/dev/null || true
+
+      - name: Notify Telegram
+        if: always()
+        run: bash .github/scripts/notify-telegram.sh
