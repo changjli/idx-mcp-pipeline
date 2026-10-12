@@ -3,9 +3,9 @@ name: IDX daily flow
 # Stage 1 (screen) + stages 2-4 (deep dives), unattended, notified over Telegram.
 # Setup and design notes: .github/automation.md
 #
-# OpenCode has no built-in cron; this external schedule is the scheduler. The run
-# is an agent (opencode run), not a plain HTTP call, because the idx-* skills are
-# reasoning, not endpoints.
+# OpenCode has no built-in cron; an external scheduler (cron-job.org) triggers
+# this workflow via the workflow_dispatch API. The run is an agent (opencode run),
+# not a plain HTTP call, because the idx-* skills are reasoning, not endpoints.
 #
 # Persistence is entirely server-side since ticket 08: the journal is the
 # measurement_journal Postgres table (written via the log_verdict MCP tool) and
@@ -13,10 +13,11 @@ name: IDX daily flow
 # so it needs read-only repo access (for the skills only).
 
 on:
-  schedule:
-    # 01:00 UTC = 08:00 WIB, Mon-Fri: before the IDX open, after the pipeline's
-    # overnight ingest. Re-tune if your ingest lands later (watch data_stale).
-    - cron: "0 1 * * 1-5"
+  # Triggered externally at 07:00 WIB Mon-Fri by cron-job.org (or any scheduler)
+  # hitting the workflow_dispatch API. Deliberately NO `schedule:` block: GitHub's
+  # cron is best-effort (a run here was observed ~6h late, landing after the open)
+  # and a second trigger would fire the flow twice — a second `session` re-logs
+  # verdicts and can raise a Verdict Conflict. One trigger only.
   workflow_dispatch:
     inputs:
       as_of:
@@ -34,7 +35,7 @@ concurrency:
 jobs:
   flow:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120          # deep-dives every survivor, not just 3
     env:
       TZ: Asia/Jakarta
       MCP_TOKEN: ${{ secrets.MCP_TOKEN }}

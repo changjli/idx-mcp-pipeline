@@ -30,23 +30,29 @@ Follow this exactly:
 2. **Screen (stage 1).** Load the `idx-daily-screen` skill and follow it exactly
    with the **default** criteria (no user criteria were given — say so).
 
-3. **Deep dives (stages 2-4).** Load the `idx-deep-dive` skill and deep-dive the
-   **top 3 names by screen rank**. Follow the skill exactly, including every hard
+3. **Deep dives (stages 2-4).** Load the `idx-deep-dive` skill and deep-dive
+   **every name in the screen's shortlist** — every row the screen returns, not
+   just the top few. Follow the skill exactly for each one, including every hard
    gate and every gotcha. A `PASS` is a valid and expected outcome — do not force
-   a `SETUP`. If broker coverage is near-zero, say so rather than guessing.
+   a `SETUP`. If broker coverage is near-zero, say so rather than guessing. Keep
+   working through the whole list; do not stop after three.
 
-4. **Journal — via MCP, not files.** For **every** verdict the skill's verdict
-   step requires (`SETUP`, `WATCH`, and `PASS` alike), call the `log_verdict` MCP
-   tool exactly as the skill directs — one call per verdict, with the zones only
-   on a `SETUP`. Use a **single** `session` id for the whole run:
-   `daily-flow-<YYYY-MM-DD>` where the date is the decision day (the last stored
-   Trading Day the plan reads). Do **not** write, create, or edit any file: the
-   Decision Journal is the `measurement_journal` database table now, and this
-   runner is ephemeral. If the response surfaces a **Verdict Conflict**, mention
-   it in the digest and which verdict to keep.
+4. **Journal — only the 3 strongest, via MCP.** Deep-diving everything does not
+   mean journaling everything. Log exactly the **3 most promising** names, ranked
+   by deep-dive conviction: `SETUP` before `WATCH` before `PASS`, and within a
+   verdict the higher screen rank first. Call `log_verdict` once per logged name,
+   with the zones only on a `SETUP`. Use a **single** `session` id for the run:
+   `daily-flow-<YYYY-MM-DD>` (the decision day: the last stored Trading Day the
+   plan reads). Do **not** write, create, or edit any file — the Decision Journal
+   is the `measurement_journal` database table. The other deep-dived names appear
+   in the digest but are **not** logged. (A human asking you to journal a specific
+   ticker is an interactive request, not part of this cron run.) If a response
+   surfaces a **Verdict Conflict**, mention it in the digest and which verdict to
+   keep.
 
-5. **Digest.** End with a single self-contained Markdown message — this is the
-   notification payload sent to Telegram. Structure: the screen section, then
-   each deep-dive's output template, then a one-line "what to watch" close. No
-   tool-call noise, no preamble, no trailing questions. Read the tools' results
-   as data; the shortlist is candidates, not buy calls.
+5. **Digest.** End with a single self-contained Markdown message — the Telegram
+   payload. Structure: the screen section, then **every** deep-dive's output
+   template (all survivors, each marked "logged" or "not logged"), then a
+   one-line "what to watch" close. No tool-call noise, no preamble, no trailing
+   questions. Read the tools' results as data; the shortlist is candidates, not
+   buy calls.

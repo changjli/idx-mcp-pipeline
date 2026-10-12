@@ -1,14 +1,15 @@
 # Unattended daily flow (GitHub Actions + Telegram)
 
-Runs the IDX swing flow on a schedule, in the cloud, and pings Telegram.
-Scheduled entry point: `.github/workflows/daily-flow.yml`.
+Runs the IDX swing flow in the cloud and pings Telegram, triggered externally.
+Entry point: `.github/workflows/daily-flow.yml` (via the `workflow_dispatch` API).
 
 ```
-cron (08:00 WIB, Mon-Fri)
-  └─ opencode run  ──►  idx-daily-screen skill   (stage 1)
-                        idx-deep-dive skill      (stages 2-4, top 3)
-                        log_verdict MCP tool     → measurement_journal table
-  └─ Telegram: headline message + full digest document
+cron-job.org (07:00 WIB, Mon-Fri)
+  └─ POST workflow_dispatch ──►  GitHub Actions runner
+       ├─ opencode run  ──►  idx-daily-screen skill   (stage 1)
+       │                     idx-deep-dive skill      (stages 2-4, every survivor)
+       │                     log_verdict MCP tool     → measurement_journal (top 3)
+       └─ Telegram: headline message + full digest document
 ```
 
 ## Why an agent, not a cron-curl
@@ -17,7 +18,7 @@ cron (08:00 WIB, Mon-Fri)
 The MCP tools compute; the reasoning (reading the funnel, ranking, classifying
 the phase, writing a falsifiable verdict) is the model. So the scheduler runs an
 **agent** — `opencode run` — not an HTTP call. OpenCode has no built-in cron, so
-GitHub Actions is the scheduler.
+GitHub Actions hosts the run and an external scheduler (cron-job.org) triggers it.
 
 ## Setup — do these in order
 
@@ -37,8 +38,7 @@ deploy did not take.
 
 ### 2. Commit and push the workflow
 
-`schedule` triggers run only from the default branch, so the workflow file must
-be on `master`.
+The workflow must be on `master` — that is the ref the dispatch call targets.
 
 ```sh
 git commit -m "ci: add scheduled daily flow (screen + deep dives + Telegram), journal via MCP"
@@ -120,7 +120,7 @@ Success looks like: the log prints `digest.md`, **Telegram receives a message +
 a `.md` document**, and the verdicts land in the journal (check with the
 `measure_journal` MCP tool, or locally `go run ./cmd/measure grade journal`).
 
-Once green, the schedule takes over (see Timing).
+Once green, the external trigger takes over (see Timing).
 
 ## Where state lives
 
@@ -138,8 +138,31 @@ a public repo no longer risks exposing your verdicts.
 
 ## Timing
 
-- Default: `0 1 * * 1-5` UTC = **08:00 WIB, Mon–Fri**, before the open, reading
-  the prior close. GitHub cron is UTC and best-effort (can be delayed minutes).
+- **Trigger**: an external scheduler at **07:00 WIB, Mon–Fri** (before the open,
+  reading the prior close). The workflow has **no `schedule:` block on purpose** —
+  GitHub's cron is best-effort (this repo's one scheduled run fired ~6h late,
+  landing after the open), and a second trigger would fire the flow twice, a second
+  `session` re-logging verdicts as duplicates or a Verdict Conflict.
+- **cron-job.org setup** (free, zero code):
+  - URL `https://api.github.com/repos/changjli/idx-mcp-pipeline/actions/workflows/daily-flow.yml/dispatches`
+  - Method `POST`; schedule `0 7 * * 1-5`; timezone `Asia/Jakarta`
+  - Headers: `Authorization: Bearer <PAT>`, `Accept: application/vnd.github+json`,
+    `Content-Type: application/json`, `X-GitHub-Api-Version: 2022-11-28`
+  - Body: `{"ref":"master"}`
+  - `<PAT>` is a fine-grained token scoped to this repo with **Actions: Read and
+    write** (or a classic token with the `workflow` scope). Turn on failure emails.
+  - The call returns **`204` immediately** — it only queues the run. The ~30-minute
+    job runs on GitHub, so cron-job.org's request timeout is not the run's timeout.
+  - Equivalent from a shell:
+
+    ```sh
+    curl -sS -o /dev/null -w "HTTP %{http_code}\n" -X POST \
+      -H "Authorization: Bearer $GH_PAT" \
+      -H "Accept: application/vnd.github+json" \
+      -H "Content-Type: application/json" \
+      -d '{"ref":"master"}' \
+      "https://api.github.com/repos/changjli/idx-mcp-pipeline/actions/workflows/daily-flow.yml/dispatches"
+    ```
 - **The pipeline ingests on trading days only**, at 20:05 WIB (`DailyCronSpec`).
   On weekends and holidays it logs "no missing daily_prices day" and no-ops, so
   `last_success_at` does not advance and the time-based `data_stale` lapses even
@@ -152,14 +175,17 @@ a public repo no longer risks exposing your verdicts.
   holiday (anchor up to 4 days back) instead of mistaking it for breakage.
 - **Catch-up**: Actions → IDX daily flow → Run workflow, optionally with an
   `as_of` date.
-- GitHub auto-disables schedules after ~60 days of repo inactivity (it emails a
-  warning first); any push resets the clock.
+- If you ever switch back to GitHub's own `schedule`, note it auto-disables after
+  ~60 days of repo inactivity (any push resets it) — one more reason to keep the
+  external trigger.
 
 ## Cost & reliability notes
 
-- One run/day ≈ one screen + three deep dives: modest token spend. Deep-dive's
+- One run/day ≈ one screen + **a deep dive per survivor** (only the 3 strongest
+  are journaled). Token spend scales with the survivor count, and Deep-dive's
   `get_financials` is a live upstream fetch; a slow/hung MCP call is the main
-  failure mode (the job has a 45-minute ceiling).
+  failure mode (the job has a 120-minute ceiling). On the Go plan, watch the
+  chosen model's monthly allowance if survivor counts run high.
 - `--auto` auto-approves permissions that are not explicitly denied, so the run
   never blocks on an approval prompt. `--standalone` gives it a private server.
 - Secrets (`MCP_TOKEN`, `OPENCODE_AUTH`) are injected via env, never written into
