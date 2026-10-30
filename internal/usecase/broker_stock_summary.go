@@ -13,22 +13,22 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
 // tickerPattern matches IDX ticker codes (2-6 uppercase letters).
 var tickerPattern = regexp.MustCompile(`^[A-Z]{2,6}$`)
 
-// BrokerSummaryFetcher fetches a per-ticker broker summary from IPOT.
-// *ipot.Client satisfies this; tests use a fake.
+// BrokerSummaryFetcher fetches a per-ticker broker summary from a market-data
+// source. *ipot.Client satisfies this; tests use a fake.
 type BrokerSummaryFetcher interface {
-	Fetch(ctx context.Context, ticker string, date time.Time) (*ipot.Result, error)
+	Fetch(ctx context.Context, ticker string, date time.Time) (*broker.Result, error)
 }
 
 // BrokerStockSummaryUseCase orchestrates the on-demand per-stock broker
-// summary flow: resolve the trading day, fetch from IPOT, persist, return.
+// summary flow: resolve the trading day, fetch from the source, persist, return.
 type BrokerStockSummaryUseCase struct {
 	DB             *sqlx.DB
 	Log            *logrus.Logger
@@ -293,9 +293,9 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryRange(ctx context.Cont
 	return resp, nil
 }
 
-// fetchAndPersistDay fetches one ticker+day from IPOT, persists it, and returns
-// the day-level result. An empty IPOT result (non-trading day or not yet
-// published) returns an empty day — nothing persisted, no error.
+// fetchAndPersistDay fetches one ticker+day from the source, persists it, and
+// returns the day-level result. An empty source result (non-trading day or not
+// yet published) returns an empty day — nothing persisted, no error.
 func (uc *BrokerStockSummaryUseCase) fetchAndPersistDay(ctx context.Context, ticker string, day time.Time) (*BrokerStockSummaryDay, error) {
 	res, err := uc.Fetcher.Fetch(ctx, ticker, day)
 	if err != nil {
@@ -400,7 +400,7 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryHistory(ctx context.Co
 }
 
 // persist writes the fetched rows and totals for one ticker+day atomically.
-func (uc *BrokerStockSummaryUseCase) persist(ticker string, day time.Time, res *ipot.Result, others int64) error {
+func (uc *BrokerStockSummaryUseCase) persist(ticker string, day time.Time, res *broker.Result, others int64) error {
 	rows := make([]entity.BrokerStockSummary, 0, len(res.Buyers)+len(res.Sellers))
 	for _, b := range res.Buyers {
 		rows = append(rows, toEntity(ticker, day, "buy", b))
@@ -427,7 +427,7 @@ func (uc *BrokerStockSummaryUseCase) persist(ticker string, day time.Time, res *
 // net-bought (the quiet tail). Equals t_val-based total − Σ listed brokers' net,
 // matching the ticket definition. All-top-N (buyers+sellers cover the market)
 // yields 0.
-func othersNet(buyers, sellers []ipot.Row) int64 {
+func othersNet(buyers, sellers []broker.Row) int64 {
 	var buy, sell int64
 	for _, b := range buyers {
 		buy += b.Value
@@ -438,7 +438,7 @@ func othersNet(buyers, sellers []ipot.Row) int64 {
 	return sell - buy
 }
 
-func toEntity(ticker string, day time.Time, side string, r ipot.Row) entity.BrokerStockSummary {
+func toEntity(ticker string, day time.Time, side string, r broker.Row) entity.BrokerStockSummary {
 	rank := int32(r.Rank)
 	return entity.BrokerStockSummary{
 		Ticker:     ticker,
@@ -452,8 +452,8 @@ func toEntity(ticker string, day time.Time, side string, r ipot.Row) entity.Brok
 	}
 }
 
-// dayFromResult builds a day-level result from a fetched IPOT result.
-func dayFromResult(ticker string, day time.Time, res *ipot.Result, others int64) *BrokerStockSummaryDay {
+// dayFromResult builds a day-level result from a fetched source result.
+func dayFromResult(ticker string, day time.Time, res *broker.Result, others int64) *BrokerStockSummaryDay {
 	d := &BrokerStockSummaryDay{
 		TradingDay:     day.Format("2006-01-02"),
 		TotalBuyValue:  res.Totals.TVal,

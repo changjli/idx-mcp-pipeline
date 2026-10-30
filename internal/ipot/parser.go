@@ -5,44 +5,23 @@ import (
 	"strings"
 
 	"golang.org/x/net/html"
+
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 )
-
-// Row is one broker's buy or sell activity for a ticker+day.
-type Row struct {
-	BrokerCode string
-	Lot        int64
-	Value      int64
-	AvgPrice   int64
-	Rank       int
-}
-
-// Totals is the footer summary line of the IPOT broker summary table.
-type Totals struct {
-	TVal  int64 // total value (rupiah)
-	FNVal int64 // foreign net value (rupiah)
-	TLot  int64 // total lots
-	Avg   int64 // average price
-}
-
-// Result is the parsed broker summary for one ticker+day.
-type Result struct {
-	Buyers  []Row
-	Sellers []Row
-	Totals  Totals
-}
 
 // ParseBrokerSummary parses the IPOT data-brokersummary.php HTML response.
 // The table pairs top-10 buyers with top-10 sellers per row (9 columns:
 // Buyer, B.Lot, B.Val, B.Avg, #, Seller, S.Lot, S.Val, S.Avg) and carries a
 // footer summary line. A non-trading day returns an empty table (rows with
-// empty cells) — that parses to an empty Result with zero totals, not an error.
-func ParseBrokerSummary(data []byte) (*Result, error) {
+// empty cells) — that parses to an empty broker.Result with zero totals, not an
+// error.
+func ParseBrokerSummary(data []byte) (*broker.Result, error) {
 	doc, err := html.Parse(strings.NewReader(string(data)))
 	if err != nil {
 		return nil, fmt.Errorf("parse html: %w", err)
 	}
 
-	res := &Result{}
+	res := &broker.Result{}
 	found := false
 
 	var walk func(*html.Node) error
@@ -89,7 +68,7 @@ func isSummaryTable(n *html.Node) bool {
 }
 
 // parseTable extracts tbody rows and the tfoot totals from a summary table.
-func parseTable(n *html.Node, res *Result) error {
+func parseTable(n *html.Node, res *broker.Result) error {
 	var tbody, tfoot *html.Node
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		if c.Type != html.ElementNode {
@@ -149,22 +128,22 @@ func parseTable(n *html.Node, res *Result) error {
 	return nil
 }
 
-// parseSide builds a Row from cells at the given offset.
+// parseSide builds a broker.Row from cells at the given offset.
 // offset 0 = buyer columns (code, lot, value, avg); offset 5 = seller columns.
-func parseSide(cells []string, offset, rank int) (Row, error) {
+func parseSide(cells []string, offset, rank int) (broker.Row, error) {
 	lot, err := parseValue(cells[offset+1])
 	if err != nil {
-		return Row{}, fmt.Errorf("lot %q: %w", cells[offset+1], err)
+		return broker.Row{}, fmt.Errorf("lot %q: %w", cells[offset+1], err)
 	}
 	val, err := parseValue(cells[offset+2])
 	if err != nil {
-		return Row{}, fmt.Errorf("value %q: %w", cells[offset+2], err)
+		return broker.Row{}, fmt.Errorf("value %q: %w", cells[offset+2], err)
 	}
 	avg, err := parseValue(cells[offset+3])
 	if err != nil {
-		return Row{}, fmt.Errorf("avg %q: %w", cells[offset+3], err)
+		return broker.Row{}, fmt.Errorf("avg %q: %w", cells[offset+3], err)
 	}
-	return Row{
+	return broker.Row{
 		BrokerCode: cells[offset],
 		Lot:        lot,
 		Value:      val,
@@ -176,9 +155,9 @@ func parseSide(cells []string, offset, rank int) (Row, error) {
 // parseTotals extracts the footer summary line from the tfoot.
 // Footer spans look like "T. Val : 71.2 B", "F. NVal : 11.1 B",
 // "T.Lot : 808,975 ", "Avg : 880 ".
-func parseTotals(tfoot *html.Node) (Totals, error) {
+func parseTotals(tfoot *html.Node) (broker.Totals, error) {
 	text := collectText(tfoot)
-	var t Totals
+	var t broker.Totals
 	var err error
 	if t.TVal, err = footerValue(text, "T. Val"); err != nil {
 		return t, err

@@ -12,7 +12,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -23,15 +23,15 @@ type rangeFetcher struct {
 	calls   []time.Time
 }
 
-func (f *rangeFetcher) Fetch(_ context.Context, _ string, date time.Time) (*ipot.Result, error) {
+func (f *rangeFetcher) Fetch(_ context.Context, _ string, date time.Time) (*broker.Result, error) {
 	f.calls = append(f.calls, date)
 	if !f.failDay.IsZero() && date.Equal(f.failDay) {
 		return nil, errors.New("ipot: upstream error: status=500")
 	}
-	return &ipot.Result{
-		Buyers:  []ipot.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
-		Sellers: []ipot.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
-		Totals:  ipot.Totals{TVal: 1_500_000_000, FNVal: 100_000_000, TLot: 150, Avg: 100},
+	return &broker.Result{
+		Buyers:  []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
+		Sellers: []broker.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
+		Totals:  broker.Totals{TVal: 1_500_000_000, FNVal: 100_000_000, TLot: 150, Avg: 100},
 	}, nil
 }
 
@@ -155,14 +155,14 @@ type emptyDayFetcher struct {
 	emptyDay time.Time
 }
 
-func (f *emptyDayFetcher) Fetch(_ context.Context, _ string, date time.Time) (*ipot.Result, error) {
+func (f *emptyDayFetcher) Fetch(_ context.Context, _ string, date time.Time) (*broker.Result, error) {
 	if !f.emptyDay.IsZero() && date.Equal(f.emptyDay) {
-		return &ipot.Result{}, nil
+		return &broker.Result{}, nil
 	}
-	return &ipot.Result{
-		Buyers:  []ipot.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
-		Sellers: []ipot.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
-		Totals:  ipot.Totals{TVal: 1_500_000_000, FNVal: 100_000_000, TLot: 150, Avg: 100},
+	return &broker.Result{
+		Buyers:  []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
+		Sellers: []broker.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
+		Totals:  broker.Totals{TVal: 1_500_000_000, FNVal: 100_000_000, TLot: 150, Avg: 100},
 	}, nil
 }
 

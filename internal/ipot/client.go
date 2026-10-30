@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 )
 
 // DefaultMinDelay is the polite spacing between IPOT calls (≥2s per ticket).
@@ -51,7 +53,7 @@ func DefaultConfig() Config {
 
 // cacheEntry holds a parsed result with its creation time.
 type cacheEntry struct {
-	result  *Result
+	result  *broker.Result
 	created time.Time
 }
 
@@ -107,11 +109,11 @@ func NewClient(cfg Config, log *logrus.Logger) *Client {
 
 // Fetch returns the broker summary for one ticker on one trading day.
 // Results are cached per ticker+date for CacheTTL; a cache hit skips the
-// upstream call entirely. A non-trading day returns an empty Result (no rows,
-// zero totals) with no error. Empty results are NOT cached — IPOT may publish
-// the table later the same day, and caching the empty table would blind the
-// on-demand tool to just-published data for the full TTL.
-func (c *Client) Fetch(ctx context.Context, ticker string, date time.Time) (*Result, error) {
+// upstream call entirely. A non-trading day returns an empty broker.Result (no
+// rows, zero totals) with no error. Empty results are NOT cached — IPOT may
+// publish the table later the same day, and caching the empty table would blind
+// the on-demand tool to just-published data for the full TTL.
+func (c *Client) Fetch(ctx context.Context, ticker string, date time.Time) (*broker.Result, error) {
 	key := cacheKey(ticker, date)
 
 	if res, ok := c.cacheGet(key); ok {
@@ -187,7 +189,7 @@ func (c *Client) waitPacing() {
 	c.lastCall = time.Now()
 }
 
-func (c *Client) cacheGet(key string) (*Result, bool) {
+func (c *Client) cacheGet(key string) (*broker.Result, bool) {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
 
@@ -202,7 +204,7 @@ func (c *Client) cacheGet(key string) (*Result, bool) {
 	return entry.result, true
 }
 
-func (c *Client) cacheSet(key string, res *Result) {
+func (c *Client) cacheSet(key string, res *broker.Result) {
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
 
@@ -225,15 +227,15 @@ func cacheKey(ticker string, date time.Time) string {
 	return ticker + ":" + date.Format("2006-01-02")
 }
 
-// cloneResult returns a deep copy of a cached Result so callers can't mutate
-// the shared cache entry.
-func cloneResult(res *Result) *Result {
+// cloneResult returns a deep copy of a cached broker.Result so callers can't
+// mutate the shared cache entry.
+func cloneResult(res *broker.Result) *broker.Result {
 	if res == nil {
 		return nil
 	}
 	cp := *res
-	cp.Buyers = append([]Row(nil), res.Buyers...)
-	cp.Sellers = append([]Row(nil), res.Sellers...)
+	cp.Buyers = append([]broker.Row(nil), res.Buyers...)
+	cp.Sellers = append([]broker.Row(nil), res.Sellers...)
 	return &cp
 }
 

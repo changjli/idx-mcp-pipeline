@@ -12,7 +12,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -25,18 +25,18 @@ type sweepFetcher struct {
 	calls []string
 }
 
-func (f *sweepFetcher) Fetch(_ context.Context, ticker string, _ time.Time) (*ipot.Result, error) {
+func (f *sweepFetcher) Fetch(_ context.Context, ticker string, _ time.Time) (*broker.Result, error) {
 	f.calls = append(f.calls, ticker)
 	if f.fail[ticker] {
 		return nil, errors.New("ipot: upstream error: status=500")
 	}
 	if f.empty[ticker] {
-		return &ipot.Result{}, nil
+		return &broker.Result{}, nil
 	}
-	return &ipot.Result{
-		Buyers:  []ipot.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
-		Sellers: []ipot.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
-		Totals:  ipot.Totals{TVal: 1_500_000_000, FNVal: 100_000_000, TLot: 150, Avg: 100},
+	return &broker.Result{
+		Buyers:  []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
+		Sellers: []broker.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
+		Totals:  broker.Totals{TVal: 1_500_000_000, FNVal: 100_000_000, TLot: 150, Avg: 100},
 	}, nil
 }
 

@@ -12,19 +12,19 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
-// fakeFetcher returns a canned IPOT result without touching the network.
+// fakeFetcher returns a canned broker result without touching the network.
 type fakeFetcher struct {
-	res        *ipot.Result
+	res        *broker.Result
 	err        error
 	lastTicker string
 	lastDate   time.Time
 }
 
-func (f *fakeFetcher) Fetch(_ context.Context, ticker string, date time.Time) (*ipot.Result, error) {
+func (f *fakeFetcher) Fetch(_ context.Context, ticker string, date time.Time) (*broker.Result, error) {
 	f.lastTicker = ticker
 	f.lastDate = date
 	return f.res, f.err
@@ -68,15 +68,15 @@ func TestGetStockBrokerSummary_FetchPersistReturn(t *testing.T) {
 		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
 	})
 
-	f.res = &ipot.Result{
-		Buyers: []ipot.Row{
+	f.res = &broker.Result{
+		Buyers: []broker.Row{
 			{BrokerCode: "AK", Lot: 169544, Value: 15_000_000_000, AvgPrice: 883, Rank: 1},
 			{BrokerCode: "YP", Lot: 40722, Value: 3_600_000_000, AvgPrice: 878, Rank: 6},
 		},
-		Sellers: []ipot.Row{
+		Sellers: []broker.Row{
 			{BrokerCode: "XL", Lot: 139188, Value: 12_300_000_000, AvgPrice: 881, Rank: 1},
 		},
-		Totals: ipot.Totals{TVal: 71_200_000_000, FNVal: 11_100_000_000, TLot: 808975, Avg: 880},
+		Totals: broker.Totals{TVal: 71_200_000_000, FNVal: 11_100_000_000, TLot: 808975, Avg: 880},
 	}
 
 	res, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day)
@@ -150,16 +150,16 @@ func TestGetStockBrokerSummary_AllTopN(t *testing.T) {
 		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
 	})
 
-	f.res = &ipot.Result{
-		Buyers: []ipot.Row{
+	f.res = &broker.Result{
+		Buyers: []broker.Row{
 			{BrokerCode: "AK", Lot: 100000, Value: 10_000_000_000, AvgPrice: 100, Rank: 1},
 			{BrokerCode: "YP", Lot: 10000, Value: 1_000_000_000, AvgPrice: 100, Rank: 2},
 		},
-		Sellers: []ipot.Row{
+		Sellers: []broker.Row{
 			{BrokerCode: "XL", Lot: 80000, Value: 8_000_000_000, AvgPrice: 100, Rank: 1},
 			{BrokerCode: "MG", Lot: 30000, Value: 3_000_000_000, AvgPrice: 100, Rank: 2},
 		},
-		Totals: ipot.Totals{TVal: 11_000_000_000, FNVal: 2_000_000_000, TLot: 220000, Avg: 100},
+		Totals: broker.Totals{TVal: 11_000_000_000, FNVal: 2_000_000_000, TLot: 220000, Avg: 100},
 	}
 
 	res, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day)
@@ -193,7 +193,7 @@ func TestGetStockBrokerSummary_EmptyResultWritesNothing(t *testing.T) {
 		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
 	})
 
-	f.res = &ipot.Result{} // empty — non-trading day
+	f.res = &broker.Result{} // empty — non-trading day
 
 	res, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day)
 	if err != nil {
@@ -228,7 +228,7 @@ func TestGetStockBrokerSummary_DateDefaultsToLatestTradingDay(t *testing.T) {
 		db.MustExec("DELETE FROM tickers WHERE code = $1", ticker)
 	})
 
-	f.res = &ipot.Result{Buyers: []ipot.Row{{BrokerCode: "AK", Lot: 1, Value: 100, AvgPrice: 100, Rank: 1}}}
+	f.res = &broker.Result{Buyers: []broker.Row{{BrokerCode: "AK", Lot: 1, Value: 100, AvgPrice: 100, Rank: 1}}}
 
 	if _, err := uc.GetStockBrokerSummary(context.Background(), ticker, nil); err != nil {
 		t.Fatalf("GetStockBrokerSummary: %v", err)
@@ -244,14 +244,14 @@ func TestGetStockBrokerSummary_DateDefaultsToLatestTradingDay(t *testing.T) {
 // dateAwareFetcher returns a canned result for configured dates and empty for
 // everything else — simulating IPOT publish lag for a specific day.
 type dateAwareFetcher struct {
-	withData map[string]*ipot.Result
+	withData map[string]*broker.Result
 }
 
-func (f *dateAwareFetcher) Fetch(_ context.Context, _ string, date time.Time) (*ipot.Result, error) {
+func (f *dateAwareFetcher) Fetch(_ context.Context, _ string, date time.Time) (*broker.Result, error) {
 	if res, ok := f.withData[date.Format("2006-01-02")]; ok {
 		return res, nil
 	}
-	return &ipot.Result{}, nil
+	return &broker.Result{}, nil
 }
 
 func TestGetStockBrokerSummary_FallbackProbesBackward(t *testing.T) {
@@ -276,11 +276,11 @@ func TestGetStockBrokerSummary_FallbackProbesBackward(t *testing.T) {
 	})
 
 	// 8/12 not yet published (empty); 8/11 has data.
-	f := &dateAwareFetcher{withData: map[string]*ipot.Result{
+	f := &dateAwareFetcher{withData: map[string]*broker.Result{
 		"2026-08-11": {
-			Buyers:  []ipot.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
-			Sellers: []ipot.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
-			Totals:  ipot.Totals{TVal: 1_500_000_000, FNVal: 100_000_000, TLot: 150, Avg: 100},
+			Buyers:  []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
+			Sellers: []broker.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
+			Totals:  broker.Totals{TVal: 1_500_000_000, FNVal: 100_000_000, TLot: 150, Avg: 100},
 		},
 	}}
 	uc := NewBrokerStockSummaryUseCase(

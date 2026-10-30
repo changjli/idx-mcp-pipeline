@@ -13,8 +13,8 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/usecase"
@@ -23,11 +23,11 @@ import (
 // taskFakeFetcher returns a canned IPOT result without touching the network.
 type taskFakeFetcher struct{}
 
-func (taskFakeFetcher) Fetch(_ context.Context, _ string, _ time.Time) (*ipot.Result, error) {
-	return &ipot.Result{
-		Buyers:  []ipot.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
-		Sellers: []ipot.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
-		Totals:  ipot.Totals{TVal: 1_500_000_000, FNVal: 100_000_000, TLot: 150, Avg: 100},
+func (taskFakeFetcher) Fetch(_ context.Context, _ string, _ time.Time) (*broker.Result, error) {
+	return &broker.Result{
+		Buyers:  []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
+		Sellers: []broker.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
+		Totals:  broker.Totals{TVal: 1_500_000_000, FNVal: 100_000_000, TLot: 150, Avg: 100},
 	}, nil
 }
 
