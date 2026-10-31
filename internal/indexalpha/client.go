@@ -21,27 +21,63 @@ const DefaultBaseURL = "https://api.indexalpha.id"
 // DefaultTimeout bounds one API call.
 const DefaultTimeout = 30 * time.Second
 
+// DefaultReserve is the number of quota units the ingestion paths leave for
+// on-demand lookups. It is a caller-consulted budget, never a hard floor.
+const DefaultReserve = 10
+
+// DefaultCooldown is how long a key is skipped after a 429, when the vendor
+// sends no Retry-After.
+const DefaultCooldown = 60 * time.Second
+
+// minQuotaRetryDelay is how long an exhausted key with an unknown or already
+// past reset is parked before the pool re-reads /usage. The real period end is
+// preferred whenever it is known; this only avoids a busy loop.
+const minQuotaRetryDelay = time.Hour
+
 // maxResponseBytes caps a response body so a hostile or broken upstream cannot
 // exhaust memory. A full broker day is well under 1 MB.
 const maxResponseBytes = 4 << 20
 
-// Config holds the tunable knobs for the Index Alpha client.
+// Config holds the tunable knobs for the Index Alpha adapter.
 type Config struct {
 	BaseURL string
-	APIKey  string // single key today; the pool (ticket 03) supplies keys
-	Timeout time.Duration
+	// APIKey is the legacy single-key convenience. The pool reads Keys; when
+	// Keys is empty a non-empty APIKey is treated as a one-key pool.
+	APIKey   string
+	Keys     []string
+	Timeout  time.Duration
+	Reserve  int
+	Cooldown time.Duration
 }
 
-// DefaultConfig returns production defaults: the public host, 30s timeout.
+// DefaultConfig returns production defaults: the public host, 30s timeout, a
+// ten-unit reserve and a one-minute rate-limit cooldown.
 func DefaultConfig() Config {
 	return Config{
-		BaseURL: DefaultBaseURL,
-		Timeout: DefaultTimeout,
+		BaseURL:  DefaultBaseURL,
+		Timeout:  DefaultTimeout,
+		Reserve:  DefaultReserve,
+		Cooldown: DefaultCooldown,
 	}
 }
 
-// Client fetches broker summaries from Index Alpha over plain HTTPS with Bearer
-// auth. It holds no cache: Postgres is the cache (ticket 07).
+// CallOutcome carries the quota signals from a response's headers. It is
+// returned alongside both success and failure, because a 403 quota rejection
+// and a 200 both carry the headers the pool needs to reconcile its per-key
+// counter. Nil fields mean the header was absent. The headers were observed live
+// on 2026-10-31 on both a free /usage call and a metered 200
+// (`.scratch/broker-summary-v2/indexalpha-live-headers-2026-10-31.md`); absence
+// is still tolerated, falling back to deducting the call's cost.
+type CallOutcome struct {
+	MonthlyRemaining *int
+	MonthlyReset     *time.Time
+	RateRemaining    *int
+	RetryAfter       *time.Duration
+}
+
+// Client is the transport to Index Alpha. It holds no cache: Postgres is the
+// cache (ticket 07). A Client is safe for concurrent use; the pool owns all
+// key selection and quota state.
 type Client struct {
 	baseURL string
 	apiKey  string
@@ -50,7 +86,7 @@ type Client struct {
 }
 
 // NewClient creates an Index Alpha client. A missing key is not fatal at
-// construction so the rest of the server still starts; Fetch reports it as an
+// construction so the rest of the server still starts; a call reports it as an
 // auth error.
 func NewClient(cfg Config, log *logrus.Logger) *Client {
 	if cfg.BaseURL == "" {
@@ -58,6 +94,9 @@ func NewClient(cfg Config, log *logrus.Logger) *Client {
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultTimeout
+	}
+	if log == nil {
+		log = logrus.New()
 	}
 	return &Client{
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
@@ -67,15 +106,25 @@ func NewClient(cfg Config, log *logrus.Logger) *Client {
 	}
 }
 
-// Fetch returns the broker summary for one ticker on one trading day.
+// Fetch returns the broker summary for one ticker on one trading day using the
+// client's configured single key. It is the compatibility path for callers
+// outside the pool (tests, one-off scripts); production goes through Pool.
 //
 // The request is single-day by construction: Fetch takes one date and sends it
 // as both `from` and `to`, because the source aggregates ranges instead of
 // paginating them. The regular market is pinned (`market=RG`, the stored
 // history's board) and the all-investor view is stated explicitly.
 func (c *Client) Fetch(ctx context.Context, ticker string, date time.Time) (*broker.Result, error) {
-	if c.apiKey == "" {
-		return nil, fmt.Errorf("%w: no API key configured (INDEXALPHA_KEYS)", ErrUnauthorized)
+	res, _, err := c.FetchWithKey(ctx, c.apiKey, ticker, date)
+	return res, err
+}
+
+// FetchWithKey is Fetch with an explicit Bearer key, and it also returns the
+// quota headers from the response. The pool uses the headers to keep its
+// per-key remaining authoritative; a plain Fetch discards them.
+func (c *Client) FetchWithKey(ctx context.Context, key, ticker string, date time.Time) (*broker.Result, CallOutcome, error) {
+	if strings.TrimSpace(key) == "" {
+		return nil, CallOutcome{}, fmt.Errorf("%w: no API key configured (INDEXALPHA_KEYS)", ErrUnauthorized)
 	}
 
 	ticker = strings.ToUpper(strings.TrimSpace(ticker))
@@ -93,25 +142,27 @@ func (c *Client) Fetch(ctx context.Context, ticker string, date time.Time) (*bro
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, fmt.Errorf("indexalpha: build request: %w", err)
+		return nil, CallOutcome{}, fmt.Errorf("indexalpha: build request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("indexalpha: get %s: %w", u, err)
+		return nil, CallOutcome{}, fmt.Errorf("indexalpha: get %s: %w", u, err)
 	}
 	defer resp.Body.Close()
 
+	outcome := outcomeFromHeader(resp.Header, time.Now)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return nil, fmt.Errorf("indexalpha: read body: %w", err)
+		return nil, outcome, fmt.Errorf("indexalpha: read body: %w", err)
 	}
 	if err := classifyStatus(resp, body); err != nil {
-		return nil, err
+		return nil, outcome, err
 	}
-	return ParseBrokerSummary(ticker, body)
+	res, err := ParseBrokerSummary(ticker, body)
+	return res, outcome, err
 }
 
 // classifyStatus turns a non-200 response into one of the structured failure

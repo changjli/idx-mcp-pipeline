@@ -241,9 +241,14 @@ func runBulkBrokerSummary(vip *viper.Viper, log *logrus.Logger, startStr, endStr
 	db := config.NewDatabase(vip, log)
 	defer db.Close()
 
-	indexAlphaClient := indexalpha.NewClient(indexalpha.ConfigFromViper(vip), log)
+	indexAlphaPool := indexalpha.NewPool(indexalpha.ConfigFromViper(vip), log)
+	seedCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := indexAlphaPool.Seed(seedCtx); err != nil {
+		log.Warnf("indexalpha pool seed incomplete: %v", err)
+	}
+	cancel()
 	brokerStockSummaryUC := usecase.NewBrokerStockSummaryUseCase(
-		db, log, config.NewValidator(), indexAlphaClient,
+		db, log, config.NewValidator(), indexAlphaPool,
 		repository.NewBrokerStockSummaryRepository(log),
 		repository.NewDailyPriceRepository(log),
 	)

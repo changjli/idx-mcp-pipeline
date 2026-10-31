@@ -6,9 +6,9 @@ import (
 	"github.com/spf13/viper"
 )
 
-// ConfigFromViper builds a client config from the `indexalpha.*` config keys.
-// Only the first configured key is used today; KeysFromViper exposes the full
-// list for the pool (ticket 03).
+// ConfigFromViper builds an adapter config from the `indexalpha.*` config keys.
+// Keys is the full pool; APIKey carries the first key for the legacy single-key
+// Client path.
 func ConfigFromViper(vip *viper.Viper) Config {
 	cfg := DefaultConfig()
 	if v := strings.TrimSpace(vip.GetString("indexalpha.base_url")); v != "" {
@@ -17,7 +17,17 @@ func ConfigFromViper(vip *viper.Viper) Config {
 	if d := vip.GetDuration("indexalpha.timeout"); d > 0 {
 		cfg.Timeout = d
 	}
+	if vip.IsSet("indexalpha.reserve") {
+		cfg.Reserve = vip.GetInt("indexalpha.reserve")
+	}
+	if cfg.Reserve < 0 {
+		cfg.Reserve = 0
+	}
+	if d := vip.GetDuration("indexalpha.cooldown"); d > 0 {
+		cfg.Cooldown = d
+	}
 	if keys := KeysFromViper(vip); len(keys) > 0 {
+		cfg.Keys = keys
 		cfg.APIKey = keys[0]
 	}
 	return cfg

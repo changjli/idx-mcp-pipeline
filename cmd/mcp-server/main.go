@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -225,13 +226,22 @@ func main() {
 	// anomaly detection. Shares the same usecase the MCP tool (ticket 10) wires.
 	// Broker data comes from Index Alpha (ADR-0018); IPOT remains only for
 	// get_financials.
-	indexAlphaClient := indexalpha.NewClient(indexalpha.ConfigFromViper(vip), log)
-	if len(indexalpha.KeysFromViper(vip)) == 0 {
+	// The key pool is the source (ADR-0018): N keys, one quota state. /usage is
+	// read once at boot (free) so the first metered call already knows each
+	// key's remaining; a seed failure leaves the key optimistically usable.
+	indexAlphaPool := indexalpha.NewPool(indexalpha.ConfigFromViper(vip), log)
+	if indexAlphaPool.Configured() == 0 {
 		log.Warn("INDEXALPHA_KEYS not configured — get_stock_broker_summary will report UNAUTHORIZED")
+	} else {
+		seedCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := indexAlphaPool.Seed(seedCtx); err != nil {
+			log.Warnf("indexalpha pool seed incomplete: %v", err)
+		}
+		cancel()
 	}
 	ipotClient := ipot.NewClient(ipot.DefaultConfig(), log)
 	brokerStockSummaryUC := usecase.NewBrokerStockSummaryUseCase(
-		db, log, validate, indexAlphaClient, brokerStockSummaryRepo, dailyPriceRepo,
+		db, log, validate, indexAlphaPool, brokerStockSummaryRepo, dailyPriceRepo,
 	)
 	mux.Handle(tasks.TypeBrokerStockSummary, tasks.NewBrokerStockSummaryHandler(
 		log, brokerStockSummaryUC, recorder,
