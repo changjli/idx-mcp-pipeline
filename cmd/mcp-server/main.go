@@ -166,7 +166,7 @@ func main() {
 		log, minADTV,
 	)
 	mux.Handle(tasks.TypeDetectAnomalies, tasks.NewDetectAnomaliesHandler(
-		log, asynqClient, db, dailyPriceRepo, anomalyRepo, anomalyDetector,
+		log, asynqClient, db, dailyPriceRepo, anomalyDetector,
 	))
 	// R2 claim-check is optional: without r2.* credentials the handler skips
 	// the raw-XML upload (nil store) instead of hammering a default endpoint.
@@ -242,6 +242,7 @@ func main() {
 	ipotClient := ipot.NewClient(ipot.DefaultConfig(), log)
 	brokerStockSummaryUC := usecase.NewBrokerStockSummaryUseCase(
 		db, log, validate, indexAlphaPool, brokerStockSummaryRepo, dailyPriceRepo,
+		usecase.WithBatchSource(indexAlphaPool, indexAlphaPool),
 	)
 	mux.Handle(tasks.TypeBrokerStockSummary, tasks.NewBrokerStockSummaryHandler(
 		log, brokerStockSummaryUC, recorder,
@@ -252,12 +253,12 @@ func main() {
 	mux.Handle(tasks.TypeBrokerStockSummaryRange, tasks.NewBrokerStockSummaryRangeHandler(
 		log, brokerStockSummaryUC, recorder,
 	))
-	// Weekly ADTV-gated sweep (issue 14b): backfill broker summaries for
-	// liquid tickers over the trailing window, skipping days the anomaly gate
-	// already covered. Scheduled Saturday after the week's pipeline wave; the
-	// ADTV floor is the anomaly detector's own bar (minADTV above).
+	// Daily anchor-day sweep (ADR-0018): chained from stock-summary so the
+	// anchor day's prices exist. It selects the ADTV-eligible universe from
+	// daily_prices, skips stored ticker-days, and spends the pool's remaining
+	// budget on the least-recently-observed names in ≤50-ticker batches.
 	mux.Handle(tasks.TypeBrokerStockSummarySweep, tasks.NewBrokerSummarySweepHandler(
-		log, db, brokerStockSummaryUC, dailyPriceRepo, recorder, minADTV,
+		log, brokerStockSummaryUC, recorder, minADTV,
 	))
 
 	// Start asynq server in background goroutine

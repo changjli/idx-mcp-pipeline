@@ -20,4 +20,9 @@ var (
 	// 5xx). It is distinct from the classified failures above so a caller can
 	// tell "the vendor said no" from "we could not talk to the vendor".
 	ErrUpstream = errors.New("indexalpha: upstream error")
+
+	// ErrInvalidRequest means the caller asked for something the contract
+	// forbids before any HTTP call was made: an empty batch, or one over the
+	// 50-ticker limit. It is a programming error, never a vendor condition.
+	ErrInvalidRequest = errors.New("indexalpha: invalid request")
 )

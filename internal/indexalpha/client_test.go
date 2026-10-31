@@ -2,7 +2,9 @@ package indexalpha
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -169,5 +171,91 @@ func TestFetch_NoKeyIsAnAuthError(t *testing.T) {
 	_, err := c.Fetch(context.Background(), "BBRI", time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC))
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("err = %v, want ErrUnauthorized", err)
+	}
+}
+
+// TestFetchBatch_PostsOneDayBatch pins the batch contract: POST JSON, one date
+// (from == to), regular market, all investors, deduplicated tickers, and the
+// per-ticker response shape parsed into broker.Batch.
+func TestFetchBatch_PostsOneDayBatch(t *testing.T) {
+	respBody := []byte(`{"success":true,"data":{
+		"BBCA":[{"code":"AF","buy_freq":1,"buy_volume":100,"buy_value":1000000.0,
+		         "sell_freq":1,"sell_volume":100,"sell_value":1000000.0,
+		         "buy_avg":100.0,"sell_avg":100.0}],
+		"TLKM":[{"code":"AK","buy_freq":1,"buy_volume":200,"buy_value":2000000.0,
+		         "sell_freq":2,"sell_volume":200,"sell_value":2000000.0,
+		         "buy_avg":100.0,"sell_avg":100.0}]
+	},"error":null}`)
+
+	var gotMethod, gotPath, gotAuth, gotContentType string
+	var gotBody batchRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotContentType = r.Header.Get("Content-Type")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Monthly-Remaining", "148")
+		_, _ = w.Write(respBody)
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, APIKey: "test-key", Timeout: 5 * time.Second}, testLogger())
+	day := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+
+	batch, err := c.FetchBatch(context.Background(), []string{" bbca ", "BBCA", "tlkm", ""}, day)
+	if err != nil {
+		t.Fatalf("FetchBatch: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/stocks/broker-summary/batch" {
+		t.Errorf("%s %s, want POST /stocks/broker-summary/batch", gotMethod, gotPath)
+	}
+	if gotAuth != "Bearer test-key" {
+		t.Errorf("Authorization = %q, want Bearer test-key", gotAuth)
+	}
+	if gotContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotContentType)
+	}
+	if len(gotBody.Tickers) != 2 || gotBody.Tickers[0] != "BBCA" || gotBody.Tickers[1] != "TLKM" {
+		t.Errorf("tickers = %v, want deduplicated [BBCA TLKM]", gotBody.Tickers)
+	}
+	if gotBody.From != "2026-10-22" || gotBody.To != "2026-10-22" {
+		t.Errorf("from/to = %q/%q, want the same single day", gotBody.From, gotBody.To)
+	}
+	if gotBody.Investor != "all" || gotBody.Market != "RG" {
+		t.Errorf("investor/market = %q/%q, want all/RG", gotBody.Investor, gotBody.Market)
+	}
+	if len(batch.Results) != 2 || len(batch.Invalid) != 0 {
+		t.Errorf("batch = %+v, want 2 valid tickers", batch)
+	}
+}
+
+// TestFetchBatch_RejectsOversizedAndEmptyBeforeSpending asserts the 50-ticker
+// limit is enforced before any request is made: a 51-ticker batch must not cost
+// a daily request or quota.
+func TestFetchBatch_RejectsOversizedAndEmptyBeforeSpending(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"success":true,"data":{},"error":null}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, APIKey: "test-key", Timeout: 5 * time.Second}, testLogger())
+
+	tickers := make([]string, broker.MaxBatchTickers+1)
+	for i := range tickers {
+		tickers[i] = fmt.Sprintf("T%03d", i)
+	}
+	if _, err := c.FetchBatch(context.Background(), tickers, time.Now()); !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("oversized batch err = %v, want ErrInvalidRequest", err)
+	}
+	if _, err := c.FetchBatch(context.Background(), []string{"", "  "}, time.Now()); !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("empty batch err = %v, want ErrInvalidRequest", err)
+	}
+	if calls != 0 {
+		t.Errorf("server calls = %d, want 0 (rejected before the request)", calls)
 	}
 }

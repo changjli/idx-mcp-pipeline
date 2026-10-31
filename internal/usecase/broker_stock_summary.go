@@ -27,6 +27,24 @@ type BrokerSummaryFetcher interface {
 	Fetch(ctx context.Context, ticker string, date time.Time) (*broker.Result, error)
 }
 
+// BrokerSummaryBatchFetcher fetches one batch of at most broker.MaxBatchTickers
+// tickers for one trading day. *indexalpha.Pool satisfies it; the batch is
+// metered by the number of tickers requested.
+type BrokerSummaryBatchFetcher interface {
+	FetchBatch(ctx context.Context, tickers []string, date time.Time) (*broker.Batch, error)
+}
+
+// BrokerSweepBudget is the quota view the anchor-day sweep plans against:
+// available monthly units (reserve already deducted), the largest batch a
+// single usable key can afford right now, the next rolling reset, and a free
+// re-seed for keys that have never been measured.
+type BrokerSweepBudget interface {
+	Available() int
+	BatchCapacity() int
+	NextReset() *time.Time
+	EnsureSeeded(ctx context.Context) error
+}
+
 // BrokerStockSummaryUseCase orchestrates the on-demand per-stock broker
 // summary flow: resolve the trading day, fetch from the source, persist, return.
 type BrokerStockSummaryUseCase struct {
@@ -34,8 +52,24 @@ type BrokerStockSummaryUseCase struct {
 	Log            *logrus.Logger
 	Validate       *validator.Validate
 	Fetcher        BrokerSummaryFetcher
+	BatchFetcher   BrokerSummaryBatchFetcher
+	Budget         BrokerSweepBudget
 	Repo           *repository.BrokerStockSummaryRepository
 	DailyPriceRepo *repository.DailyPriceRepository
+}
+
+// BrokerStockSummaryOption configures optional dependencies. The on-demand
+// paths need only Fetcher; the daily sweep also needs a batch fetcher and a
+// quota budget.
+type BrokerStockSummaryOption func(*BrokerStockSummaryUseCase)
+
+// WithBatchSource installs the batch fetcher and quota budget used by the
+// anchor-day sweep.
+func WithBatchSource(f BrokerSummaryBatchFetcher, b BrokerSweepBudget) BrokerStockSummaryOption {
+	return func(uc *BrokerStockSummaryUseCase) {
+		uc.BatchFetcher = f
+		uc.Budget = b
+	}
 }
 
 func NewBrokerStockSummaryUseCase(
@@ -45,8 +79,9 @@ func NewBrokerStockSummaryUseCase(
 	fetcher BrokerSummaryFetcher,
 	repo *repository.BrokerStockSummaryRepository,
 	dailyPriceRepo *repository.DailyPriceRepository,
+	opts ...BrokerStockSummaryOption,
 ) *BrokerStockSummaryUseCase {
-	return &BrokerStockSummaryUseCase{
+	uc := &BrokerStockSummaryUseCase{
 		DB:             db,
 		Log:            log,
 		Validate:       validate,
@@ -54,6 +89,10 @@ func NewBrokerStockSummaryUseCase(
 		Repo:           repo,
 		DailyPriceRepo: dailyPriceRepo,
 	}
+	for _, opt := range opts {
+		opt(uc)
+	}
+	return uc
 }
 
 // BrokerSummaryRow is one broker's buy or sell activity in the response.

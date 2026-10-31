@@ -40,6 +40,9 @@ func TestBrokerSummarySweep_GraphNodeDateKeyed(t *testing.T) {
 	if node.Name != "broker-summary-sweep" {
 		t.Errorf("node.Name = %q, want broker-summary-sweep", node.Name)
 	}
+	if !node.SelfHeal {
+		t.Error("sweep node is not self-heal eligible; an archived sweep would dead-end")
+	}
 
 	// Date-keyed TaskID so a re-enqueue for the same date dedups.
 	date := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
@@ -57,7 +60,7 @@ func TestBrokerSummarySweep_GraphNodeDateKeyed(t *testing.T) {
 	}
 }
 
-func TestEnqueueBrokerSummarySweep_DedupKeyAndTimeout(t *testing.T) {
+func TestEnqueueBrokerSummarySweep_DedupKey(t *testing.T) {
 	var types []string
 	var opts []asynq.Option
 	enq := enqueueRecorder(func(task *asynq.Task, o []asynq.Option) (*asynq.TaskInfo, error) {
@@ -78,15 +81,12 @@ func TestEnqueueBrokerSummarySweep_DedupKeyAndTimeout(t *testing.T) {
 		t.Errorf("enqueued types = %v, want [%s]", types, TypeBrokerStockSummarySweep)
 	}
 
-	// Long task-level timeout: a full-market sweep exceeds asynq's 30m default
-	// at IPOT's 2s pacing (~900 traded tickers ≈ 30 min + RTT).
-	hasTimeout := false
+	// The IPOT-era 2h task timeout is gone: a batched sweep is ~4 HTTP calls,
+	// not a 21-day per-ticker crawl, so the server default is ample. Asserting
+	// the absence keeps an accidental reintroduction visible.
 	for _, o := range opts {
 		if o.Type() == asynq.TimeoutOpt {
-			hasTimeout = true
+			t.Error("sweep task still carries a timeout override; the batched sweep fits the 30m default")
 		}
-	}
-	if !hasTimeout {
-		t.Error("sweep task missing asynq timeout option — would be killed at the 30m server default")
 	}
 }

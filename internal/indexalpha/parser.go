@@ -63,6 +63,64 @@ func ParseBrokerSummary(ticker string, body []byte) (*broker.Result, error) {
 	return buildResult(ticker, rows)
 }
 
+// ParseBrokerSummaryBatch parses the batch broker-summary response
+// (POST /stocks/broker-summary/batch) into per-ticker results.
+//
+// The batch endpoint's `data` is an object keyed by ticker, unlike the
+// single-ticker endpoint's flat array. Each ticker is parsed independently: a
+// payload that violates a source invariant lands in Batch.Invalid with its
+// reason, while the rest of the batch is still usable — a ticker-day is atomic,
+// so one bad payload must not throw away the other 49 already-paid ticker-days.
+// A batch-level problem (non-JSON, success=false, data not an object) is an
+// error and nothing is returned.
+func ParseBrokerSummaryBatch(body []byte) (*broker.Batch, error) {
+	var env wireEnvelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("%w: decode response: %v", ErrMalformedPayload, err)
+	}
+	if !env.Success {
+		return nil, fmt.Errorf("%w: success=false error=%s", ErrMalformedPayload, rawText(env.Error))
+	}
+
+	batch := &broker.Batch{
+		Results: make(map[string]*broker.Result),
+		Invalid: make(map[string]error),
+	}
+	if len(env.Data) == 0 || string(env.Data) == "null" {
+		return batch, nil
+	}
+
+	var byTicker map[string]json.RawMessage
+	if err := json.Unmarshal(env.Data, &byTicker); err != nil {
+		return nil, fmt.Errorf("%w: data is not a ticker-keyed object: %v", ErrMalformedPayload, err)
+	}
+
+	for rawTicker, raw := range byTicker {
+		ticker := strings.ToUpper(strings.TrimSpace(rawTicker))
+		if ticker == "" {
+			continue
+		}
+		if len(raw) == 0 || string(raw) == "null" {
+			// The vendor listed the ticker but returned no rows: an empty day,
+			// not a malformed payload.
+			batch.Results[ticker] = &broker.Result{Buyers: []broker.Row{}, Sellers: []broker.Row{}}
+			continue
+		}
+		var rows []wireRow
+		if err := json.Unmarshal(raw, &rows); err != nil {
+			batch.Invalid[ticker] = fmt.Errorf("%w: %s data is not a broker row array: %v", ErrMalformedPayload, ticker, err)
+			continue
+		}
+		res, err := buildResult(ticker, rows)
+		if err != nil {
+			batch.Invalid[ticker] = err
+			continue
+		}
+		batch.Results[ticker] = res
+	}
+	return batch, nil
+}
+
 // buildResult converts wire rows into buyers, sellers and derived totals.
 func buildResult(ticker string, rows []wireRow) (*broker.Result, error) {
 	res := &broker.Result{Buyers: []broker.Row{}, Sellers: []broker.Row{}}

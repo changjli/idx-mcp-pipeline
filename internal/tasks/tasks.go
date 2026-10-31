@@ -17,10 +17,11 @@ const (
 	// TypeBrokerStockSummaryRange is the on-demand range backfill task (issue
 	// 12): one ticker over a date range, enqueued by the MCP backfill tool.
 	TypeBrokerStockSummaryRange = "idx:broker_stock_summary_range"
-	// TypeBrokerStockSummarySweep is the weekly ADTV-gated sweep (issue 14b):
-	// one task per date that backfills broker summaries for liquid tickers
-	// over the trailing window, skipping days already stored. Runs on top of
-	// the anomaly-gated per-ticker flow.
+	// TypeBrokerStockSummarySweep is the daily anchor-day sweep: it selects the
+	// ADTV-eligible universe from stored Daily Price rows, skips ticker-days
+	// already stored, and fetches a budget-capped slice through Index Alpha in
+	// ≤50-ticker batches. It is chained after stock-summary and is the sole
+	// broker ingestion path.
 	TypeBrokerStockSummarySweep = "idx:broker_stock_summary_sweep"
 	TypeFilterDisclosures       = "filter:disclosures"
 	TypeExtractDisclosure       = "extract:disclosure"

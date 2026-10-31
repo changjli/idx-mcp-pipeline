@@ -2,6 +2,7 @@ package indexalpha
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -885,5 +886,106 @@ func TestPool_DailyCapConcurrentNeverOversends(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&dailyErrs); got != 8 {
 		t.Errorf("daily errors = %d, want 8", got)
+	}
+}
+
+// batchFixture is the batch endpoint's shape: data keyed by ticker.
+func batchFixture(t *testing.T) []byte {
+	t.Helper()
+	return []byte(`{"success":true,"data":{
+		"BBCA":[{"code":"AF","buy_freq":1,"buy_volume":100,"buy_value":1000000.0,
+		         "sell_freq":1,"sell_volume":100,"sell_value":1000000.0,
+		         "buy_avg":100.0,"sell_avg":100.0}],
+		"TLKM":[{"code":"AK","buy_freq":1,"buy_volume":200,"buy_value":2000000.0,
+		         "sell_freq":2,"sell_volume":200,"sell_value":2000000.0,
+		         "buy_avg":100.0,"sell_avg":100.0}]
+	},"error":null}`)
+}
+
+// TestPool_FetchBatchMetersTickersAndOneRequest pins the two-counter contract:
+// a 2-ticker batch costs 2 monthly units (header-authoritative) and exactly one
+// daily request.
+func TestPool_FetchBatchMetersTickersAndOneRequest(t *testing.T) {
+	clock := newFakeClock()
+	var gotTickers []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/usage" {
+			_, _ = w.Write([]byte(usageJSON(150, "2026-11-30T00:00:00", true)))
+			return
+		}
+		if r.URL.Path != "/stocks/broker-summary/batch" || r.Method != http.MethodPost {
+			t.Errorf("%s %s, want POST /stocks/broker-summary/batch", r.Method, r.URL.Path)
+		}
+		var body batchRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		gotTickers = body.Tickers
+		w.Header().Set("X-Monthly-Remaining", "98")
+		w.Header().Set("X-Monthly-Reset", "1795784282")
+		_, _ = w.Write(batchFixture(t))
+	}))
+	defer srv.Close()
+
+	p := newTestPool(t, srv.URL, []string{"k1"}, 0, clock)
+	day := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	batch, err := p.FetchBatch(context.Background(), []string{"BBCA", "TLKM"}, day)
+	if err != nil {
+		t.Fatalf("FetchBatch: %v", err)
+	}
+	if len(batch.Results) != 2 {
+		t.Fatalf("results = %d, want 2", len(batch.Results))
+	}
+	if len(gotTickers) != 2 {
+		t.Errorf("requested tickers = %v, want [BBCA TLKM]", gotTickers)
+	}
+
+	st := p.Status()
+	if st.TotalRemaining != 98 {
+		t.Errorf("TotalRemaining = %d, want 98 (header authoritative)", st.TotalRemaining)
+	}
+	if st.DailyRequests != 1 {
+		t.Errorf("DailyRequests = %d, want 1 (one HTTP call regardless of tickers)", st.DailyRequests)
+	}
+	if got := p.BatchCapacity(); got != 98 {
+		t.Errorf("BatchCapacity = %d, want 98 (smallest usable key's remaining)", got)
+	}
+	if p.NextReset() == nil {
+		t.Error("NextReset = nil, want the X-Monthly-Reset instant")
+	}
+}
+
+// TestPool_BatchCapacityIsSmallestUsableKey sizes a batch against the tightest
+// usable key, so an oversized request can never 403 away a key's units.
+func TestPool_BatchCapacityIsSmallestUsableKey(t *testing.T) {
+	clock := newFakeClock()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		remaining := 10
+		if bearerKey(r) == "k2" {
+			remaining = 3
+		}
+		if r.URL.Path == "/usage" {
+			_, _ = w.Write([]byte(usageJSON(remaining, "2026-11-30T00:00:00", true)))
+			return
+		}
+		w.Header().Set("X-Monthly-Remaining", strconv.Itoa(remaining))
+		_, _ = w.Write(batchFixture(t))
+	}))
+	defer srv.Close()
+
+	p := newTestPool(t, srv.URL, []string{"k1", "k2"}, 0, clock)
+	for i := 0; i < 2; i++ {
+		if _, err := p.FetchBatch(context.Background(), []string{"BBCA", "TLKM"}, time.Now()); err != nil {
+			t.Fatalf("FetchBatch %d: %v", i, err)
+		}
+	}
+	if got := p.Status().TotalRemaining; got != 13 {
+		t.Errorf("TotalRemaining = %d, want 13 (10 + 3)", got)
+	}
+	if got := p.BatchCapacity(); got != 3 {
+		t.Errorf("BatchCapacity = %d, want 3 (the tightest usable key)", got)
+	}
+	if got := p.Available(); got != 13 {
+		t.Errorf("Available = %d, want 13 (reserve 0)", got)
 	}
 }

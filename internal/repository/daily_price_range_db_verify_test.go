@@ -139,17 +139,20 @@ func TestDailyPriceRepository_ADTVEligibleTickers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ADTVEligibleTickers: %v", err)
 	}
-	if len(got) != 1 || got[0] != "LIQA" {
+	if len(got) != 1 || got[0].Ticker != "LIQA" {
 		t.Errorf("eligible = %v, want [LIQA] (LIQB below ADTV, LIQC below min-days)", got)
 	}
+	if got[0].ADTV < 9_000_000_000 {
+		t.Errorf("LIQA ADTV = %v, want ~10B", got[0].ADTV)
+	}
 
-	// Lower the floor → LIQB joins.
+	// Lower the floor → LIQB joins, ordered most liquid first.
 	got2, err := repo.ADTVEligibleTickers(db, from, to, 8, 500_000_000)
 	if err != nil {
 		t.Fatalf("ADTVEligibleTickers low floor: %v", err)
 	}
-	if len(got2) != 2 {
-		t.Errorf("eligible at 500M = %v, want [LIQA LIQB]", got2)
+	if len(got2) != 2 || got2[0].Ticker != "LIQA" || got2[1].Ticker != "LIQB" {
+		t.Errorf("eligible at 500M = %v, want [LIQA LIQB] (liquidity desc)", got2)
 	}
 }
 

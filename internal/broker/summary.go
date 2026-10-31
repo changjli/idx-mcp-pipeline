@@ -59,3 +59,17 @@ type ForeignFlow struct {
 	ForeignSell int64
 	NetForeign  int64
 }
+
+// MaxBatchTickers is the vendor's hard limit on tickers per batch request. It is
+// a contract constant, not a tuning knob: a larger request is rejected whole.
+const MaxBatchTickers = 50
+
+// Batch is one batch call's per-ticker outcome. Results holds the tickers that
+// parsed cleanly; Invalid holds the ones the source returned but a contract
+// invariant rejected (a ticker-day is per-ticker atomic, so one bad payload must
+// not discard the other 49). A ticker absent from both maps was absent from the
+// response and is treated as an empty (no-activity) day by the caller.
+type Batch struct {
+	Results map[string]*Result
+	Invalid map[string]error
+}

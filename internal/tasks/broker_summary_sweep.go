@@ -6,37 +6,14 @@ import (
 	"time"
 
 	"github.com/hibiken/asynq"
-	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/usecase"
 )
 
-const (
-	// SweepTaskTimeout is the task-level asynq timeout for the weekly sweep.
-	// A fresh catch-up run fetches ~3,300 days at the IPOT client's shared 2s
-	// pacing, so it routinely exceeds asynq's 30m default; the date-keyed
-	// TaskID dedup means a re-run (self-heal or manual) skips stored days.
-	// Exported because the scheduler registers the task directly (not through
-	// the graph node) and must apply the same override.
-	SweepTaskTimeout = 2 * time.Hour
-
-	// sweepWindowDays is the trailing window for both eligibility and fetch:
-	// ADTV is computed over it (stable liquidity identity, matches the anomaly
-	// detector's 20-day baseline) and only uncovered days inside it are
-	// fetched. A normal weekly run extracts ~5 new days; a missed week
-	// self-heals because the next run's window still covers the gap.
-	sweepWindowDays = 21
-
-	// sweepMinDays is the minimum trading days in the window for eligibility —
-	// excludes suspended/dead names that traded briefly then halted.
-	sweepMinDays = 8
-)
-
 // BrokerSummarySweepPayload is the payload for an idx:broker_stock_summary_sweep
-// task: one date (the sweep day), the window is derived server-side.
+// task: one date (the anchor day to sweep).
 type BrokerSummarySweepPayload struct {
 	Date string `json:"date"` // YYYY-MM-DD
 }
@@ -49,19 +26,28 @@ func EnqueueBrokerSummarySweep(enq pipeline.Enqueuer, date time.Time) (*asynq.Ta
 }
 
 // NewBrokerSummarySweepHandler returns an asynq handler for the
-// idx:broker_stock_summary_sweep task type (issue 14b): resolve the sweep day,
-// compute the ADTV-eligible universe over the trailing window, run the shared
-// sweep usecase (skip-if-stored + fetch+persist, paced by the IPOT client),
-// and record source_status. minADTV is the liquidity floor (config
-// anomaly.min_adtv_value); <= 0 falls back to the anomaly detector's own
-// DefaultADTVMinValue so one bar spans the pipeline. A full-market failure
-// (every eligible day failed) returns an error so asynq retries; partial
-// failures are isolated per day inside the usecase.
+// idx:broker_stock_summary_sweep task type: sweep one anchor day's ADTV-eligible
+// universe through Index Alpha in ≤50-ticker batches, inside the key pool's
+// quota, and report through Source Status.
+//
+// minADTV is the liquidity floor (config anomaly.min_adtv_value); <= 0 falls
+// back to the anomaly detector's own DefaultADTVMinValue so one bar spans the
+// pipeline. The handler is the single writer to the idx:broker_stock_summary
+// Source Status row — the same row the MCP read tools consult — so a sweep feeds
+// their staleness metadata.
+//
+// Outcomes:
+//   - completed plan → Success, watermark = anchor day.
+//   - quota/daily-cap/rate-limit stop → one Failure with the real shortfall and
+//     nil (no asynq retry: retrying an exhausted quota only spins), rows already
+//     stored stay intact.
+//   - a batch-level error, or persist failures with nothing written → Failure
+//     and an error so asynq retries.
+//   - an empty eligible universe (non-trading day, or prices not yet stored) is a
+//     no-op Success that carries the watermark forward.
 func NewBrokerSummarySweepHandler(
 	log *logrus.Logger,
-	db *sqlx.DB,
 	uc *usecase.BrokerStockSummaryUseCase,
-	dailyPriceRepo *repository.DailyPriceRepository,
 	recorder *pipeline.SourceStatusRecorder,
 	minADTV int64,
 ) asynq.HandlerFunc {
@@ -70,8 +56,9 @@ func NewBrokerSummarySweepHandler(
 	}
 	stage := pipeline.NewIngestStage(TypeBrokerStockSummarySweep, log, nil, 3)
 	return func(ctx context.Context, t *asynq.Task) error {
-		// The weekly scheduler fires this task with a nil payload; the sweep
-		// defaults to today server-side, same convention as pipeline:daily.
+		// A scheduler/chain fires the task with the day payload; a manual
+		// enqueue without one defaults to today, same convention as
+		// pipeline:daily.
 		date := time.Now()
 		if len(t.Payload()) > 0 {
 			p, err := pipeline.DecodeTask[BrokerSummarySweepPayload](t)
@@ -83,48 +70,99 @@ func NewBrokerSummarySweepHandler(
 				return err
 			}
 		}
-		dateStr := date.Format("2006-01-02")
-		from := date.AddDate(0, 0, -sweepWindowDays)
-		fromStr := from.Format("2006-01-02")
-
-		// Universe = ADTV-eligible tickers over the trailing window, computed
-		// fresh each run (membership drifts with the market). Zero IPOT calls
-		// to size — pure daily_prices aggregation.
-		tickers, err := dailyPriceRepo.ADTVEligibleTickers(db, from, date, sweepMinDays, minADTV)
-		if err != nil {
-			return fmt.Errorf("resolve ADTV-eligible tickers: %w", err)
-		}
+		anchor := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
+		dateStr := anchor.Format("2006-01-02")
 
 		taskID := pipeline.TaskID(ctx)
-		f := stage.StartFetch(taskID, "sweeping market broker summaries",
-			logrus.Fields{"date": dateStr, "window_from": fromStr, "eligible": len(tickers)})
+		f := stage.StartFetch(taskID, "sweeping anchor-day broker summaries",
+			logrus.Fields{"date": dateStr})
 
-		res, err := uc.SweepStockBrokerSummaries(ctx, tickers, from, date)
+		res, err := uc.SweepAnchorDay(ctx, anchor, usecase.SweepOptions{MinADTV: minADTV})
 		if err != nil {
 			f.Fail("broker summary sweep failed", err, logrus.Fields{"date": dateStr})
 			recorder.Failure(TypeBrokerStockSummary, BrokerStockSummaryMaxAgeSeconds, dateStr, err)
 			return err
 		}
 
-		// Every eligible day failed (nothing stored, nothing already present) →
-		// indistinguishable from an outage; return an error so asynq retries.
-		if res.Tickers > 0 && res.Fetched == 0 && res.Skipped == 0 && res.Failed > 0 {
-			err := fmt.Errorf("broker summary sweep %s: all %d eligible days failed", dateStr, res.Failed)
-			f.Fail("broker summary sweep total failure", err, logrus.Fields{"date": dateStr})
+		fields := logrus.Fields{
+			"date":        dateStr,
+			"window_from": res.WindowFrom,
+			"eligible":    res.Eligible,
+			"stored":      res.Stored,
+			"candidates":  res.Candidates,
+			"planned":     res.Planned,
+			"attempted":   res.Attempted,
+			"fetched":     res.Fetched,
+			"empty":       res.Empty,
+			"invalid":     res.Invalid,
+			"failed":      res.Failed,
+			"chunks":      res.Chunks,
+			"units_spent": res.UnitsSpent,
+			"shortfall":   res.Shortfall,
+			"uncovered":   res.Uncovered,
+		}
+
+		// A shortfall is not a parse/network failure: record one Failure with
+		// the real numbers and do not retry a known-exhausted key.
+		if res.QuotaStopped || res.DailyCapped || res.RateLimited || res.NoCapacity {
+			short := sweepShortfallError(res, uc.Budget.NextReset())
+			f.Fail("broker summary sweep stopped short", short, fields)
+			recorder.Failure(TypeBrokerStockSummary, BrokerStockSummaryMaxAgeSeconds, dateStr, short)
+			return nil
+		}
+
+		// Everything the run requested was rejected by a contract invariant:
+		// contract drift, not a transient error — retrying would spend quota
+		// again for the same result.
+		if res.Attempted > 0 && res.Fetched == 0 && res.Empty == 0 && res.Invalid > 0 {
+			err := fmt.Errorf("broker summary sweep %s: all %d attempted ticker-days were invalid", dateStr, res.Attempted)
+			f.Fail("broker summary sweep rejected by the source", err, fields)
+			recorder.Failure(TypeBrokerStockSummary, BrokerStockSummaryMaxAgeSeconds, dateStr, err)
+			return nil
+		}
+		// Parsed but not persisted with nothing written: a DB problem that may
+		// clear, so fail and let asynq retry.
+		if res.Attempted > 0 && res.Fetched == 0 && res.Failed > 0 {
+			err := fmt.Errorf("broker summary sweep %s: %d ticker-days could not be persisted", dateStr, res.Failed)
+			f.Fail("broker summary sweep persist failure", err, fields)
 			recorder.Failure(TypeBrokerStockSummary, BrokerStockSummaryMaxAgeSeconds, dateStr, err)
 			return err
 		}
 
-		// Advance the watermark only when the window actually produced/confirmed
-		// data; an empty window (no eligible tickers) carries the prior
-		// watermark forward.
-		var lastGood *time.Time
-		if res.Fetched > 0 || res.Skipped > 0 {
-			lastGood = &date
+		// The watermark is the anchor day of a run that completed its plan and
+		// actually produced or confirmed coverage. An all-empty day (vendor not
+		// published yet) carries the watermark forward instead of claiming the
+		// day.
+		var watermark *time.Time
+		if res.Completed() && res.Eligible > 0 && (res.Fetched > 0 || res.Stored > 0) {
+			watermark = &anchor
 		}
-		recorder.Success(TypeBrokerStockSummary, BrokerStockSummaryMaxAgeSeconds, lastGood)
-		f.Ok("broker summary sweep complete",
-			logrus.Fields{"date": dateStr, "window_from": fromStr, "tickers": res.Tickers, "days": res.Days, "skipped": res.Skipped, "fetched": res.Fetched, "empty": res.Empty, "failed": res.Failed})
+		recorder.Success(TypeBrokerStockSummary, BrokerStockSummaryMaxAgeSeconds, watermark)
+		f.Ok("broker summary sweep complete", fields)
 		return nil
 	}
+}
+
+// sweepShortfallError explains why a run did not complete its plan. Quota and
+// daily-cap exhaustion are deliberately distinct: one clears at the rolling
+// period end, the other at local midnight.
+func sweepShortfallError(res *usecase.BrokerSummarySweepResult, reset *time.Time) error {
+	var cause string
+	switch {
+	case res.QuotaStopped:
+		cause = "Index Alpha quota exhausted"
+		if reset != nil {
+			cause += " until " + reset.Format(time.RFC3339)
+		}
+	case res.DailyCapped:
+		cause = "Index Alpha daily request cap reached; usable again tomorrow"
+	case res.RateLimited:
+		cause = "Index Alpha rate limited; all keys are cooling down"
+	case res.NoCapacity:
+		cause = "no usable Index Alpha key (quota exhausted, daily cap reached, or cooling)"
+	default:
+		cause = "sweep incomplete"
+	}
+	return fmt.Errorf("%s: swept %d of %d candidates (%d planned, %d eligible, %d already stored)",
+		cause, res.Attempted, res.Candidates, res.Planned, res.Eligible, res.Stored)
 }

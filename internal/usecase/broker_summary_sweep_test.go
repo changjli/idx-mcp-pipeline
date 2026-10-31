@@ -16,43 +16,125 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
-// sweepFetcher returns a per-ticker canned result: normal data by default, an
-// empty Result for tickers in empty, an error for tickers in fail. Records
-// every fetch so tests can assert upstream call count (pacing/quota honesty).
-type sweepFetcher struct {
-	empty map[string]bool
-	fail  map[string]bool
-	calls []string
+// ─── fakes ─────────────────────────────────────────────────────────────────
+
+// sweepBudgetFake is a fixed quota view. EnsureSeeded records the free re-seed
+// the sweep performs before planning.
+type sweepBudgetFake struct {
+	available int
+	perKey    int
+	seeded    int
+	seedErr   error
 }
 
-func (f *sweepFetcher) Fetch(_ context.Context, ticker string, _ time.Time) (*broker.Result, error) {
-	f.calls = append(f.calls, ticker)
-	if f.fail[ticker] {
-		return nil, errors.New("ipot: upstream error: status=500")
+func (b *sweepBudgetFake) Available() int        { return b.available }
+func (b *sweepBudgetFake) BatchCapacity() int    { return b.perKey }
+func (b *sweepBudgetFake) NextReset() *time.Time { return nil }
+func (b *sweepBudgetFake) EnsureSeeded(context.Context) error {
+	b.seeded++
+	return b.seedErr
+}
+
+// sweepBatchFetcher answers batches from per-ticker behaviour maps. failAfter
+// makes the call after N successes fail with failErr, simulating a quota stop
+// mid-run. calls records the tickers in each requested batch.
+type sweepBatchFetcher struct {
+	invalid   map[string]bool
+	empty     map[string]bool
+	failAfter int
+	failErr   error
+	calls     [][]string
+}
+
+func (f *sweepBatchFetcher) Fetch(_ context.Context, _ string, _ time.Time) (*broker.Result, error) {
+	return sweepBatchResult(), nil
+}
+
+func (f *sweepBatchFetcher) FetchBatch(_ context.Context, tickers []string, _ time.Time) (*broker.Batch, error) {
+	f.calls = append(f.calls, append([]string(nil), tickers...))
+	if f.failErr != nil && f.failAfter >= 0 && len(f.calls) > f.failAfter {
+		return nil, f.failErr
 	}
-	if f.empty[ticker] {
-		return &broker.Result{}, nil
+	b := &broker.Batch{
+		Results: make(map[string]*broker.Result, len(tickers)),
+		Invalid: make(map[string]error),
 	}
+	for _, t := range tickers {
+		switch {
+		case f.invalid[t]:
+			b.Invalid[t] = errors.New("Σbuy ≠ Σsell")
+		case f.empty[t]:
+			// absent from the response = an empty day
+		default:
+			b.Results[t] = sweepBatchResult()
+		}
+	}
+	return b, nil
+}
+
+func sweepBatchResult() *broker.Result {
 	return &broker.Result{
 		Buyers:  []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
 		Sellers: []broker.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
-		Totals:  broker.Totals{TVal: 1_500_000_000, FNVal: i64p(100_000_000), TLot: 150, Avg: 100},
-	}, nil
+		Totals:  broker.Totals{TVal: 1_500_000_000, TLot: 150, Avg: 100},
+	}
 }
 
-func newSweepTestUC(t *testing.T, db *sqlx.DB, f *sweepFetcher) *BrokerStockSummaryUseCase {
+func newSweepTestUC(t *testing.T, db *sqlx.DB, f *sweepBatchFetcher, b *sweepBudgetFake) *BrokerStockSummaryUseCase {
 	t.Helper()
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
 	return NewBrokerStockSummaryUseCase(
-		db, log, validator.New(), f,
+		db, log, validator.New(), f, // the single-ticker fetcher is unused by the sweep
 		repository.NewBrokerStockSummaryRepository(log),
 		repository.NewDailyPriceRepository(log),
+		WithBatchSource(f, b),
 	)
 }
 
-// sweepCleanup scopes cleanup to a set of test tickers + the sweep window's
-// daily_prices rows (shared across all sweep tests).
+// ─── fixtures ──────────────────────────────────────────────────────────────
+
+// sweepAnchor is a far-future Friday: no real market rows exist on these dates,
+// so the sweep is isolated on a shared DB.
+var sweepAnchor = time.Date(2099, 2, 20, 0, 0, 0, 0, time.UTC)
+
+// sweepWindowDays are 9 trading days ending on the anchor, inside the sweep's
+// trailing-21-day eligibility window.
+var sweepWindowDays = []time.Time{
+	time.Date(2099, 2, 9, 0, 0, 0, 0, time.UTC),
+	time.Date(2099, 2, 10, 0, 0, 0, 0, time.UTC),
+	time.Date(2099, 2, 11, 0, 0, 0, 0, time.UTC),
+	time.Date(2099, 2, 12, 0, 0, 0, 0, time.UTC),
+	time.Date(2099, 2, 13, 0, 0, 0, 0, time.UTC),
+	time.Date(2099, 2, 16, 0, 0, 0, 0, time.UTC),
+	time.Date(2099, 2, 17, 0, 0, 0, 0, time.UTC),
+	time.Date(2099, 2, 18, 0, 0, 0, 0, time.UTC),
+	time.Date(2099, 2, 19, 0, 0, 0, 0, time.UTC),
+}
+
+const sweepADTVFloor = 5_000_000_000
+
+// seedSweepTicker seeds an eligible ticker: 9 trading days of a given daily
+// value inside the window.
+func seedSweepTicker(t *testing.T, db *sqlx.DB, ticker string, dailyValue int64) {
+	t.Helper()
+	db.MustExec("INSERT INTO tickers (code, name, active) VALUES ($1, $2, true) ON CONFLICT (code) DO NOTHING", ticker, ticker)
+	for _, d := range sweepWindowDays {
+		db.MustExec(`INSERT INTO daily_prices (ticker, trading_day, open, high, low, close, volume, value, frequency, source)
+			VALUES ($1, $2, 100, 101, 99, 100, 1000, $3, 10, 'idx')
+			ON CONFLICT (ticker, trading_day) DO NOTHING`, ticker, d, dailyValue)
+	}
+}
+
+// seedObserved records a prior stored broker day for a ticker, which is what
+// the rotation orders on.
+func seedObserved(t *testing.T, db *sqlx.DB, ticker string, day time.Time) {
+	t.Helper()
+	db.MustExec(`INSERT INTO broker_stock_summary_totals (ticker, trading_day, t_val, f_nval, t_lot, avg, others_net)
+		VALUES ($1, $2, 1, NULL, 1, 1, 0)
+		ON CONFLICT (ticker, trading_day) DO NOTHING`, ticker, day)
+}
+
 func sweepCleanup(t *testing.T, db *sqlx.DB, tickers []string) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -65,197 +147,275 @@ func sweepCleanup(t *testing.T, db *sqlx.DB, tickers []string) {
 	})
 }
 
-// seedTradedRange seeds active tickers with a daily_prices row on each of the
-// given days (the sweep window's trading-day calendar).
-func seedTradedRange(t *testing.T, db *sqlx.DB, tickers []string, days []time.Time) {
+func connectSweepDB(t *testing.T) *sqlx.DB {
 	t.Helper()
-	for _, tk := range tickers {
-		for _, day := range days {
-			seedTickerAndPrice(t, db, tk, day)
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	return sqlx.MustConnect("pgx", dsn)
+}
+
+// ─── pure planning rules ───────────────────────────────────────────────────
+
+func TestNextChunkSize(t *testing.T) {
+	tests := []struct {
+		name                          string
+		perKey, budgetLeft, candsLeft int
+		want                          int
+	}{
+		{"vendor cap", 150, 200, 200, broker.MaxBatchTickers},
+		{"per-key cap", 7, 200, 200, 7},
+		{"budget cap", 150, 12, 200, 12},
+		{"candidate cap", 150, 200, 3, 3},
+		{"no usable key", 0, 200, 200, 0},
+		{"budget spent", 50, 0, 200, 0},
+		{"no candidates", 50, 200, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := nextChunkSize(tt.perKey, tt.budgetLeft, tt.candsLeft); got != tt.want {
+				t.Errorf("nextChunkSize(%d,%d,%d) = %d, want %d", tt.perKey, tt.budgetLeft, tt.candsLeft, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOrderSweepCandidates_LRUThenLiquidity(t *testing.T) {
+	cands := []repository.LiquidityTicker{
+		{Ticker: "HIGH", ADTV: 10},
+		{Ticker: "OLD", ADTV: 1},
+		{Ticker: "NEW", ADTV: 20},
+		{Ticker: "LOW", ADTV: 2},
+	}
+	lastSeen := map[string]time.Time{
+		"OLD": sweepAnchor.AddDate(0, 0, -10),
+		"NEW": sweepAnchor.AddDate(0, 0, -1),
+	}
+	got := orderSweepCandidates(cands, lastSeen)
+	// Never observed first (HIGH then LOW, ADTV desc), then oldest, then newest.
+	want := []string{"HIGH", "LOW", "OLD", "NEW"}
+	if len(got) != len(want) {
+		t.Fatalf("ordered = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ordered = %v, want %v", got, want)
 		}
 	}
 }
 
-// sweepWindow is a far-future Mon–Fri window: no real market data exists on
-// these dates, so the sweep is isolated from a shared DB's real rows.
-var sweepWindow = struct {
-	from time.Time
-	to   time.Time
-	days []time.Time
-}{
-	from: time.Date(2099, 1, 5, 0, 0, 0, 0, time.UTC),
-	to:   time.Date(2099, 1, 9, 0, 0, 0, 0, time.UTC),
-	days: []time.Time{
-		time.Date(2099, 1, 5, 0, 0, 0, 0, time.UTC),
-		time.Date(2099, 1, 6, 0, 0, 0, 0, time.UTC),
-		time.Date(2099, 1, 7, 0, 0, 0, 0, time.UTC),
-		time.Date(2099, 1, 8, 0, 0, 0, 0, time.UTC),
-		time.Date(2099, 1, 9, 0, 0, 0, 0, time.UTC),
-	},
-}
+// ─── DB-backed behaviour ───────────────────────────────────────────────────
 
-func TestSweepStockBrokerSummaries_FetchesAndPersistsTraders(t *testing.T) {
-	dsn := os.Getenv("IDX_MCP_DB_DSN")
-	if dsn == "" {
-		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+func TestSweepAnchorDay_FetchesAndPersists(t *testing.T) {
+	db := connectSweepDB(t)
+	tickers := []string{"SWPA", "SWPB", "SWPC"}
+	for _, tk := range tickers {
+		seedSweepTicker(t, db, tk, 10_000_000_000)
 	}
-	db := sqlx.MustConnect("pgx", dsn)
-	f := &sweepFetcher{}
-	uc := newSweepTestUC(t, db, f)
-
-	tickers := []string{"TESTA", "TESTB", "TESTC"}
-	seedTradedRange(t, db, tickers, sweepWindow.days)
 	sweepCleanup(t, db, tickers)
+	f := &sweepBatchFetcher{}
+	b := &sweepBudgetFake{available: 100, perKey: 50}
+	uc := newSweepTestUC(t, db, f, b)
 
-	res, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, sweepWindow.from, sweepWindow.to)
+	res, err := uc.SweepAnchorDay(context.Background(), sweepAnchor, SweepOptions{MinADTV: sweepADTVFloor})
 	if err != nil {
-		t.Fatalf("SweepStockBrokerSummaries: %v", err)
+		t.Fatalf("SweepAnchorDay: %v", err)
 	}
-	if res.Tickers != 3 || res.Days != 15 || res.Fetched != 15 {
-		t.Errorf("res = %+v, want tickers=3 days=15 fetched=15", res)
+	if res.Eligible != 3 || res.Stored != 0 || res.Planned != 3 || res.Attempted != 3 || res.Fetched != 3 {
+		t.Errorf("res = %+v, want eligible=3 planned=3 attempted=3 fetched=3", res)
 	}
-	if res.Skipped != 0 || res.Empty != 0 || res.Failed != 0 {
-		t.Errorf("unexpected counters: %+v", res)
+	if res.Chunks != 1 || res.UnitsSpent != 3 {
+		t.Errorf("chunks=%d units=%d, want 1 chunk / 3 units", res.Chunks, res.UnitsSpent)
 	}
-	if len(f.calls) != 15 {
-		t.Fatalf("expected 15 upstream fetches (3 tickers × 5 days), got %d", len(f.calls))
+	if b.seeded != 1 {
+		t.Errorf("EnsureSeeded calls = %d, want 1 (free re-seed before planning)", b.seeded)
+	}
+	if len(f.calls) != 1 || len(f.calls[0]) != 3 {
+		t.Fatalf("calls = %v, want one batch of 3", f.calls)
 	}
 
-	// Persisted: 15 days × 2 rows.
-	stored, err := uc.Repo.FindByDateRangeAll(db, sweepWindow.from, sweepWindow.to)
-	if err != nil {
-		t.Fatalf("FindByDateRangeAll: %v", err)
+	var rows int
+	if err := db.Get(&rows, "SELECT COUNT(*) FROM broker_stock_summaries WHERE trading_day = $1", sweepAnchor); err != nil {
+		t.Fatalf("count rows: %v", err)
 	}
-	if len(stored) != 30 {
-		t.Errorf("expected 30 persisted rows, got %d", len(stored))
+	if rows != 6 {
+		t.Errorf("persisted rows = %d, want 6 (3 tickers × 2 sides)", rows)
 	}
 }
 
-// Second sweep of the same window must skip already-stored days without any
-// upstream call — the sweep's quota-honesty property.
-func TestSweepStockBrokerSummaries_SkipsStoredTickers(t *testing.T) {
-	dsn := os.Getenv("IDX_MCP_DB_DSN")
-	if dsn == "" {
-		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+func TestSweepAnchorDay_SkipsStoredTickerDays(t *testing.T) {
+	db := connectSweepDB(t)
+	tickers := []string{"SWPA", "SWPB"}
+	for _, tk := range tickers {
+		seedSweepTicker(t, db, tk, 10_000_000_000)
 	}
-	db := sqlx.MustConnect("pgx", dsn)
-	f := &sweepFetcher{}
-	uc := newSweepTestUC(t, db, f)
-
-	tickers := []string{"TESTA", "TESTB"}
-	seedTradedRange(t, db, tickers, sweepWindow.days)
 	sweepCleanup(t, db, tickers)
+	f := &sweepBatchFetcher{}
+	uc := newSweepTestUC(t, db, f, &sweepBudgetFake{available: 100, perKey: 50})
 
-	if _, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, sweepWindow.from, sweepWindow.to); err != nil {
+	if _, err := uc.SweepAnchorDay(context.Background(), sweepAnchor, SweepOptions{MinADTV: sweepADTVFloor}); err != nil {
 		t.Fatalf("first sweep: %v", err)
 	}
-	callsAfterFirst := len(f.calls)
+	calls := len(f.calls)
 
-	res, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, sweepWindow.from, sweepWindow.to)
+	res, err := uc.SweepAnchorDay(context.Background(), sweepAnchor, SweepOptions{MinADTV: sweepADTVFloor})
 	if err != nil {
 		t.Fatalf("second sweep: %v", err)
 	}
-	if res.Skipped != 10 || res.Fetched != 0 {
-		t.Errorf("second sweep = %+v, want skipped=10 fetched=0", res)
+	if res.Stored != 2 || res.Planned != 0 || res.Attempted != 0 || res.Fetched != 0 {
+		t.Errorf("second sweep = %+v, want stored=2 planned=0 attempted=0", res)
 	}
-	if len(f.calls) != callsAfterFirst {
-		t.Errorf("second sweep made upstream calls: %d (was %d)", len(f.calls), callsAfterFirst)
-	}
-}
-
-// A ticker with no daily_prices rows in the window contributes no days and no
-// fetches — the ADTV universe filter upstream already excluded it, and the
-// sweep's per-ticker trading-day query is the second gate.
-func TestSweepStockBrokerSummaries_SkipsUntradedTickers(t *testing.T) {
-	dsn := os.Getenv("IDX_MCP_DB_DSN")
-	if dsn == "" {
-		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
-	}
-	db := sqlx.MustConnect("pgx", dsn)
-	f := &sweepFetcher{}
-	uc := newSweepTestUC(t, db, f)
-
-	// TESTB has no daily_prices rows in the window → not traded → no days.
-	seedTradedRange(t, db, []string{"TESTA"}, sweepWindow.days)
-	for _, tk := range []string{"TESTB"} {
-		db.MustExec("INSERT INTO tickers (code, name, active) VALUES ($1, $2, true) ON CONFLICT (code) DO NOTHING", tk, tk)
-	}
-	sweepCleanup(t, db, []string{"TESTA", "TESTB"})
-
-	res, err := uc.SweepStockBrokerSummaries(context.Background(), []string{"TESTA", "TESTB"}, sweepWindow.from, sweepWindow.to)
-	if err != nil {
-		t.Fatalf("SweepStockBrokerSummaries: %v", err)
-	}
-	if res.Tickers != 2 || res.Days != 5 || res.Fetched != 5 {
-		t.Errorf("res = %+v, want tickers=2 days=5 fetched=5", res)
-	}
-	if len(f.calls) != 5 {
-		t.Errorf("expected 5 upstream fetches (TESTA only), got %d", len(f.calls))
+	if len(f.calls) != calls {
+		t.Errorf("second sweep made %d extra batch calls", len(f.calls)-calls)
 	}
 }
 
-// A window with no daily_prices rows at all is a zero-fetch sweep — the
-// per-ticker trading-day query IS the calendar.
-func TestSweepStockBrokerSummaries_NonTradingDayZeroFetch(t *testing.T) {
-	dsn := os.Getenv("IDX_MCP_DB_DSN")
-	if dsn == "" {
-		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+func TestSweepAnchorDay_BudgetCapsAndPrefersLiquidity(t *testing.T) {
+	db := connectSweepDB(t)
+	// Five eligible names, descending liquidity. None observed → liquidity order.
+	seed := map[string]int64{
+		"SWP1": 12_000_000_000,
+		"SWP2": 11_000_000_000,
+		"SWP3": 10_000_000_000,
+		"SWP4": 9_000_000_000,
+		"SWP5": 8_000_000_000,
 	}
-	db := sqlx.MustConnect("pgx", dsn)
-	f := &sweepFetcher{}
-	uc := newSweepTestUC(t, db, f)
-
-	// No daily_prices rows at all in the window.
-	tickers := []string{"TESTA", "TESTB"}
-	for _, tk := range tickers {
-		db.MustExec("INSERT INTO tickers (code, name, active) VALUES ($1, $2, true) ON CONFLICT (code) DO NOTHING", tk, tk)
+	tickers := make([]string, 0, len(seed))
+	for tk, v := range seed {
+		seedSweepTicker(t, db, tk, v)
+		tickers = append(tickers, tk)
 	}
 	sweepCleanup(t, db, tickers)
+	f := &sweepBatchFetcher{}
+	uc := newSweepTestUC(t, db, f, &sweepBudgetFake{available: 2, perKey: 50})
 
-	res, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, sweepWindow.from, sweepWindow.to)
+	res, err := uc.SweepAnchorDay(context.Background(), sweepAnchor, SweepOptions{MinADTV: sweepADTVFloor})
 	if err != nil {
-		t.Fatalf("SweepStockBrokerSummaries: %v", err)
+		t.Fatalf("SweepAnchorDay: %v", err)
 	}
-	if res.Tickers != 2 || res.Days != 0 || res.Fetched != 0 {
-		t.Errorf("res = %+v, want tickers=2 days=0 fetched=0", res)
+	if res.Eligible != 5 || res.Planned != 2 || res.Attempted != 2 || res.Shortfall != 0 {
+		t.Errorf("res = %+v, want eligible=5 planned=2 attempted=2", res)
+	}
+	if res.Candidates != 5 || res.Uncovered != 3 {
+		t.Errorf("candidates=%d uncovered=%d, want 5/3 (rotation leaves a coverage gap)", res.Candidates, res.Uncovered)
+	}
+	if len(f.calls) != 1 || len(f.calls[0]) != 2 {
+		t.Fatalf("calls = %v, want one batch of 2", f.calls)
+	}
+	if f.calls[0][0] != "SWP1" || f.calls[0][1] != "SWP2" {
+		t.Errorf("batch = %v, want the two most liquid [SWP1 SWP2]", f.calls[0])
+	}
+}
+
+func TestSweepAnchorDay_RotationPrefersLeastRecentlyObserved(t *testing.T) {
+	db := connectSweepDB(t)
+	// SWPA was observed yesterday (anchor-1); SWPB never. Budget 1 → SWPB.
+	seedSweepTicker(t, db, "SWPA", 12_000_000_000) // more liquid, but recently seen
+	seedSweepTicker(t, db, "SWPB", 8_000_000_000)
+	seedObserved(t, db, "SWPA", sweepAnchor.AddDate(0, 0, -1))
+	sweepCleanup(t, db, []string{"SWPA", "SWPB"})
+	f := &sweepBatchFetcher{}
+	uc := newSweepTestUC(t, db, f, &sweepBudgetFake{available: 1, perKey: 50})
+
+	res, err := uc.SweepAnchorDay(context.Background(), sweepAnchor, SweepOptions{MinADTV: sweepADTVFloor})
+	if err != nil {
+		t.Fatalf("SweepAnchorDay: %v", err)
+	}
+	if res.Planned != 1 || len(f.calls) != 1 || len(f.calls[0]) != 1 {
+		t.Fatalf("res=%+v calls=%v, want one ticker", res, f.calls)
+	}
+	if f.calls[0][0] != "SWPB" {
+		t.Errorf("rotation picked %s, want the never-observed SWPB", f.calls[0][0])
+	}
+}
+
+func TestSweepAnchorDay_IsolatesInvalidAndEmpty(t *testing.T) {
+	db := connectSweepDB(t)
+	tickers := []string{"SWPA", "SWPB", "SWPC"}
+	for _, tk := range tickers {
+		seedSweepTicker(t, db, tk, 10_000_000_000)
+	}
+	sweepCleanup(t, db, tickers)
+	f := &sweepBatchFetcher{
+		invalid: map[string]bool{"SWPB": true},
+		empty:   map[string]bool{"SWPC": true},
+	}
+	uc := newSweepTestUC(t, db, f, &sweepBudgetFake{available: 100, perKey: 50})
+
+	res, err := uc.SweepAnchorDay(context.Background(), sweepAnchor, SweepOptions{MinADTV: sweepADTVFloor})
+	if err != nil {
+		t.Fatalf("SweepAnchorDay: %v", err)
+	}
+	if res.Fetched != 1 || res.Invalid != 1 || res.Empty != 1 {
+		t.Errorf("res = %+v, want fetched=1 invalid=1 empty=1", res)
+	}
+	if res.Attempted != 3 || res.Shortfall != 0 {
+		t.Errorf("attempted=%d shortfall=%d, want 3/0 (the whole batch was paid for)", res.Attempted, res.Shortfall)
+	}
+	var rows int
+	if err := db.Get(&rows, "SELECT COUNT(*) FROM broker_stock_summaries WHERE trading_day = $1", sweepAnchor); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rows != 2 {
+		t.Errorf("persisted rows = %d, want 2 (only the valid ticker)", rows)
+	}
+}
+
+func TestSweepAnchorDay_QuotaStopKeepsEarlierBatches(t *testing.T) {
+	db := connectSweepDB(t)
+	tickers := []string{"SWP1", "SWP2", "SWP3", "SWP4", "SWP5"}
+	for _, tk := range tickers {
+		seedSweepTicker(t, db, tk, 10_000_000_000)
+	}
+	sweepCleanup(t, db, tickers)
+	// perKey=2 → batches of 2; the second call hits the quota wall.
+	f := &sweepBatchFetcher{failAfter: 1, failErr: broker.ErrQuotaExhausted}
+	uc := newSweepTestUC(t, db, f, &sweepBudgetFake{available: 10, perKey: 2})
+
+	res, err := uc.SweepAnchorDay(context.Background(), sweepAnchor, SweepOptions{MinADTV: sweepADTVFloor})
+	if err != nil {
+		t.Fatalf("SweepAnchorDay returned an error for a quota stop: %v", err)
+	}
+	if !res.QuotaStopped || res.Planned != 5 || res.Attempted != 2 || res.Shortfall != 3 {
+		t.Errorf("res = %+v, want quota_stopped planned=5 attempted=2 shortfall=3", res)
+	}
+	if res.Uncovered != 3 {
+		t.Errorf("uncovered = %d, want 3", res.Uncovered)
+	}
+	if res.Fetched != 2 {
+		t.Errorf("fetched = %d, want 2 (first batch kept)", res.Fetched)
+	}
+	var rows int
+	if err := db.Get(&rows, "SELECT COUNT(*) FROM broker_stock_summaries WHERE trading_day = $1", sweepAnchor); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rows != 4 {
+		t.Errorf("persisted rows = %d, want 4 (first batch intact)", rows)
+	}
+}
+
+func TestSweepAnchorDay_NoBudget(t *testing.T) {
+	db := connectSweepDB(t)
+	tickers := []string{"SWPA", "SWPB"}
+	for _, tk := range tickers {
+		seedSweepTicker(t, db, tk, 10_000_000_000)
+	}
+	sweepCleanup(t, db, tickers)
+	f := &sweepBatchFetcher{}
+	uc := newSweepTestUC(t, db, f, &sweepBudgetFake{available: 0, perKey: 50})
+
+	res, err := uc.SweepAnchorDay(context.Background(), sweepAnchor, SweepOptions{MinADTV: sweepADTVFloor})
+	if err != nil {
+		t.Fatalf("SweepAnchorDay: %v", err)
+	}
+	if !res.NoCapacity || res.Planned != 0 || res.Attempted != 0 {
+		t.Errorf("res = %+v, want no_capacity planned=0", res)
+	}
+	if res.Uncovered != 2 {
+		t.Errorf("uncovered = %d, want 2 (both candidates left for a later run)", res.Uncovered)
 	}
 	if len(f.calls) != 0 {
-		t.Errorf("empty-window sweep made upstream calls: %d", len(f.calls))
-	}
-}
-
-// Empty (IPOT not yet published) and failed (upstream 5xx) tickers are counted
-// separately and never abort the sweep; the good ticker still persists.
-func TestSweepStockBrokerSummaries_IsolatesEmptyAndFailed(t *testing.T) {
-	dsn := os.Getenv("IDX_MCP_DB_DSN")
-	if dsn == "" {
-		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
-	}
-	db := sqlx.MustConnect("pgx", dsn)
-	f := &sweepFetcher{empty: map[string]bool{"TESTB": true}, fail: map[string]bool{"TESTC": true}}
-	uc := newSweepTestUC(t, db, f)
-
-	tickers := []string{"TESTA", "TESTB", "TESTC"}
-	seedTradedRange(t, db, tickers, sweepWindow.days)
-	sweepCleanup(t, db, tickers)
-
-	res, err := uc.SweepStockBrokerSummaries(context.Background(), tickers, sweepWindow.from, sweepWindow.to)
-	if err != nil {
-		t.Fatalf("SweepStockBrokerSummaries: %v", err)
-	}
-	if res.Fetched != 5 || res.Empty != 5 || res.Failed != 5 {
-		t.Errorf("res = %+v, want fetched=5 empty=5 failed=5", res)
-	}
-	if res.Skipped != 0 {
-		t.Errorf("unexpected skipped: %+v", res)
-	}
-
-	// Only the good ticker persisted (5 days × 2 rows).
-	stored, err := uc.Repo.FindByDateRangeAll(db, sweepWindow.from, sweepWindow.to)
-	if err != nil {
-		t.Fatalf("FindByDateRangeAll: %v", err)
-	}
-	if len(stored) != 10 {
-		t.Errorf("expected 10 persisted rows (TESTA only), got %d", len(stored))
+		t.Errorf("calls = %v, want none", f.calls)
 	}
 }

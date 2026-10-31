@@ -111,10 +111,10 @@ func buildMultiRowUpsert(rows []entity.BrokerStockSummary) (string, []interface{
 }
 
 // HasStoredDay reports whether any broker_stock_summaries rows exist for a
-// ticker+day. Cheap EXISTS check — the weekly sweep's skip-if-stored
-// guard. Idempotency note: rows present means the day is already covered, so
-// the sweep skips the ticker entirely (no IPOT call); a race between sweep and
-// an anomaly-gated refetch is harmless because UpsertDay replaces wholesale.
+// ticker+day. Cheap EXISTS check — the sweep's skip-if-stored guard.
+// Idempotency note: rows present means the day is already covered, so the
+// sweep skips the ticker entirely; a race between the sweep and an on-demand
+// refetch is harmless because UpsertDay replaces wholesale.
 func (r *BrokerStockSummaryRepository) HasStoredDay(db *sqlx.DB, ticker string, day time.Time) (bool, error) {
 	var exists bool
 	err := db.Get(&exists,
@@ -122,6 +122,62 @@ func (r *BrokerStockSummaryRepository) HasStoredDay(db *sqlx.DB, ticker string, 
 		ticker, day,
 	)
 	return exists, err
+}
+
+// StoredTickersForDay reports which of the given tickers already have stored
+// rows for a trading day, in one query. It is the batch form of HasStoredDay:
+// the sweep resolves the whole candidate list's coverage before planning, so a
+// re-run of the same anchor day (manual, self-heal, or a second worker) never
+// pays for a ticker-day twice.
+func (r *BrokerStockSummaryRepository) StoredTickersForDay(db *sqlx.DB, day time.Time, tickers []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(tickers))
+	if len(tickers) == 0 {
+		return out, nil
+	}
+	var stored []string
+	err := db.Select(&stored, `
+		SELECT DISTINCT ticker
+		FROM broker_stock_summaries
+		WHERE trading_day = $1::date
+		  AND ticker = ANY(string_to_array($2, ','))`,
+		day.Format("2006-01-02"), strings.Join(tickers, ","))
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range stored {
+		out[t] = true
+	}
+	return out, nil
+}
+
+// LastObservedByTicker returns, for each given ticker, the most recent trading
+// day with a stored tally at or before upTo. It is the sweep's rotation key:
+// tickers observed longest ago sort first, so a budget-limited sweep cycles
+// through the universe instead of re-fetching the same liquid names every day.
+// A ticker with no stored day is absent from the map (never observed).
+func (r *BrokerStockSummaryRepository) LastObservedByTicker(db *sqlx.DB, tickers []string, upTo time.Time) (map[string]time.Time, error) {
+	out := make(map[string]time.Time, len(tickers))
+	if len(tickers) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		Ticker string    `db:"ticker"`
+		Last   time.Time `db:"last_day"`
+	}
+	err := db.Select(&rows, `
+		SELECT ticker, MAX(trading_day) AS last_day
+		FROM broker_stock_summary_totals
+		WHERE trading_day <= $1::date
+		  AND ticker = ANY(string_to_array($2, ','))
+		GROUP BY ticker`,
+		upTo.Format("2006-01-02"), strings.Join(tickers, ","))
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		out[r.Ticker] = r.Last
+	}
+	return out, nil
 }
 
 // FindByTickerAndDay returns the stored broker rows for a ticker+day,

@@ -134,3 +134,63 @@ func mustReadFixture(t *testing.T, name string) []byte {
 	}
 	return b
 }
+
+// TestParseBrokerSummaryBatch_PerTickerIsolation drives the batch response
+// shape: data is an object keyed by ticker, a null value is an empty day, and a
+// ticker that violates a contract invariant lands in Invalid without discarding
+// the rest of the batch.
+func TestParseBrokerSummaryBatch_PerTickerIsolation(t *testing.T) {
+	body := []byte(`{"success":true,"data":{
+		"BBCA":[{"code":"AF","buy_freq":1,"buy_volume":100,"buy_value":1000000.0,
+		         "sell_freq":1,"sell_volume":100,"sell_value":1000000.0,
+		         "buy_avg":100.0,"sell_avg":100.0}],
+		"TLKM":[{"code":"AK","buy_freq":1,"buy_volume":200,"buy_value":2000000.0,
+		         "sell_freq":2,"sell_volume":200,"sell_value":2000000.0,
+		         "buy_avg":100.0,"sell_avg":100.0}],
+		"BAD":[{"code":"ZZ","buy_freq":1,"buy_volume":100,"buy_value":1000000.0,
+		        "sell_freq":1,"sell_volume":100,"sell_value":900000.0,
+		        "buy_avg":100.0,"sell_avg":90.0}],
+		"NULLY":null
+	},"error":null}`)
+
+	batch, err := ParseBrokerSummaryBatch(body)
+	if err != nil {
+		t.Fatalf("ParseBrokerSummaryBatch: %v", err)
+	}
+	if len(batch.Results) != 3 {
+		t.Fatalf("results = %d, want 3 (BBCA, TLKM, NULLY)", len(batch.Results))
+	}
+	if len(batch.Invalid) != 1 {
+		t.Fatalf("invalid = %d, want 1", len(batch.Invalid))
+	}
+	if !errors.Is(batch.Invalid["BAD"], ErrMalformedPayload) {
+		t.Errorf("BAD err = %v, want ErrMalformedPayload", batch.Invalid["BAD"])
+	}
+	if got := batch.Results["BBCA"].Buyers[0].Lot; got != 1 {
+		t.Errorf("BBCA lot = %d, want 1 (100 shares ÷ 100)", got)
+	}
+	if got := batch.Results["TLKM"].Buyers[0].Lot; got != 2 {
+		t.Errorf("TLKM lot = %d, want 2 (200 shares ÷ 100)", got)
+	}
+	if r := batch.Results["NULLY"]; r == nil || len(r.Buyers) != 0 || len(r.Sellers) != 0 {
+		t.Errorf("NULLY = %+v, want an empty result", r)
+	}
+	if _, present := batch.Results["ABSENT"]; present {
+		t.Error("ABSENT should not appear in a batch it was omitted from")
+	}
+}
+
+func TestParseBrokerSummaryBatch_BatchLevelErrors(t *testing.T) {
+	cases := []struct{ name, body string }{
+		{"invalid json", `{"success":true,"data":`},
+		{"success false", `{"success":false,"data":null,"error":"Internal server error"}`},
+		{"data is an array", `{"success":true,"data":[]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseBrokerSummaryBatch([]byte(tc.body)); !errors.Is(err, ErrMalformedPayload) {
+				t.Fatalf("err = %v, want ErrMalformedPayload", err)
+			}
+		})
+	}
+}

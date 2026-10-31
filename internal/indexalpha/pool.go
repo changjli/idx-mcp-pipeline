@@ -277,6 +277,97 @@ func (p *Pool) Fetch(ctx context.Context, ticker string, date time.Time) (*broke
 	return res, nil
 }
 
+// FetchBatch fetches one batch of at most 50 tickers on one trading day,
+// choosing and rotating keys through the pool. It is metered by the number of
+// tickers requested (a batch of 50 costs 50 monthly units and one daily
+// request). It satisfies the usecase's BrokerSummaryBatchFetcher.
+func (p *Pool) FetchBatch(ctx context.Context, tickers []string, date time.Time) (*broker.Batch, error) {
+	if len(tickers) == 0 {
+		return &broker.Batch{Results: map[string]*broker.Result{}, Invalid: map[string]error{}}, nil
+	}
+	if len(tickers) > broker.MaxBatchTickers {
+		return nil, fmt.Errorf("%w: batch of %d tickers exceeds the %d-ticker limit",
+			ErrInvalidRequest, len(tickers), broker.MaxBatchTickers)
+	}
+	var batch *broker.Batch
+	err := p.Do(ctx, len(tickers), func(ctx context.Context, key string) (CallOutcome, error) {
+		b, outcome, err := p.client.FetchBatchWithKey(ctx, key, tickers, date)
+		if err == nil {
+			batch = b
+		}
+		return outcome, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return batch, nil
+}
+
+// EnsureSeeded refreshes every key that has never been measured from the free
+// /usage endpoint. A caller that plans a budget spends it before reading
+// Available(), because an unmeasured key contributes nothing to the known total
+// — a fresh process with a failed boot seed would otherwise plan zero. Errors
+// are returned for logging only; a key that stays unknown remains optimistically
+// usable.
+func (p *Pool) EnsureSeeded(ctx context.Context) error {
+	p.mu.Lock()
+	var pending []int
+	for i, ks := range p.keys {
+		if ks.needsSeed {
+			pending = append(pending, i)
+		}
+	}
+	p.mu.Unlock()
+
+	errs := make([]error, 0, len(pending))
+	for _, i := range pending {
+		errs = append(errs, p.seedKey(ctx, i))
+	}
+	return errors.Join(errs...)
+}
+
+// BatchCapacity is the largest batch a single currently-usable key can pay for
+// right now: the smallest known monthly remaining across usable keys. The caller
+// caps it at the vendor limit. When every usable key is unmeasured it returns
+// the vendor maximum (optimistic); when no key is usable it returns zero.
+//
+// The sweep uses this to size a batch so no key is sent a request larger than
+// its remaining units. A quota 403 parks a key until the period resets, so an
+// oversized batch would waste everything that key had left.
+func (p *Pool) BatchCapacity() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	now := p.now()
+	p.refreshExpiredLocked(now)
+
+	usable, known, smallest := 0, 0, 0
+	for _, ks := range p.keys {
+		if u, _, _ := p.keyAvailabilityLocked(ks, now); !u {
+			continue
+		}
+		usable++
+		if !ks.remainingKnown {
+			continue
+		}
+		known++
+		if smallest == 0 || ks.remaining < smallest {
+			smallest = ks.remaining
+		}
+	}
+	if usable == 0 {
+		return 0
+	}
+	if known == 0 {
+		return broker.MaxBatchTickers
+	}
+	return smallest
+}
+
+// NextReset is the earliest rolling period end across the pool, or nil when the
+// vendor has not supplied one. Quota-shortfall reporting uses it.
+func (p *Pool) NextReset() *time.Time { return p.Status().NextResetAt }
+
 // Do runs one metered call against a usable key, with bounded failover across
 // distinct keys within the same call.
 //

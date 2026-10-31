@@ -408,23 +408,36 @@ func (r *DailyPriceRepository) ExistsForDate(db *sqlx.DB, tradingDay string) (bo
 	return count > 0, err
 }
 
+// LiquidityTicker is one member of the ADTV-eligible universe, with the
+// liquidity that qualified it. The sweep orders candidates by it when two
+// tickers have been observed equally recently.
+type LiquidityTicker struct {
+	Ticker string  `db:"ticker"`
+	ADTV   float64 `db:"adtv"`
+}
+
 // ADTVEligibleTickers returns the tickers that clear the liquidity floor over
-// a trailing window: at least minDays trading days and average daily trade
-// value >= minADTV (Rp). Computed fresh from daily_prices each call — the
-// weekly sweep's universe filter (issue 14b). Membership drifts with the
+// a trailing window, most liquid first: at least minDays trading days and
+// average daily trade value >= minADTV (Rp). Computed fresh from daily_prices
+// each call — the daily sweep's universe filter. Membership drifts with the
 // market: a new IPO enters once it accumulates enough trading days, a
 // suspended/dead name drops out when its window ADTV falls below the floor.
 // The minADTV bar is the anomaly detector's own DefaultADTVMinValue, so one
 // liquidity definition spans the pipeline.
-func (r *DailyPriceRepository) ADTVEligibleTickers(db *sqlx.DB, from, to time.Time, minDays int, minADTV int64) ([]string, error) {
-	var tickers []string
+//
+// The ADTV order matters: when the pool's budget cannot cover the whole
+// universe, the sweep spends it on the names the screener is most likely to
+// trade, and only then rotates into the tail.
+func (r *DailyPriceRepository) ADTVEligibleTickers(db *sqlx.DB, from, to time.Time, minDays int, minADTV int64) ([]LiquidityTicker, error) {
+	var tickers []LiquidityTicker
 	err := db.Select(&tickers, `
-		SELECT ticker FROM daily_prices
-		WHERE trading_day BETWEEN $1 AND $2
+		SELECT ticker, AVG(value)::float8 AS adtv
+		FROM daily_prices
+		WHERE trading_day BETWEEN $1::date AND $2::date
 		GROUP BY ticker
 		HAVING COUNT(*) >= $3 AND AVG(value) >= $4
-		ORDER BY ticker`,
-		from, to, minDays, minADTV,
+		ORDER BY adtv DESC, ticker`,
+		from.Format("2006-01-02"), to.Format("2006-01-02"), minDays, minADTV,
 	)
 	return tickers, err
 }

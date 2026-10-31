@@ -174,7 +174,7 @@ var Graph = NewRegistry(
 			stage := pipeline.NewIngestStage(TypeStockSummary, nil, enq, 3)
 			return stage.EnqueueWithOpts(TaskKey(TypeStockSummary, dateKey), StockSummaryPayload{Date: dateKey}, opts...)
 		},
-		Chain:    []string{TypeDetectAnomalies},
+		Chain:    []string{TypeDetectAnomalies, TypeBrokerStockSummarySweep},
 		SelfHeal: true,
 	},
 	&Node{
@@ -343,11 +343,13 @@ var Graph = NewRegistry(
 		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
 			dateKey := day.Format("2006-01-02")
 			stage := pipeline.NewIngestStage(TypeBrokerStockSummarySweep, nil, enq, 3)
-			// Task-level timeout override: at the shared 2s IPOT pacing a
-			// fresh catch-up sweep exceeds the 30m server default.
-			opts = append(opts, asynq.Timeout(SweepTaskTimeout))
 			return stage.EnqueueWithOpts(TaskKey(TypeBrokerStockSummarySweep, dateKey), BrokerSummarySweepPayload{Date: dateKey}, opts...)
 		},
+		// Chained after stock-summary (an edge, not a wave member) so the anchor
+		// day's daily_prices rows exist before the ADTV universe is resolved.
+		// Date-keyed and self-heal eligible: an archived sweep is recovered by
+		// the same registry-driven loop as every other ingestion node.
+		SelfHeal: true,
 	},
 	&Node{
 		Name: "pipeline",

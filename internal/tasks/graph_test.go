@@ -110,7 +110,7 @@ func TestGraphSelfHealSetExact(t *testing.T) {
 			got[node.Type] = true
 		}
 	}
-	want := map[string]bool{TypeStockSummary: true, TypeAnnouncements: true, TypeRSS: true, TypeCorporateActions: true, TypeSuspensions: true, TypeIndexSummary: true, TypeKSEIBalancepos: true}
+	want := map[string]bool{TypeStockSummary: true, TypeAnnouncements: true, TypeRSS: true, TypeCorporateActions: true, TypeSuspensions: true, TypeIndexSummary: true, TypeKSEIBalancepos: true, TypeBrokerStockSummarySweep: true}
 	if len(got) != len(want) {
 		t.Fatalf("self-heal set = %v, want %v", got, want)
 	}
@@ -128,8 +128,8 @@ func TestGraphChainFiresSuccessors(t *testing.T) {
 	if err := Graph.Chain(context.Background(), enq, TypeStockSummary, day); err != nil {
 		t.Fatalf("Chain(stock_summary): %v", err)
 	}
-	if len(enq.enqueued) != 1 || enq.enqueued[0] != TypeDetectAnomalies {
-		t.Errorf("Chain(stock_summary) fired %v, want [detect:anomalies]", enq.enqueued)
+	if len(enq.enqueued) != 2 || enq.enqueued[0] != TypeDetectAnomalies || enq.enqueued[1] != TypeBrokerStockSummarySweep {
+		t.Errorf("Chain(stock_summary) fired %v, want [detect:anomalies broker sweep]", enq.enqueued)
 	}
 
 	enq = &graphEnqueuer{}

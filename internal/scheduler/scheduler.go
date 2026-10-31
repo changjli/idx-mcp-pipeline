@@ -18,15 +18,6 @@ const (
 	// 8 PM gives a few hours for the data to land before the pipeline fetches it.
 	DailyCronSpec = "CRON_TZ=Asia/Jakarta 5 20 * * *"
 
-	// SweepCronSpec fires the weekly ADTV-gated broker-summary sweep (issue
-	// 14b) at 9:00 PM WIB every Saturday. IDX is closed weekends, so Friday's
-	// data is fully settled and the weekday pipeline wave + anomaly gate have
-	// drained — the sweep skips those days (HasStoredDay) and only fetches the
-	// quiet liquid names the anomaly gate missed. The date-keyed TaskID dedups
-	// a same-day re-fire; a missed Saturday self-heals on the next run (the
-	// trailing-21-day window still covers the gap).
-	SweepCronSpec = "CRON_TZ=Asia/Jakarta 0 21 * * 6"
-
 	// SectorIndexCronSpec fires the 6-monthly sector/industry + index-membership
 	// seeder (issue 15b) at 10:00 PM WIB on Mar 1 and Aug 1 — the month after
 	// each IDX index review (LQ45/Kompas100/IDX80/IDX30 rebalance in Feb+Jul,
@@ -68,11 +59,11 @@ func NewScheduler(vip *viper.Viper, log *logrus.Logger) *asynq.Scheduler {
 	return sched
 }
 
-// RegisterDailyTasks registers the daily pipeline task and the weekly
-// ADTV-gated broker-summary sweep (issue 14b) on the scheduler. It logs the next fire time
-// of each registered entry. The sweep task carries no payload — the handler
-// derives the sweep date from time.Now() at fire time (same convention as
-// pipeline:daily), so the cron fires on the current trading day.
+// RegisterDailyTasks registers the daily pipeline task and the 6-monthly
+// sector/index seeder on the scheduler. It logs the next fire time of each
+// registered entry. The broker sweep is not a cron: it is chained from
+// stock-summary in the graph registry (ADR-0018), so the anchor day's prices
+// exist before the ADTV universe is resolved.
 func RegisterDailyTasks(sched *asynq.Scheduler, log *logrus.Logger) {
 	task := asynq.NewTask(tasks.TypePipelineDaily, nil)
 	entryID, err := sched.Register(DailyCronSpec, task)
@@ -81,20 +72,9 @@ func RegisterDailyTasks(sched *asynq.Scheduler, log *logrus.Logger) {
 	}
 	log.Infof("daily pipeline task registered: entry=%s cron=%s", entryID, DailyCronSpec)
 
-	// The sweep task must carry the same task-level timeout the graph node
-	// applies: a fresh catch-up run exceeds asynq's 30m default at the IPOT
-	// client's 2s pacing. The scheduler registers the task directly (not via
-	// the node), so the override is applied here.
-	sweepTask := asynq.NewTask(tasks.TypeBrokerStockSummarySweep, nil, asynq.Timeout(tasks.SweepTaskTimeout))
-	sweepEntryID, err := sched.Register(SweepCronSpec, sweepTask)
-	if err != nil {
-		log.Fatalf("failed to register broker summary sweep task: %v", err)
-	}
-	log.Infof("broker summary sweep task registered: entry=%s cron=%s", sweepEntryID, SweepCronSpec)
-
 	// The sector/index seeder (issue 15b) fires every 6 months; the handler
 	// derives the run date from time.Now() at fire time (nil payload, same
-	// convention as pipeline:daily and the sweep).
+	// convention as pipeline:daily).
 	sectorIndexTask := asynq.NewTask(tasks.TypeSectorIndex, nil)
 	sectorIndexEntryID, err := sched.Register(SectorIndexCronSpec, sectorIndexTask)
 	if err != nil {

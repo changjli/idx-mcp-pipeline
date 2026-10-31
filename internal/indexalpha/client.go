@@ -1,6 +1,7 @@
 package indexalpha
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -171,6 +172,105 @@ func (c *Client) FetchWithKey(ctx context.Context, key, ticker string, date time
 	}
 	res, err := ParseBrokerSummary(ticker, body)
 	return res, outcome, err
+}
+
+// batchRequest is the POST body shared by the batch endpoints. The foreign-flow
+// batch omits investor and adds nothing else, so the same shape works for both.
+type batchRequest struct {
+	Tickers  []string `json:"tickers"`
+	From     string   `json:"from"`
+	To       string   `json:"to"`
+	Investor string   `json:"investor,omitempty"`
+	Market   string   `json:"market"`
+}
+
+// FetchBatch returns the broker summary for up to 50 tickers on one trading day
+// through the client's configured single key. It is the compatibility path;
+// production uses Pool.FetchBatch so every request is metered and rotated.
+func (c *Client) FetchBatch(ctx context.Context, tickers []string, date time.Time) (*broker.Batch, error) {
+	batch, _, err := c.FetchBatchWithKey(ctx, c.apiKey, tickers, date)
+	return batch, err
+}
+
+// FetchBatchWithKey is FetchBatch with an explicit Bearer key, returning the
+// quota headers too.
+//
+// The request is single-day by construction (from == to), pins the regular
+// market and the all-investor view, and rejects an empty or oversized batch
+// before spending a request: the vendor's limit is 50 tickers, and a bigger
+// batch is rejected whole. Tickers are deduplicated before sending so a
+// duplicate cannot double-charge the monthly counter.
+func (c *Client) FetchBatchWithKey(ctx context.Context, key string, tickers []string, date time.Time) (*broker.Batch, CallOutcome, error) {
+	if strings.TrimSpace(key) == "" {
+		return nil, CallOutcome{}, fmt.Errorf("%w: no API key configured (INDEXALPHA_KEYS)", ErrUnauthorized)
+	}
+
+	batchTickers, err := normalizeBatchTickers(tickers)
+	if err != nil {
+		return nil, CallOutcome{}, err
+	}
+	day := date.Format("2006-01-02")
+	payload, err := json.Marshal(batchRequest{
+		Tickers:  batchTickers,
+		From:     day,
+		To:       day, // from == to: a range aggregates into one row per broker
+		Investor: "all",
+		Market:   "RG",
+	})
+	if err != nil {
+		return nil, CallOutcome{}, fmt.Errorf("indexalpha: marshal batch request: %w", err)
+	}
+	u := c.baseURL + "/stocks/broker-summary/batch"
+
+	c.log.Debugf("indexalpha: fetching %d tickers %s (batch)", len(batchTickers), day)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
+	if err != nil {
+		return nil, CallOutcome{}, fmt.Errorf("indexalpha: build batch request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, CallOutcome{}, fmt.Errorf("indexalpha: post %s: %w", u, err)
+	}
+	defer resp.Body.Close()
+
+	outcome := outcomeFromHeader(resp.Header, time.Now)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return nil, outcome, fmt.Errorf("indexalpha: read batch body: %w", err)
+	}
+	if err := classifyStatus(resp, body); err != nil {
+		return nil, outcome, err
+	}
+	batch, err := ParseBrokerSummaryBatch(body)
+	return batch, outcome, err
+}
+
+// normalizeBatchTickers trims, upper-cases and deduplicates a batch in request
+// order, rejecting an empty batch and anything over the vendor's 50-ticker
+// limit. Deduplicating first means a duplicate ticker cannot be charged twice.
+func normalizeBatchTickers(tickers []string) ([]string, error) {
+	seen := make(map[string]bool, len(tickers))
+	out := make([]string, 0, len(tickers))
+	for _, t := range tickers {
+		t = strings.ToUpper(strings.TrimSpace(t))
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: empty batch", ErrInvalidRequest)
+	}
+	if len(out) > broker.MaxBatchTickers {
+		return nil, fmt.Errorf("%w: batch of %d tickers exceeds the %d-ticker limit", ErrInvalidRequest, len(out), broker.MaxBatchTickers)
+	}
+	return out, nil
 }
 
 // classifyStatus turns a non-200 response into one of the structured failure

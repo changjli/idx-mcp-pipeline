@@ -2,7 +2,6 @@ package tasks
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -48,12 +47,15 @@ func reenqueueDetectAnomalies(enq pipeline.Enqueuer, date string, attempt int) e
 // (ADR-0006); the handler synchronizes with stock_summary (self-retrying until
 // today's daily_prices rows exist), runs the detector, and chains the next
 // tasks. detector is built with its ADTV threshold already defaulted.
+//
+// Broker ingestion is deliberately not triggered here. It is liquidity-driven
+// (the daily anchor-day sweep), not anomaly-gated: a fan-out per flagged ticker
+// would spend Index Alpha quota outside the sweep's budget (ADR-0018).
 func NewDetectAnomaliesHandler(
 	log *logrus.Logger,
 	enq pipeline.Enqueuer,
 	db *sqlx.DB,
 	dailyPriceRepo *repository.DailyPriceRepository,
-	anomalyRepo *repository.AnomalyRepository,
 	detector *pipeline.AnomalyDetector,
 ) asynq.HandlerFunc {
 	return func(ctx context.Context, t *asynq.Task) error {
@@ -104,13 +106,6 @@ func NewDetectAnomaliesHandler(
 				logrus.Fields{"task_id": taskID, "source": TypeDetectAnomalies, "ticker": a.Ticker, "type": a.Type, "direction": a.Direction, "magnitude_pct": a.MagnitudePct, "date": today.Format("2006-01-02")})
 		}
 
-		// Auto-trigger: each flagged ticker emits an idx:broker_stock_summary
-		// signal so its per-stock broker summary is fetched and stored without
-		// an AI round-trip. TaskID dedup makes repeat signals no-ops.
-		if len(detected) > 0 {
-			enqueueBrokerSummariesForAnomalies(enq, db, anomalyRepo, today, log)
-		}
-
 		// Filter disclosures unconditionally (even zero anomalies): non-anomaly
 		// disclosures still need marking passed_filter=false, and passing ones
 		// proceed to extraction. Chained here (not from idx:announcements)
@@ -120,29 +115,5 @@ func NewDetectAnomaliesHandler(
 			log.Warnf("detect:anomalies: chain filter:disclosures: %v", err)
 		}
 		return nil
-	}
-}
-
-// enqueueBrokerSummariesForAnomalies enqueues an idx:broker_stock_summary task
-// for each distinct ticker flagged on the given trading day. Duplicate signals
-// (ErrTaskIDConflict) are expected and ignored.
-func enqueueBrokerSummariesForAnomalies(enq pipeline.Enqueuer, db *sqlx.DB, anomalyRepo *repository.AnomalyRepository, day time.Time, log *logrus.Logger) {
-	anomalies, err := anomalyRepo.FindByDate(db, day.Format("2006-01-02"))
-	if err != nil {
-		log.Warnf("detect:anomalies: query flagged tickers: %v", err)
-		return
-	}
-	// Dedup per ticker: a ticker flagged with both a volume and a price
-	// anomaly must only enqueue one summary task. TaskID-conflict suppression
-	// below is a safety net, not the dedup mechanism.
-	seen := make(map[string]bool)
-	for _, a := range anomalies {
-		if seen[a.Ticker] {
-			continue
-		}
-		seen[a.Ticker] = true
-		if _, err := EnqueueBrokerStockSummary(enq, a.Ticker, day); err != nil && !errors.Is(err, asynq.ErrTaskIDConflict) {
-			log.Warnf("detect:anomalies: enqueue broker summary for %s: %v", a.Ticker, err)
-		}
 	}
 }
