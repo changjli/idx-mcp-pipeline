@@ -69,8 +69,8 @@ func TestParseBrokerSummary_RAJAGoldenFile(t *testing.T) {
 	if res.Totals.TVal != 71_200_000_000 {
 		t.Errorf("Totals.TVal = %d, want 71200000000", res.Totals.TVal)
 	}
-	if res.Totals.FNVal != 11_100_000_000 {
-		t.Errorf("Totals.FNVal = %d, want 11100000000", res.Totals.FNVal)
+	if res.Totals.FNVal == nil || *res.Totals.FNVal != 11_100_000_000 {
+		t.Errorf("Totals.FNVal = %v, want 11100000000", res.Totals.FNVal)
 	}
 	if res.Totals.TLot != 808975 {
 		t.Errorf("Totals.TLot = %d, want 808975", res.Totals.TLot)
@@ -96,7 +96,7 @@ func TestParseBrokerSummary_EmptyTable(t *testing.T) {
 	if len(res.Sellers) != 0 {
 		t.Errorf("expected 0 sellers on empty table, got %d", len(res.Sellers))
 	}
-	if res.Totals.TVal != 0 || res.Totals.FNVal != 0 || res.Totals.TLot != 0 || res.Totals.Avg != 0 {
+	if res.Totals.TVal != 0 || res.Totals.FNVal == nil || *res.Totals.FNVal != 0 || res.Totals.TLot != 0 || res.Totals.Avg != 0 {
 		t.Errorf("expected zero totals on empty table, got %+v", res.Totals)
 	}
 }

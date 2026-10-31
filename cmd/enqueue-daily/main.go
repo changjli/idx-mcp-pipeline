@@ -15,7 +15,7 @@ import (
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/config"
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/indexalpha"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/tasks"
@@ -241,9 +241,9 @@ func runBulkBrokerSummary(vip *viper.Viper, log *logrus.Logger, startStr, endStr
 	db := config.NewDatabase(vip, log)
 	defer db.Close()
 
-	ipotClient := ipot.NewClient(ipot.DefaultConfig(), log)
+	indexAlphaClient := indexalpha.NewClient(indexalpha.ConfigFromViper(vip), log)
 	brokerStockSummaryUC := usecase.NewBrokerStockSummaryUseCase(
-		db, log, config.NewValidator(), ipotClient,
+		db, log, config.NewValidator(), indexAlphaClient,
 		repository.NewBrokerStockSummaryRepository(log),
 		repository.NewDailyPriceRepository(log),
 	)

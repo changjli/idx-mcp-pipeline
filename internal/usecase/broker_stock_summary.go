@@ -22,7 +22,7 @@ import (
 var tickerPattern = regexp.MustCompile(`^[A-Z]{2,6}$`)
 
 // BrokerSummaryFetcher fetches a per-ticker broker summary from a market-data
-// source. *ipot.Client satisfies this; tests use a fake.
+// source. *indexalpha.Client satisfies this; tests use a fake.
 type BrokerSummaryFetcher interface {
 	Fetch(ctx context.Context, ticker string, date time.Time) (*broker.Result, error)
 }
@@ -65,20 +65,23 @@ type BrokerSummaryRow struct {
 	Rank       int    `json:"rank"`
 }
 
-// BrokerSummaryTotals is the footer summary line in the response.
+// BrokerSummaryTotals is the footer summary line in the response. FNVal is null
+// when the foreign net is unobserved (the broker endpoint does not carry it;
+// ticket 06's foreign-flow pass fills it) — never a fabricated zero.
 type BrokerSummaryTotals struct {
-	TVal      int64 `json:"t_val"`
-	FNVal     int64 `json:"f_nval"`
-	TLot      int64 `json:"t_lot"`
-	Avg       int64 `json:"avg"`
-	OthersNet int64 `json:"others_net"` // tail net = Σ sell − Σ buy over non-listed brokers
+	TVal      int64  `json:"t_val"`
+	FNVal     *int64 `json:"f_nval"`
+	TLot      int64  `json:"t_lot"`
+	Avg       int64  `json:"avg"`
+	OthersNet int64  `json:"others_net"` // tail net = Σ sell − Σ buy over non-listed brokers
 }
 
 // BrokerStockSummaryResponse is the structured MCP tool result.
 // AsOf + Cause are set only when the requested date returned empty and the
 // publish-lag fallback served a prior day's data (or explained the empty).
 // TotalBuyValue/TotalSellValue = t_val (every share has a buyer and a seller);
-// OthersNet covers the brokers IPOT doesn't list (only top-10 per side shown).
+// OthersNet is the unlisted tail, which nets to zero once the full broker set is
+// stored (retired with the top-10 projection in ticket 05).
 type BrokerStockSummaryResponse struct {
 	Ticker         string              `json:"ticker"`
 	TradingDay     string              `json:"trading_day"`
@@ -130,7 +133,7 @@ type BrokerStockSummaryRangeResponse struct {
 
 // GetStockBrokerSummary fetches the per-stock broker summary for a ticker on a
 // trading day (defaulting to the ticker's latest stored trading day), persists
-// it, and returns the structured top-N. An empty IPOT result (non-trading day,
+// it, and returns the structured top-N. An empty source result (non-trading day,
 // or not yet published) returns an empty response and writes nothing.
 func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummary(ctx context.Context, ticker string, date *time.Time) (*BrokerStockSummaryResponse, error) {
 	ticker = strings.ToUpper(strings.TrimSpace(ticker))
@@ -157,11 +160,12 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummary(ctx context.Context, 
 		if errors.Is(err, ErrPersist) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("ipot fetch: %w", err)
+		return nil, fmt.Errorf("broker summary fetch: %w", err)
 	}
 
-	// Empty result (non-trading day, or IPOT not yet published) → publish-lag
-	// fallback: probe backward for the most recent day IPOT has data for.
+	// Empty result (non-trading day, or the source not yet published) →
+	// publish-lag fallback: probe backward for the most recent day the source has
+	// data for.
 	if len(d.Buyers) == 0 && len(d.Sellers) == 0 {
 		return uc.fallbackEmpty(ctx, ticker, day)
 	}
@@ -186,7 +190,7 @@ const brokerSummaryFallbackProbeDays = 5
 // ticker (long gaps between trading days) can't loop forever.
 const brokerSummaryFallbackMaxCalendarDays = 30
 
-// fallbackEmpty handles an empty IPOT result for the requested date. It probes
+// fallbackEmpty handles an empty source result for the requested date. It probes
 // backward up to brokerSummaryFallbackProbeDays trading days and returns the
 // first non-empty day tagged with as_of + cause, so the caller is never handed
 // a bare empty indistinguishable from a real zero. Nothing is written for the
@@ -313,7 +317,7 @@ func (uc *BrokerStockSummaryUseCase) fetchAndPersistDay(ctx context.Context, tic
 
 // GetStockBrokerSummaryHistory reads the persisted broker summary rows for a
 // ticker over a date range and returns them grouped by trading day with
-// per-day totals. Pure DB read — never touches the IPOT fetcher. An empty
+// per-day totals. Pure DB read — never touches the fetcher. An empty
 // range returns an empty Days list, no error.
 func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryHistory(ctx context.Context, ticker string, from, to time.Time) (*BrokerStockSummaryHistoryResponse, error) {
 	ticker = strings.ToUpper(strings.TrimSpace(ticker))
@@ -346,7 +350,7 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryHistory(ctx context.Co
 		key := t.TradingDay.Format("2006-01-02")
 		totalsByDay[key] = BrokerSummaryTotals{
 			TVal:  deref(t.TVal),
-			FNVal: deref(t.FNVal),
+			FNVal: t.FNVal,
 			TLot:  deref(t.TLot),
 			Avg:   deref(t.Avg),
 		}
@@ -413,7 +417,7 @@ func (uc *BrokerStockSummaryUseCase) persist(ticker string, day time.Time, res *
 		Ticker:     ticker,
 		TradingDay: day,
 		TVal:       i64p(res.Totals.TVal),
-		FNVal:      i64p(res.Totals.FNVal),
+		FNVal:      res.Totals.FNVal,
 		TLot:       i64p(res.Totals.TLot),
 		Avg:        i64p(res.Totals.Avg),
 		OthersNet:  i64p(others),

@@ -109,15 +109,15 @@ var toolGetPipelineStatus = mcpgo.NewTool("get_pipeline_status",
 	readOnlyAnnotations(),
 )
 
-// toolGetStockBrokerSummary — per-stock broker summary via IPOT (the one tool
-// that makes an upstream call). IPOT lists only the top-10 each side; the
-// response's total_buy_value / total_sell_value / others_net cover the whole
-// market incl. the non-listed tail (issue 03).
+// toolGetStockBrokerSummary — per-stock broker summary via Index Alpha (the
+// one tool that makes an upstream call). The source returns every broker per
+// side; the response's total_buy_value / total_sell_value / others_net cover
+// the whole market incl. the non-listed tail (issue 03).
 var toolGetStockBrokerSummary = mcpgo.NewTool("get_stock_broker_summary",
-	mcpgo.WithDescription("Per-stock top buyers/sellers for a ticker+day, fetched from IPOT on demand and persisted. IPOT shows only the top-10 per side, so total_buy_value, total_sell_value, and others_net (= the unlisted tail's net) are included to keep sums market-accurate. Defaults to the ticker's latest trading day."),
+	mcpgo.WithDescription("Per-stock broker buyers/sellers for a ticker+day, fetched from Index Alpha on demand and persisted. The source returns every broker per side, so total_buy_value, total_sell_value and others_net reconcile to the market. Defaults to the ticker's latest trading day."),
 	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. RAJA or RAJA.JK)."), mcpgo.Required()),
 	mcpgo.WithString("date", mcpgo.Description("Trading day, YYYY-MM-DD. Defaults to the ticker's latest stored trading day.")),
-	// A write: fetches from IPOT AND persists the day's rows. Declared with
+	// A write: fetches from Index Alpha AND persists the day's rows. Declared with
 	// writeAnnotations, not read-only (the persist is the tool's contract).
 	writeAnnotations(),
 )
@@ -172,7 +172,7 @@ var toolGetDailyPrices = mcpgo.NewTool("get_daily_prices",
 // and the client polls get_stock_broker_summary_history until the range's days
 // are covered. A write tool — declared with writeAnnotations, not read-only.
 var toolBackfillStockBrokerSummary = mcpgo.NewTool("backfill_stock_broker_summary",
-	mcpgo.WithDescription("Backfill per-stock broker summaries for a ticker over a date range. Enqueues an async backfill task and returns immediately with status pending; the worker fetches + persists each trading day in the range (IPOT on-demand). Poll get_stock_broker_summary_history with the same ticker/from/to until the days are covered. Use to fill gaps get_broker_net_flow or get_stock_broker_summary_history reveal (e.g. days the anomaly gate missed, or pre-others_net rows)."),
+	mcpgo.WithDescription("Backfill per-stock broker summaries for a ticker over a date range. Enqueues an async backfill task and returns immediately with status pending; the worker fetches + persists each trading day in the range (Index Alpha on demand). Poll get_stock_broker_summary_history with the same ticker/from/to until the days are covered. Use to fill gaps get_broker_net_flow or get_stock_broker_summary_history reveal (e.g. days the anomaly gate missed, or pre-others_net rows)."),
 	mcpgo.WithString("ticker", mcpgo.Description("Ticker code (e.g. RAJA or RAJA.JK)."), mcpgo.Required()),
 	mcpgo.WithString("from", mcpgo.Description("Range start, YYYY-MM-DD."), mcpgo.Required()),
 	mcpgo.WithString("to", mcpgo.Description("Range end, YYYY-MM-DD."), mcpgo.Required()),

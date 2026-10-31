@@ -162,9 +162,11 @@ func parseTotals(tfoot *html.Node) (broker.Totals, error) {
 	if t.TVal, err = footerValue(text, "T. Val"); err != nil {
 		return t, err
 	}
-	if t.FNVal, err = footerValue(text, "F. NVal"); err != nil {
+	fnval, err := footerValue(text, "F. NVal")
+	if err != nil {
 		return t, err
 	}
+	t.FNVal = &fnval
 	if t.TLot, err = footerValue(text, "T.Lot"); err != nil {
 		return t, err
 	}

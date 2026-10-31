@@ -27,7 +27,7 @@ func (taskFakeFetcher) Fetch(_ context.Context, _ string, _ time.Time) (*broker.
 	return &broker.Result{
 		Buyers:  []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
 		Sellers: []broker.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
-		Totals:  broker.Totals{TVal: 1_500_000_000, FNVal: 100_000_000, TLot: 150, Avg: 100},
+		Totals:  broker.Totals{TVal: 1_500_000_000, FNVal: i64ptr(100_000_000), TLot: 150, Avg: 100},
 	}, nil
 }
 
@@ -98,3 +98,5 @@ func TestBrokerStockSummaryHandler_EndToEnd(t *testing.T) {
 		t.Errorf("expected 0 consecutive failures, got %d", status.ConsecutiveFailures)
 	}
 }
+
+func i64ptr(v int64) *int64 { return &v }

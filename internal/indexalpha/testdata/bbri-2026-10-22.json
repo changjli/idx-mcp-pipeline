@@ -1,0 +1,72 @@
+{
+  "success": true,
+  "data": [
+    {
+      "code": "YP",
+      "buy_freq": 100,
+      "buy_volume": 150000000,
+      "buy_value": 500000000000.0,
+      "sell_freq": 0,
+      "sell_volume": 0,
+      "sell_value": 0.0,
+      "buy_avg": 3333.3333333333335,
+      "sell_avg": 0.0
+    },
+    {
+      "code": "CC",
+      "buy_freq": 0,
+      "buy_volume": 0,
+      "buy_value": 0.0,
+      "sell_freq": 200,
+      "sell_volume": 200000000,
+      "sell_value": 810725997000.0,
+      "buy_avg": 0.0,
+      "sell_avg": 4053.629985
+    },
+    {
+      "code": "AK",
+      "buy_freq": 300,
+      "buy_volume": 200000000,
+      "buy_value": 600000000000.0,
+      "sell_freq": 0,
+      "sell_volume": 0,
+      "sell_value": 0.0,
+      "buy_avg": 3000.0,
+      "sell_avg": 0.0
+    },
+    {
+      "code": "SQ",
+      "buy_freq": 0,
+      "buy_volume": 0,
+      "buy_value": 0.0,
+      "sell_freq": 400,
+      "sell_volume": 250000000,
+      "sell_value": 700000000000.0,
+      "buy_avg": 0.0,
+      "sell_avg": 2800.0
+    },
+    {
+      "code": "XL",
+      "buy_freq": 50,
+      "buy_volume": 100000000,
+      "buy_value": 410725997000.0,
+      "sell_freq": 0,
+      "sell_volume": 0,
+      "sell_value": 0.0,
+      "buy_avg": 4107.25997,
+      "sell_avg": 0.0
+    },
+    {
+      "code": "ZZ",
+      "buy_freq": 0,
+      "buy_volume": 0,
+      "buy_value": 0.0,
+      "sell_freq": 0,
+      "sell_volume": 0,
+      "sell_value": 0.0,
+      "buy_avg": 0.0,
+      "sell_avg": 0.0
+    }
+  ],
+  "error": null
+}

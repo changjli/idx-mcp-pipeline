@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -76,7 +77,7 @@ func TestGetStockBrokerSummary_FetchPersistReturn(t *testing.T) {
 		Sellers: []broker.Row{
 			{BrokerCode: "XL", Lot: 139188, Value: 12_300_000_000, AvgPrice: 881, Rank: 1},
 		},
-		Totals: broker.Totals{TVal: 71_200_000_000, FNVal: 11_100_000_000, TLot: 808975, Avg: 880},
+		Totals: broker.Totals{TVal: 71_200_000_000, FNVal: i64p(11_100_000_000), TLot: 808975, Avg: 880},
 	}
 
 	res, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day)
@@ -159,7 +160,7 @@ func TestGetStockBrokerSummary_AllTopN(t *testing.T) {
 			{BrokerCode: "XL", Lot: 80000, Value: 8_000_000_000, AvgPrice: 100, Rank: 1},
 			{BrokerCode: "MG", Lot: 30000, Value: 3_000_000_000, AvgPrice: 100, Rank: 2},
 		},
-		Totals: broker.Totals{TVal: 11_000_000_000, FNVal: 2_000_000_000, TLot: 220000, Avg: 100},
+		Totals: broker.Totals{TVal: 11_000_000_000, FNVal: i64p(2_000_000_000), TLot: 220000, Avg: 100},
 	}
 
 	res, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day)
@@ -280,7 +281,7 @@ func TestGetStockBrokerSummary_FallbackProbesBackward(t *testing.T) {
 		"2026-08-11": {
 			Buyers:  []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
 			Sellers: []broker.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
-			Totals:  broker.Totals{TVal: 1_500_000_000, FNVal: 100_000_000, TLot: 150, Avg: 100},
+			Totals:  broker.Totals{TVal: 1_500_000_000, FNVal: i64p(100_000_000), TLot: 150, Avg: 100},
 		},
 	}}
 	uc := NewBrokerStockSummaryUseCase(
@@ -370,5 +371,66 @@ func TestGetStockBrokerSummary_NoTradingDay(t *testing.T) {
 	_, err := uc.GetStockBrokerSummary(context.Background(), "ZZZZ", nil)
 	if !errors.Is(err, ErrNoTradingDay) {
 		t.Errorf("expected ErrNoTradingDay, got %v", err)
+	}
+}
+
+// TestGetStockBrokerSummary_FetchErrorKeepsItsClass — the usecase wraps the
+// fetcher error with context but must not erase the structured class the MCP
+// boundary maps to an error code.
+func TestGetStockBrokerSummary_FetchErrorKeepsItsClass(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+	f := &fakeFetcher{err: fmt.Errorf("upstream: %w", broker.ErrQuotaExhausted)}
+	uc := NewBrokerStockSummaryUseCase(
+		nil, log, validator.New(), f,
+		repository.NewBrokerStockSummaryRepository(log),
+		repository.NewDailyPriceRepository(log),
+	)
+	day := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+
+	_, err := uc.GetStockBrokerSummary(context.Background(), "BBRI", &day)
+	if !errors.Is(err, broker.ErrQuotaExhausted) {
+		t.Fatalf("err = %v, want broker.ErrQuotaExhausted in the chain", err)
+	}
+}
+
+// TestGetStockBrokerSummary_UnobservedForeignNetPersistsNull — a live fetch
+// cannot observe foreign net, so the totals row must store NULL, not zero.
+func TestGetStockBrokerSummary_UnobservedForeignNetPersistsNull(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
+	uc, f := newTestUC(t, db)
+
+	ticker := "TESTN"
+	day := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+	db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	t.Cleanup(func() {
+		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	})
+
+	f.res = &broker.Result{
+		Buyers:  []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
+		Sellers: []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
+		Totals:  broker.Totals{TVal: 1_000_000_000, FNVal: nil, TLot: 100, Avg: 100},
+	}
+
+	res, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day)
+	if err != nil {
+		t.Fatalf("GetStockBrokerSummary: %v", err)
+	}
+	if res.Totals.FNVal != nil {
+		t.Errorf("response f_nval = %v, want null", *res.Totals.FNVal)
+	}
+	stored, err := uc.Repo.FindTotalsByTickerAndDay(db, ticker, day)
+	if err != nil {
+		t.Fatalf("FindTotalsByTickerAndDay: %v", err)
+	}
+	if stored.FNVal != nil {
+		t.Errorf("persisted f_nval = %v, want NULL (unobserved)", *stored.FNVal)
 	}
 }

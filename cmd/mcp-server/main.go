@@ -18,6 +18,7 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/client"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/config"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/extract"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/indexalpha"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ksei"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/mcpserver"
@@ -222,9 +223,15 @@ func main() {
 
 	// Per-stock broker summary: on-demand fetch + persist, auto-triggered by
 	// anomaly detection. Shares the same usecase the MCP tool (ticket 10) wires.
+	// Broker data comes from Index Alpha (ADR-0018); IPOT remains only for
+	// get_financials.
+	indexAlphaClient := indexalpha.NewClient(indexalpha.ConfigFromViper(vip), log)
+	if len(indexalpha.KeysFromViper(vip)) == 0 {
+		log.Warn("INDEXALPHA_KEYS not configured — get_stock_broker_summary will report UNAUTHORIZED")
+	}
 	ipotClient := ipot.NewClient(ipot.DefaultConfig(), log)
 	brokerStockSummaryUC := usecase.NewBrokerStockSummaryUseCase(
-		db, log, validate, ipotClient, brokerStockSummaryRepo, dailyPriceRepo,
+		db, log, validate, indexAlphaClient, brokerStockSummaryRepo, dailyPriceRepo,
 	)
 	mux.Handle(tasks.TypeBrokerStockSummary, tasks.NewBrokerStockSummaryHandler(
 		log, brokerStockSummaryUC, recorder,

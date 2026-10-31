@@ -4,14 +4,16 @@ package mcp
 type ErrorCode string
 
 const (
-	ErrorCodeInvalidTicker   ErrorCode = "INVALID_TICKER"
-	ErrorCodeInvalidArgument ErrorCode = "INVALID_ARGUMENT"
-	ErrorCodeNotFound        ErrorCode = "NOT_FOUND"
-	ErrorCodeSourceStale     ErrorCode = "SOURCE_STALE"
-	ErrorCodeUpstream429     ErrorCode = "UPSTREAM_429"
-	ErrorCodeDBUnavailable   ErrorCode = "DB_UNAVAILABLE"
-	ErrorCodeUnauthorized    ErrorCode = "UNAUTHORIZED"
-	ErrorCodeInternal        ErrorCode = "INTERNAL"
+	ErrorCodeInvalidTicker     ErrorCode = "INVALID_TICKER"
+	ErrorCodeInvalidArgument   ErrorCode = "INVALID_ARGUMENT"
+	ErrorCodeNotFound          ErrorCode = "NOT_FOUND"
+	ErrorCodeSourceStale       ErrorCode = "SOURCE_STALE"
+	ErrorCodeUpstream429       ErrorCode = "UPSTREAM_429"
+	ErrorCodeUpstreamQuota     ErrorCode = "UPSTREAM_QUOTA"
+	ErrorCodeUpstreamMalformed ErrorCode = "UPSTREAM_MALFORMED"
+	ErrorCodeDBUnavailable     ErrorCode = "DB_UNAVAILABLE"
+	ErrorCodeUnauthorized      ErrorCode = "UNAUTHORIZED"
+	ErrorCodeInternal          ErrorCode = "INTERNAL"
 )
 
 // ErrorEnvelope is returned on errors only. Successful calls return data directly.

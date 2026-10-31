@@ -36,7 +36,7 @@ func (f *sweepFetcher) Fetch(_ context.Context, ticker string, _ time.Time) (*br
 	return &broker.Result{
 		Buyers:  []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
 		Sellers: []broker.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
-		Totals:  broker.Totals{TVal: 1_500_000_000, FNVal: 100_000_000, TLot: 150, Avg: 100},
+		Totals:  broker.Totals{TVal: 1_500_000_000, FNVal: i64p(100_000_000), TLot: 150, Avg: 100},
 	}, nil
 }
 
