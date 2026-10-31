@@ -35,6 +35,7 @@ func TestConfigFromViper(t *testing.T) {
 	vip.Set("indexalpha.timeout", "12s")
 	vip.Set("indexalpha.reserve", 4)
 	vip.Set("indexalpha.cooldown", "45s")
+	vip.Set("indexalpha.daily_limit", 3)
 
 	cfg := ConfigFromViper(vip)
 	if cfg.APIKey != "first" {
@@ -55,6 +56,9 @@ func TestConfigFromViper(t *testing.T) {
 	if cfg.Cooldown.Seconds() != 45 {
 		t.Errorf("Cooldown = %s, want 45s", cfg.Cooldown)
 	}
+	if cfg.DailyLimit != 3 {
+		t.Errorf("DailyLimit = %d, want 3", cfg.DailyLimit)
+	}
 }
 
 // TestConfigFromViper_Defaults pins the operating defaults: a ten-unit reserve
@@ -66,6 +70,9 @@ func TestConfigFromViper_Defaults(t *testing.T) {
 	}
 	if cfg.Cooldown != DefaultCooldown {
 		t.Errorf("Cooldown = %s, want %s", cfg.Cooldown, DefaultCooldown)
+	}
+	if cfg.DailyLimit != DefaultDailyLimit {
+		t.Errorf("DailyLimit = %d, want %d", cfg.DailyLimit, DefaultDailyLimit)
 	}
 	if cfg.BaseURL != DefaultBaseURL {
 		t.Errorf("BaseURL = %q", cfg.BaseURL)

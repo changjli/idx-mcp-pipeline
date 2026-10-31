@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +30,11 @@ const DefaultReserve = 10
 // sends no Retry-After.
 const DefaultCooldown = 60 * time.Second
 
+// DefaultDailyLimit is the vendor's per-key request cap (one request per HTTP
+// call, regardless of ticker count). It is not exposed by /usage or any header,
+// so it is a configuration knob with the Free-plan value as the default.
+const DefaultDailyLimit = 5
+
 // minQuotaRetryDelay is how long an exhausted key with an unknown or already
 // past reset is parked before the pool re-reads /usage. The real period end is
 // preferred whenever it is known; this only avoids a busy loop.
@@ -43,21 +49,23 @@ type Config struct {
 	BaseURL string
 	// APIKey is the legacy single-key convenience. The pool reads Keys; when
 	// Keys is empty a non-empty APIKey is treated as a one-key pool.
-	APIKey   string
-	Keys     []string
-	Timeout  time.Duration
-	Reserve  int
-	Cooldown time.Duration
+	APIKey     string
+	Keys       []string
+	Timeout    time.Duration
+	Reserve    int
+	Cooldown   time.Duration
+	DailyLimit int
 }
 
 // DefaultConfig returns production defaults: the public host, 30s timeout, a
 // ten-unit reserve and a one-minute rate-limit cooldown.
 func DefaultConfig() Config {
 	return Config{
-		BaseURL:  DefaultBaseURL,
-		Timeout:  DefaultTimeout,
-		Reserve:  DefaultReserve,
-		Cooldown: DefaultCooldown,
+		BaseURL:    DefaultBaseURL,
+		Timeout:    DefaultTimeout,
+		Reserve:    DefaultReserve,
+		Cooldown:   DefaultCooldown,
+		DailyLimit: DefaultDailyLimit,
 	}
 }
 
@@ -166,9 +174,9 @@ func (c *Client) FetchWithKey(ctx context.Context, key, ticker string, date time
 }
 
 // classifyStatus turns a non-200 response into one of the structured failure
-// classes. Index Alpha uses 403 for both auth failures and quota exhaustion, so
-// the monthly-remaining header (and the detail text for the plan-daily cap)
-// separates them.
+// classes. Index Alpha uses 403 for auth failures, monthly quota exhaustion and
+// the daily request cap, so the monthly-remaining header plus the detail text
+// separates the three.
 func classifyStatus(resp *http.Response, body []byte) error {
 	if resp.StatusCode == http.StatusOK {
 		return nil
@@ -178,11 +186,28 @@ func classifyStatus(resp *http.Response, body []byte) error {
 	case http.StatusUnauthorized:
 		return fmt.Errorf("%w: status=401 detail=%s", ErrUnauthorized, detail)
 	case http.StatusForbidden:
-		if resp.Header.Get("X-Monthly-Remaining") == "0" || isQuotaDetail(body) {
+		remaining, hasMonthly := monthlyRemaining(resp.Header)
+		switch {
+		case isDailyLimitDetail(body):
+			// The daily request cap is separate from the monthly ticker
+			// allowance. The exact rejection text is unmeasured, so match the
+			// "daily" phrasing first.
+			return fmt.Errorf("%w: status=403 detail=%s", broker.ErrDailyLimit, detail)
+		case hasMonthly && remaining == 0:
 			return fmt.Errorf("%w: status=403 detail=%s reset=%s",
 				broker.ErrQuotaExhausted, detail, resp.Header.Get("X-Monthly-Reset"))
+		case hasMonthly && remaining > 0 && isLimitDetail(body):
+			// Monthly units remain, so a plain "limit exceeded" must be the
+			// daily request cap rather than a dead credential.
+			return fmt.Errorf("%w: status=403 detail=%s", broker.ErrDailyLimit, detail)
+		case isQuotaDetail(body):
+			// No monthly header to disambiguate; the documented monthly text
+			// ("Account monthly API limit exceeded") still wins over auth.
+			return fmt.Errorf("%w: status=403 detail=%s reset=%s",
+				broker.ErrQuotaExhausted, detail, resp.Header.Get("X-Monthly-Reset"))
+		default:
+			return fmt.Errorf("%w: status=403 detail=%s", ErrUnauthorized, detail)
 		}
-		return fmt.Errorf("%w: status=403 detail=%s", ErrUnauthorized, detail)
 	case http.StatusTooManyRequests:
 		return fmt.Errorf("%w: status=429 detail=%s", broker.ErrRateLimited, detail)
 	default:
@@ -190,8 +215,44 @@ func classifyStatus(resp *http.Response, body []byte) error {
 	}
 }
 
-// isQuotaDetail recognises the plan-daily cap, which arrives as a 403 without
-// X-Monthly-Remaining: 0 (the usage endpoint does not expose it).
+// monthlyRemaining reads the monthly ticker counter from a 403. Its presence
+// with a positive value is what separates a daily-cap rejection from a monthly
+// exhaustion or a dead credential.
+func monthlyRemaining(h http.Header) (int, bool) {
+	v := strings.TrimSpace(h.Get("X-Monthly-Remaining"))
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// isDailyLimitDetail recognises the per-day request cap. Its exact wording is
+// unmeasured; the vendor's documented style is "… API limit exceeded", so
+// anything that says "daily" plus a limit/quota word is treated as the daily
+// cap before the monthly patterns are consulted.
+func isDailyLimitDetail(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	if !strings.Contains(lower, "daily") && !strings.Contains(lower, "per day") {
+		return false
+	}
+	return isLimitDetail(body)
+}
+
+// isLimitDetail is the shared "this is a cap, not an auth failure" phrase test.
+func isLimitDetail(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	return strings.Contains(lower, "limit") ||
+		strings.Contains(lower, "quota") ||
+		strings.Contains(lower, "exceeded") ||
+		strings.Contains(lower, "too many")
+}
+
+// isQuotaDetail recognises a monthly exhaustion detail. A daily-cap rejection
+// is classified before this helper runs.
 func isQuotaDetail(body []byte) bool {
 	lower := strings.ToLower(string(body))
 	return strings.Contains(lower, "limit exceeded") || strings.Contains(lower, "quota")

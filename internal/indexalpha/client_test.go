@@ -105,10 +105,29 @@ func TestFetch_StructuredErrors(t *testing.T) {
 			want:    broker.ErrQuotaExhausted,
 		},
 		{
-			name:   "free plan daily quota exhausted",
+			name:   "daily request cap",
 			status: http.StatusForbidden,
 			body:   `{"detail":"Daily API limit exceeded"}`,
-			want:   broker.ErrQuotaExhausted,
+			want:   broker.ErrDailyLimit,
+		},
+		{
+			name:    "daily cap with monthly units left",
+			status:  http.StatusForbidden,
+			headers: map[string]string{"X-Monthly-Remaining": "124", "X-Monthly-Reset": "1795784282"},
+			body:    `{"detail":"API limit exceeded"}`,
+			want:    broker.ErrDailyLimit,
+		},
+		{
+			name:   "daily request wording",
+			status: http.StatusForbidden,
+			body:   `{"detail":"Daily request limit reached, try again tomorrow"}`,
+			want:   broker.ErrDailyLimit,
+		},
+		{
+			name:   "per day wording",
+			status: http.StatusForbidden,
+			body:   `{"detail":"Too many requests per day"}`,
+			want:   broker.ErrDailyLimit,
 		},
 		{
 			name:   "rate limited",

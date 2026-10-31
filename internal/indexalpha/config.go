@@ -26,6 +26,15 @@ func ConfigFromViper(vip *viper.Viper) Config {
 	if d := vip.GetDuration("indexalpha.cooldown"); d > 0 {
 		cfg.Cooldown = d
 	}
+	if vip.IsSet("indexalpha.daily_limit") {
+		cfg.DailyLimit = vip.GetInt("indexalpha.daily_limit")
+	}
+	if cfg.DailyLimit <= 0 {
+		// The vendor cap cannot be read from the API; the default is the Free
+		// plan's five requests/day. Zero would disable the guard, so it is not
+		// a meaningful value here.
+		cfg.DailyLimit = DefaultDailyLimit
+	}
 	if keys := KeysFromViper(vip); len(keys) > 0 {
 		cfg.Keys = keys
 		cfg.APIKey = keys[0]

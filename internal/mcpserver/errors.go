@@ -30,9 +30,13 @@ func exceptionToEnvelope(err error) mcp.ErrorEnvelope {
 	case errors.Is(err, usecase.ErrNotFound):
 		return mcp.NewError(mcp.ErrorCodeNotFound, err.Error(), false)
 	case errors.Is(err, broker.ErrQuotaExhausted):
-		// Quota is spent until the vendor's reset window; retrying now would
-		// just burn another failed request.
+		// Monthly ticker quota is spent until the vendor's reset window;
+		// retrying now would just burn another failed request.
 		return mcp.NewError(mcp.ErrorCodeUpstreamQuota, err.Error(), false)
+	case errors.Is(err, broker.ErrDailyLimit):
+		// The per-key daily request cap recovers at local midnight, not at the
+		// monthly period end. Distinct code so a caller can pace differently.
+		return mcp.NewError(mcp.ErrorCodeUpstreamDaily, err.Error(), false)
 	case errors.Is(err, broker.ErrRateLimited):
 		return mcp.NewError(mcp.ErrorCodeUpstream429, err.Error(), true)
 	case errors.Is(err, indexalpha.ErrUnauthorized):

@@ -10,6 +10,7 @@ const (
 	ErrorCodeSourceStale       ErrorCode = "SOURCE_STALE"
 	ErrorCodeUpstream429       ErrorCode = "UPSTREAM_429"
 	ErrorCodeUpstreamQuota     ErrorCode = "UPSTREAM_QUOTA"
+	ErrorCodeUpstreamDaily     ErrorCode = "UPSTREAM_DAILY_LIMIT"
 	ErrorCodeUpstreamMalformed ErrorCode = "UPSTREAM_MALFORMED"
 	ErrorCodeDBUnavailable     ErrorCode = "DB_UNAVAILABLE"
 	ErrorCodeUnauthorized      ErrorCode = "UNAUTHORIZED"

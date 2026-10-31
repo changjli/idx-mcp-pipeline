@@ -30,6 +30,8 @@ func TestExceptionToEnvelope(t *testing.T) {
 		{"broker rate limited", broker.ErrRateLimited, mcp.ErrorCodeUpstream429, true},
 		{"quota exhausted", broker.ErrQuotaExhausted, mcp.ErrorCodeUpstreamQuota, false},
 		{"wrapped quota", fmt.Errorf("broker summary fetch: %w", broker.ErrQuotaExhausted), mcp.ErrorCodeUpstreamQuota, false},
+		{"daily request cap", broker.ErrDailyLimit, mcp.ErrorCodeUpstreamDaily, false},
+		{"wrapped daily cap", fmt.Errorf("broker summary fetch: %w", broker.ErrDailyLimit), mcp.ErrorCodeUpstreamDaily, false},
 		{"upstream unauthorized", indexalpha.ErrUnauthorized, mcp.ErrorCodeUnauthorized, false},
 		{"malformed payload", indexalpha.ErrMalformedPayload, mcp.ErrorCodeUpstreamMalformed, false},
 		{"persist failure", usecase.ErrPersist, mcp.ErrorCodeDBUnavailable, true},

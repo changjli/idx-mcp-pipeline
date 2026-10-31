@@ -10,11 +10,18 @@ package broker
 import "errors"
 
 // ErrQuotaExhausted reports that the source refused a request because the
-// account's monthly (or plan-daily) allowance is used up. It is shared by every
+// account's monthly ticker allowance is used up. It is shared by every
 // quota-metered adapter so the MCP boundary can surface quota as its own
 // structured error instead of a generic upstream failure. Retrying the same key
-// will not help until the source's reset window passes.
+// will not help until the source's rolling reset window passes.
 var ErrQuotaExhausted = errors.New("broker: quota exhausted")
+
+// ErrDailyLimit reports that the source refused a request because the key hit
+// its per-day request cap (one request per HTTP call, regardless of ticker
+// count). It is deliberately distinct from ErrQuotaExhausted: the monthly
+// ticker allowance is untouched, the key recovers at the next local midnight,
+// and the remaining monthly units must not be discarded.
+var ErrDailyLimit = errors.New("broker: daily request limit")
 
 // ErrRateLimited reports a short-window rate limit (HTTP 429). Unlike
 // ErrQuotaExhausted it clears on its own, so the caller may cool the key down

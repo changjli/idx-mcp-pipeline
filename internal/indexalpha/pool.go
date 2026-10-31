@@ -16,6 +16,11 @@ import (
 // Pool turns N Index Alpha keys into one source. It owns the per-key quota
 // state and the rotation policy; the Client only speaks HTTP.
 //
+// Two independent vendor caps are tracked. The monthly one counts requested
+// tickers per account (seeded from GET /usage, then X-Monthly-Remaining). The
+// daily one counts HTTP requests per key regardless of ticker count; the vendor
+// exposes it nowhere, so it is counted locally per Asia/Jakarta day.
+//
 // State is in memory and seeded from GET /usage (free) at every process boot.
 // The vendor's X-Monthly-Remaining header is authoritative after that **when it
 // is present**: a successful call refills the counter from it, and an
@@ -24,13 +29,14 @@ import (
 // is still tolerated, falling back to deducting the call's cost and keeping the
 // /usage period_end as the reset. No monthly tier is hardcoded.
 type Pool struct {
-	client   *Client
-	log      *logrus.Logger
-	keys     []*keyState
-	next     int
-	reserve  int
-	cooldown time.Duration
-	now      func() time.Time
+	client     *Client
+	log        *logrus.Logger
+	keys       []*keyState
+	next       int
+	reserve    int
+	cooldown   time.Duration
+	dailyLimit int
+	now        func() time.Time
 
 	mu               sync.Mutex
 	quotaStopped     bool
@@ -53,6 +59,12 @@ type keyState struct {
 	needsSeed      bool
 	lastUsedAt     *time.Time
 	lastError      string
+
+	// Daily request counter. The vendor caps HTTP calls per local day
+	// regardless of ticker count; /usage and every response header expose only
+	// the monthly ticker counter, so this is counted locally.
+	dailyDay   string // Asia/Jakarta YYYY-MM-DD
+	dailyCount int
 }
 
 // KeyStatus is one key's observable state. Label is masked; the key itself is
@@ -69,6 +81,12 @@ type KeyStatus struct {
 	DisabledReason string     `json:"disabled_reason,omitempty"`
 	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
 	LastError      string     `json:"last_error,omitempty"`
+
+	DailyDay       string `json:"daily_day"`
+	DailyUsed      int    `json:"daily_used"`
+	DailyLimit     int    `json:"daily_limit"`
+	DailyRemaining int    `json:"daily_remaining"`
+	DailyCapped    bool   `json:"daily_capped"`
 }
 
 // Status is the pool's observable state: keys configured, keys usable, quota
@@ -82,6 +100,7 @@ type Status struct {
 	Reserve        int         `json:"reserve"`
 	Available      int         `json:"available"` // known remaining − reserve, floored at 0
 	QuotaStopped   bool        `json:"quota_stopped"`
+	DailyRequests  int         `json:"daily_requests"`
 	NextResetAt    *time.Time  `json:"next_reset_at,omitempty"`
 	Keys           []KeyStatus `json:"keys"`
 }
@@ -108,6 +127,9 @@ func NewPool(cfg Config, log *logrus.Logger) *Pool {
 	if cfg.Reserve < 0 {
 		cfg.Reserve = 0
 	}
+	if cfg.DailyLimit <= 0 {
+		cfg.DailyLimit = DefaultDailyLimit
+	}
 
 	keys := make([]string, 0, len(cfg.Keys)+1)
 	seen := make(map[string]bool)
@@ -132,12 +154,13 @@ func NewPool(cfg Config, log *logrus.Logger) *Pool {
 	}
 
 	return &Pool{
-		client:   NewClient(cfg, log),
-		log:      log,
-		keys:     states,
-		reserve:  cfg.Reserve,
-		cooldown: cfg.Cooldown,
-		now:      time.Now,
+		client:     NewClient(cfg, log),
+		log:        log,
+		keys:       states,
+		reserve:    cfg.Reserve,
+		cooldown:   cfg.Cooldown,
+		dailyLimit: cfg.DailyLimit,
+		now:        time.Now,
 	}
 }
 
@@ -275,7 +298,7 @@ func (p *Pool) Do(ctx context.Context, cost int, fn func(ctx context.Context, ke
 	var lastErr error
 
 	for {
-		idx, needSeed := p.nextCandidate(tried)
+		idx, key, needSeed := p.claimKey(tried)
 		if idx < 0 {
 			return p.noUsableKeyError(lastErr)
 		}
@@ -286,13 +309,6 @@ func (p *Pool) Do(ctx context.Context, cost int, fn func(ctx context.Context, ke
 			_ = p.seedKey(ctx, idx)
 			continue
 		}
-
-		tried[idx] = true
-		p.mu.Lock()
-		key := p.keys[idx].key
-		now := p.now()
-		p.keys[idx].lastUsedAt = &now
-		p.mu.Unlock()
 
 		outcome, err := fn(ctx, key)
 		if err == nil {
@@ -308,13 +324,18 @@ func (p *Pool) Do(ctx context.Context, cost int, fn func(ctx context.Context, ke
 	}
 }
 
-// nextCandidate returns the next usable key: the least recently used one,
-// with the round-robin pointer breaking ties. LRU keeps concurrent callers off
-// the same key (sequential calls still alternate, because a successful call
-// advances the pointer and stamps last_used_at), while rotation remains tied to
-// requests rather than to process start. The bool asks the caller to refresh
-// the key from /usage first.
-func (p *Pool) nextCandidate(tried map[int]bool) (int, bool) {
+// claimKey selects a usable key and claims it in one critical section: the
+// least recently used key, with the round-robin pointer breaking ties. LRU
+// keeps concurrent callers off the same key, while rotation stays tied to
+// requests rather than to process start.
+//
+// Claiming increments the daily request counter **atomically with the
+// availability check**, so two concurrent callers can never both spend the
+// last daily slot of a key. The counter is per HTTP call, regardless of ticker
+// count; /usage seeds are free and never counted. When needSeed is true the key
+// is returned unclaimed (no daily unit spent) so the caller can refresh /usage
+// first.
+func (p *Pool) claimKey(tried map[int]bool) (idx int, key string, needSeed bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -330,7 +351,7 @@ func (p *Pool) nextCandidate(tried map[int]bool) (int, bool) {
 			continue
 		}
 		ks := p.keys[i]
-		if usable, _ := p.usableLocked(ks, now); !usable {
+		if usable, _, _ := p.keyAvailabilityLocked(ks, now); !usable {
 			continue
 		}
 		if best == -1 {
@@ -342,9 +363,18 @@ func (p *Pool) nextCandidate(tried map[int]bool) (int, bool) {
 		}
 	}
 	if best == -1 {
-		return -1, false
+		return -1, "", false
 	}
-	return best, p.keys[best].needsSeed
+
+	ks := p.keys[best]
+	if ks.needsSeed {
+		return best, "", true
+	}
+
+	tried[best] = true
+	ks.dailyCount++
+	ks.lastUsedAt = &now
+	return best, ks.key, false
 }
 
 // olderTimestamp treats nil (never used) as older than any recorded time. Equal
@@ -359,22 +389,41 @@ func olderTimestamp(a, b *time.Time) bool {
 	return a.Before(*b)
 }
 
-// usableLocked reports whether a key may be used now, and separately whether its
-// unavailability is quota exhaustion (the distinction drives the error class).
-func (p *Pool) usableLocked(ks *keyState, now time.Time) (usable bool, exhausted bool) {
+// keyAvailabilityLocked reports whether a key may be used now and why not.
+// quotaExhausted is the monthly ticker counter; dailyCapped is the local
+// request cap. They park until different moments (period end vs local midnight)
+// and must not be conflated.
+func (p *Pool) keyAvailabilityLocked(ks *keyState, now time.Time) (usable, quotaExhausted, dailyCapped bool) {
+	p.refreshDailyLocked(ks, now)
+
 	if ks.disabledReason != "" && (ks.disabledUntil == nil || now.Before(*ks.disabledUntil)) {
-		return false, false
+		return false, false, false
 	}
 	if ks.exhaustedUntil != nil && now.Before(*ks.exhaustedUntil) {
-		return false, true
+		return false, true, false
 	}
 	if ks.cooldownUntil != nil && now.Before(*ks.cooldownUntil) {
-		return false, false
+		return false, false, false
 	}
 	if ks.remainingKnown && ks.remaining <= 0 {
-		return false, true
+		return false, true, false
 	}
-	return true, false
+	if p.dailyLimit > 0 && ks.dailyCount >= p.dailyLimit {
+		return false, false, true
+	}
+	return true, false, false
+}
+
+// refreshDailyLocked rolls the per-key request counter over at local midnight
+// (Asia/Jakarta). It deliberately does not re-read /usage: the daily counter is
+// not exposed by the vendor, and the monthly counter is unaffected by the day
+// boundary.
+func (p *Pool) refreshDailyLocked(ks *keyState, now time.Time) {
+	day := localDayKey(now)
+	if ks.dailyDay != day {
+		ks.dailyDay = day
+		ks.dailyCount = 0
+	}
 }
 
 // refreshExpiredLocked clears time-bounded parkings. A key whose rolling period
@@ -382,6 +431,7 @@ func (p *Pool) usableLocked(ks *keyState, now time.Time) (usable bool, exhausted
 // window's counter is read rather than assumed.
 func (p *Pool) refreshExpiredLocked(now time.Time) {
 	for _, ks := range p.keys {
+		p.refreshDailyLocked(ks, now)
 		if ks.exhaustedUntil != nil && !now.Before(*ks.exhaustedUntil) {
 			ks.exhaustedUntil = nil
 			ks.remainingKnown = false
@@ -448,6 +498,14 @@ func (p *Pool) applyFailureLocked(ks *keyState, outcome CallOutcome, err error, 
 	ks.lastError = err.Error()
 
 	switch {
+	case isDailyLimit(err):
+		// The daily cap is independent of the monthly ticker allowance. Park
+		// the key for the rest of the local day, keep its remaining units and
+		// its period_end untouched. The count was already incremented for this
+		// attempt; pin it to the limit so a vendor cap lower than the configured
+		// one still parks the key.
+		p.refreshDailyLocked(ks, now)
+		ks.dailyCount = p.dailyLimit
 	case isQuota(err):
 		ks.remaining = 0
 		ks.remainingKnown = true
@@ -486,18 +544,21 @@ func (p *Pool) applyRemainingLocked(ks *keyState, now time.Time) {
 // exactly once. Any usable key (including an unmeasured one) clears the state.
 func (p *Pool) quotaTransitionLocked(now time.Time) *QuotaExhaustedEvent {
 	usableAny := false
-	quotaAny := false
+	allQuota := len(p.keys) > 0
 	for _, ks := range p.keys {
-		usable, exhausted := p.usableLocked(ks, now)
+		usable, quota, _ := p.keyAvailabilityLocked(ks, now)
 		if usable {
 			usableAny = true
 		}
-		if exhausted {
-			quotaAny = true
+		if !quota {
+			allQuota = false
 		}
 	}
 
-	if usableAny || !quotaAny {
+	// Only a genuine monthly exhaustion fires this event. A daily-capped,
+	// cooling or disabled key must not be reported as "out of quota", because
+	// its recovery time is different.
+	if usableAny || !allQuota {
 		p.quotaStopped = false
 		return nil
 	}
@@ -535,14 +596,16 @@ func (p *Pool) noUsableKeyError(lastErr error) error {
 	now := p.now()
 	p.mu.Lock()
 	p.refreshExpiredLocked(now)
-	var usable, quota, rate, auth, other int
+	var usable, quota, daily, rate, auth, other int
 	for _, ks := range p.keys {
-		u, exhausted := p.usableLocked(ks, now)
+		u, exhausted, capped := p.keyAvailabilityLocked(ks, now)
 		switch {
 		case u:
 			usable++
 		case exhausted:
 			quota++
+		case capped:
+			daily++
 		case ks.cooldownUntil != nil && now.Before(*ks.cooldownUntil):
 			rate++
 		case ks.disabledReason != "":
@@ -563,12 +626,16 @@ func (p *Pool) noUsableKeyError(lastErr error) error {
 		return fmt.Errorf("%w: no usable Index Alpha key", ErrUnauthorized)
 	}
 	if rate > 0 {
-		return fmt.Errorf("%w: all %d Index Alpha keys are rate limited (quota=%d auth=%d other=%d)",
-			broker.ErrRateLimited, total, quota, auth, other)
+		return fmt.Errorf("%w: all %d Index Alpha keys are rate limited (quota=%d daily=%d auth=%d other=%d)",
+			broker.ErrRateLimited, total, quota, daily, auth, other)
+	}
+	if daily > 0 {
+		return fmt.Errorf("%w: %d of %d Index Alpha keys are at their daily request cap (quota=%d rate=%d auth=%d); retry after local midnight",
+			broker.ErrDailyLimit, daily, total, quota, rate, auth)
 	}
 	if quota > 0 {
-		return fmt.Errorf("%w: all %d Index Alpha keys are out of quota (rate=%d auth=%d)",
-			broker.ErrQuotaExhausted, total, rate, auth)
+		return fmt.Errorf("%w: all %d Index Alpha keys are out of quota (rate=%d daily=%d auth=%d)",
+			broker.ErrQuotaExhausted, total, rate, daily, auth)
 	}
 	if auth+other == total {
 		return fmt.Errorf("%w: no usable Index Alpha key (auth=%d other=%d)", ErrUnauthorized, auth, other)
@@ -600,16 +667,22 @@ func (p *Pool) statusLocked(now time.Time) Status {
 		Reserve:    p.reserve,
 		Keys:       make([]KeyStatus, 0, len(p.keys)),
 	}
-	usableAny, quotaAny := false, false
+	usableAny, allQuota := false, len(p.keys) > 0
 	for _, ks := range p.keys {
-		usable, exhausted := p.usableLocked(ks, now)
+		usable, quota, daily := p.keyAvailabilityLocked(ks, now)
 		if usable {
 			st.Usable++
 			usableAny = true
 		}
-		if exhausted {
-			quotaAny = true
+		if !quota {
+			allQuota = false
 		}
+
+		dailyRemaining := p.dailyLimit - ks.dailyCount
+		if dailyRemaining < 0 {
+			dailyRemaining = 0
+		}
+		st.DailyRequests += ks.dailyCount
 
 		key := KeyStatus{
 			Label:          ks.label,
@@ -617,12 +690,17 @@ func (p *Pool) statusLocked(now time.Time) Status {
 			Remaining:      ks.remaining,
 			Unknown:        !ks.remainingKnown,
 			Usable:         usable,
-			Exhausted:      exhausted,
+			Exhausted:      quota,
 			ResetAt:        ks.resetAt,
 			CooldownUntil:  ks.cooldownUntil,
 			DisabledReason: ks.disabledReason,
 			LastUsedAt:     ks.lastUsedAt,
 			LastError:      ks.lastError,
+			DailyDay:       ks.dailyDay,
+			DailyUsed:      ks.dailyCount,
+			DailyLimit:     p.dailyLimit,
+			DailyRemaining: dailyRemaining,
+			DailyCapped:    daily,
 		}
 		if !ks.remainingKnown {
 			key.Remaining = 0
@@ -642,7 +720,7 @@ func (p *Pool) statusLocked(now time.Time) Status {
 	if st.Available < 0 {
 		st.Available = 0
 	}
-	st.QuotaStopped = !usableAny && quotaAny
+	st.QuotaStopped = !usableAny && allQuota
 	return st
 }
 
@@ -655,6 +733,21 @@ func retryAt(reset *time.Time, now time.Time) *time.Time {
 	}
 	t := now.Add(minQuotaRetryDelay)
 	return &t
+}
+
+// localDayKey is the calendar day used by the daily request cap. The vendor's
+// day boundary is Indonesian local time, not UTC.
+func localDayKey(t time.Time) string {
+	return t.In(jakartaLocation()).Format("2006-01-02")
+}
+
+// jakartaLocation returns Asia/Jakarta, falling back to a fixed +07:00 zone when
+// the tz database is unavailable.
+func jakartaLocation() *time.Location {
+	if loc, err := time.LoadLocation("Asia/Jakarta"); err == nil {
+		return loc
+	}
+	return time.FixedZone("WIB", 7*60*60)
 }
 
 func maskKey(k string) string {

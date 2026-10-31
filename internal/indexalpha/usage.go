@@ -210,14 +210,16 @@ func parseVendorTime(raw string) (*time.Time, error) {
 	return nil, fmt.Errorf("unrecognised timestamp")
 }
 
-// quotaErrorIsKeyScoped reports whether err condemns the key that produced it,
-// as opposed to the request. Unauthorized, quota and rate-limit failures are key
-// scoped; malformed requests, malformed payloads and 5xx are not.
+// keyScopedFailure reports whether err condemns the key that produced it, as
+// opposed to the request. Unauthorized, monthly quota, daily request-cap and
+// rate-limit failures are key scoped; malformed requests, malformed payloads
+// and 5xx are not.
 func keyScopedFailure(err error) bool {
-	return err != nil && (isQuota(err) || isRateLimited(err) || isUnauthorized(err))
+	return err != nil && (isQuota(err) || isDailyLimit(err) || isRateLimited(err) || isUnauthorized(err))
 }
 
 func isQuota(err error) bool       { return errors.Is(err, broker.ErrQuotaExhausted) }
+func isDailyLimit(err error) bool  { return errors.Is(err, broker.ErrDailyLimit) }
 func isRateLimited(err error) bool { return errors.Is(err, broker.ErrRateLimited) }
 func isUnauthorized(err error) bool {
 	return errors.Is(err, ErrUnauthorized)
