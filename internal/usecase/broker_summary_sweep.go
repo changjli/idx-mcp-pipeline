@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -228,7 +229,7 @@ func (uc *BrokerStockSummaryUseCase) SweepAnchorDay(ctx context.Context, anchor 
 				res.Empty++
 				continue
 			}
-			if err := uc.persist(ticker, anchor, r, othersNet(r.Buyers, r.Sellers)); err != nil {
+			if err := uc.persist(ticker, anchor, r, entity.BrokerSourceSweep); err != nil {
 				res.Failed++
 				uc.Log.Warnf("broker sweep: persist %s %s failed: %v", ticker, res.Date, err)
 				continue

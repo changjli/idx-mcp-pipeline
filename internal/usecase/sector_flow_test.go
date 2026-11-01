@@ -51,14 +51,13 @@ func seedSectorTicker(t *testing.T, db *sqlx.DB, ticker string, day time.Time, s
 		ON CONFLICT (ticker, trading_day) DO NOTHING`, ticker, day)
 }
 
-// seedSectorDay writes one ticker+day's stored rows plus its footer totals
-// (the tail net and foreign net the sector aggregation reads).
-func seedSectorDay(t *testing.T, db *sqlx.DB, repo *repository.BrokerStockSummaryRepository, ticker string, day time.Time, othersNet, foreignNet int64, rows ...entity.BrokerStockSummary) {
+// seedSectorDay writes one ticker+day's stored rows plus its footer totals (the
+// foreign net the sector aggregation reads).
+func seedSectorDay(t *testing.T, db *sqlx.DB, repo *repository.BrokerStockSummaryRepository, ticker string, day time.Time, foreignNet int64, rows ...entity.BrokerStockSummary) {
 	t.Helper()
 	totals := &entity.BrokerStockSummaryTotals{
 		Ticker: ticker, TradingDay: day,
 		TVal: i64p(0), FNVal: i64p(foreignNet), TLot: i64p(0), Avg: i64p(0),
-		OthersNet: i64p(othersNet),
 	}
 	if err := repo.UpsertDay(db, rows, totals); err != nil {
 		t.Fatalf("seedSectorDay %s %s: %v", ticker, day.Format("2006-01-02"), err)
@@ -110,12 +109,12 @@ func TestGetSectorFlow_GroupsAndReconciles(t *testing.T) {
 	seedSectorTicker(t, db, tb, sfDay2, "Energy", "Oil & Gas", "Oil & Gas")
 
 	// Financials: TESTA — AK accumulates both days, XL sells day 1.
-	seedSectorDay(t, db, uc.BrokerRepo, ta, sfDay1, 1_000_000_000, -2_000_000_000,
+	seedSectorDay(t, db, uc.BrokerRepo, ta, sfDay1, -2_000_000_000,
 		nfRow(ta, "AK", "buy", sfDay1, nfBuy10), nfRow(ta, "XL", "sell", sfDay1, nfSell6))
-	seedSectorDay(t, db, uc.BrokerRepo, ta, sfDay2, 0, 1_000_000_000,
+	seedSectorDay(t, db, uc.BrokerRepo, ta, sfDay2, 1_000_000_000,
 		nfRow(ta, "AK", "buy", sfDay2, nfSell4))
 	// Energy: TESTB — rows only on day 1 (day 2 is a coverage gap).
-	seedSectorDay(t, db, uc.BrokerRepo, tb, sfDay1, -1_000_000_000, 2_000_000_000,
+	seedSectorDay(t, db, uc.BrokerRepo, tb, sfDay1, 2_000_000_000,
 		nfRow(tb, "AK", "buy", sfDay1, nfSell7), nfRow(tb, "MN", "sell", sfDay1, nfSell3))
 
 	res, err := uc.GetSectorFlow(context.Background(), SectorFlowRequest{From: &sfDay1, To: &sfDay2})
@@ -140,18 +139,12 @@ func TestGetSectorFlow_GroupsAndReconciles(t *testing.T) {
 	}
 
 	fin := findSectorRow(t, res.Rows, "Financials")
-	// Listed: AK buy 10B + 4B, XL sell 6B. Net = buy − sell + tail(1B).
+	// Gross buy/sell over the full broker set; no aggregate net by design.
 	if fin.Buy != nfBuy10+nfSell4 || fin.Sell != nfSell6 {
 		t.Errorf("Financials buy/sell = %d/%d, want 14B/6B", fin.Buy, fin.Sell)
 	}
-	if fin.OthersNet != 1_000_000_000 {
-		t.Errorf("Financials others_net = %d, want 1B (Σ per-ticker tails)", fin.OthersNet)
-	}
-	if fin.ForeignNet != -1_000_000_000 {
-		t.Errorf("Financials foreign_net = %d, want −1B (Σ f_nval)", fin.ForeignNet)
-	}
-	if fin.Net != (nfBuy10+nfSell4-nfSell6)+1_000_000_000 {
-		t.Errorf("Financials net = %d, want listed net + tail", fin.Net)
+	if deref(fin.ForeignNet) != -1_000_000_000 || fin.ForeignNetDays != 2 {
+		t.Errorf("Financials foreign_net = %v over %d days, want −1B over 2", fin.ForeignNet, fin.ForeignNetDays)
 	}
 	if fin.TickersCovered != 1 || fin.DaysCovered != 2 {
 		t.Errorf("Financials coverage = %d tickers/%d days, want 1/2", fin.TickersCovered, fin.DaysCovered)
@@ -167,41 +160,99 @@ func TestGetSectorFlow_GroupsAndReconciles(t *testing.T) {
 	}
 
 	energy := findSectorRow(t, res.Rows, "Energy")
-	if energy.Buy != nfSell7 || energy.Sell != nfSell3 || energy.OthersNet != -1_000_000_000 {
-		t.Errorf("Energy = %+v, want buy 7B sell 3B tail −1B", energy)
+	if energy.Buy != nfSell7 || energy.Sell != nfSell3 {
+		t.Errorf("Energy = %+v, want buy 7B sell 3B", energy)
 	}
-	if energy.ForeignNet != 2_000_000_000 {
-		t.Errorf("Energy foreign_net = %d, want 2B", energy.ForeignNet)
+	if deref(energy.ForeignNet) != 2_000_000_000 || energy.ForeignNetDays != 1 {
+		t.Errorf("Energy foreign_net = %v over %d days, want 2B over 1", energy.ForeignNet, energy.ForeignNetDays)
 	}
 	if energy.TickersCovered != 1 || energy.DaysCovered != 1 {
 		t.Errorf("Energy coverage = %d tickers/%d days, want 1/1 (day 2 gap)", energy.TickersCovered, energy.DaysCovered)
 	}
-	// Rows sorted by net desc: Financials 9B > Energy 3B.
-	if res.Rows[0].Sector != "Financials" {
-		t.Errorf("rows[0] = %s, want Financials (top net first)", res.Rows[0].Sector)
+	// Rows are ordered foreign_net desc (unobserved last): Energy +2B > Financials −1B.
+	if res.Rows[0].Sector != "Energy" {
+		t.Errorf("rows[0] = %s, want Energy (top foreign net first)", res.Rows[0].Sector)
 	}
 
-	// Reconciliation (ticket sanity check): the sector listed nets sum back to
-	// the market-wide listed net get_broker_net_flow reports over the same
-	// window — every stored row lands in exactly one sector bucket.
+	// Reconciliation: every stored row lands in exactly one sector bucket, and
+	// the per-sector foreign nets sum to the response.
 	market, err := netFlowUC.GetBrokerNetFlow(context.Background(), nil, &sfDay1, &sfDay2)
 	if err != nil {
 		t.Fatalf("GetBrokerNetFlow: %v", err)
 	}
-	var marketListedNet, sectorListedNet, sectorTails, sectorForeign int64
+	var marketListedNet, sectorListedNet, sectorForeign int64
 	for _, r := range market.Rows {
 		marketListedNet += r.Net
 	}
 	for _, r := range res.Rows {
 		sectorListedNet += r.Buy - r.Sell
-		sectorTails += r.OthersNet
-		sectorForeign += r.ForeignNet
+		sectorForeign += deref(r.ForeignNet)
 	}
 	if sectorListedNet != marketListedNet {
 		t.Errorf("sector listed net = %d, market-wide = %d — rows dropped or double-counted", sectorListedNet, marketListedNet)
 	}
-	if sectorTails != res.OthersNet || sectorForeign != res.ForeignNet {
-		t.Errorf("per-sector tails/foreign (%d/%d) != response totals (%d/%d)", sectorTails, sectorForeign, res.OthersNet, res.ForeignNet)
+	if sectorForeign != deref(res.ForeignNet) || res.ForeignNetDays != 3 {
+		t.Errorf("per-sector foreign %d / %d days != response %v / %d", sectorForeign, res.ForeignNetDays, res.ForeignNet, res.ForeignNetDays)
+	}
+}
+
+// TestGetSectorFlow_FullSetReconcilesAndOrdersByForeignNet — with every broker
+// stored, each ticker-day's buy and sell sides are equal, so a sector reconciles
+// on gross buy/sell and carries no aggregate net. Ordering leads with foreign
+// net (unobserved last), then gross buy.
+func TestGetSectorFlow_FullSetReconcilesAndOrdersByForeignNet(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
+	uc := newSectorFlowTestUC(t, db)
+
+	tq, tr, ts, tu := "TESTQ", "TESTR", "TESTS", "TESTU"
+	cleanupSectorTickers(t, db, tq, tr, ts, tu)
+	seedSectorTicker(t, db, tq, sfDay1, "Financials", "Banks", "Banks")
+	seedSectorTicker(t, db, tr, sfDay1, "Energy", "Oil & Gas", "Oil & Gas")
+	seedSectorTicker(t, db, ts, sfDay1, "Health", "Pharma", "Pharma")
+	seedSectorTicker(t, db, tu, sfDay1, "Tech", "Software", "Software")
+
+	seedFullSetDay := func(ticker string, value, foreign int64) {
+		t.Helper()
+		seedSectorDay(t, db, uc.BrokerRepo, ticker, sfDay1, foreign,
+			nfRow(ticker, "AK", "buy", sfDay1, value),
+			nfRow(ticker, "XL", "sell", sfDay1, value))
+	}
+	seedFullSetDay(tq, 10_000_000_000, 2_000_000_000)
+	seedFullSetDay(tr, 8_000_000_000, -1_000_000_000)
+	seedFullSetDay(ts, 9_000_000_000, 0)
+	seedFullSetDay(tu, 4_000_000_000, 0)
+	// TESTS is a stored ticker-day with no observed foreign net.
+	db.MustExec("UPDATE broker_stock_summary_totals SET f_nval = NULL WHERE ticker = $1", ts)
+
+	res, err := uc.GetSectorFlow(context.Background(), SectorFlowRequest{From: &sfDay1, To: &sfDay1})
+	if err != nil {
+		t.Fatalf("GetSectorFlow: %v", err)
+	}
+	if len(res.Rows) != 4 {
+		t.Fatalf("rows = %+v, want 4 sectors", res.Rows)
+	}
+	for _, row := range res.Rows {
+		if row.Buy != row.Sell {
+			t.Errorf("%s buy/sell = %d/%d, want equal over the full broker set", row.Sector, row.Buy, row.Sell)
+		}
+	}
+	// foreign_net desc, unobserved last: Financials +2B, Tech 0, Energy −1B, Health nil.
+	wantOrder := []string{"Financials", "Tech", "Energy", "Health"}
+	for i, want := range wantOrder {
+		if res.Rows[i].Sector != want {
+			t.Fatalf("rows[%d] = %s, want %s (order %v): %+v", i, res.Rows[i].Sector, want, wantOrder, res.Rows)
+		}
+	}
+	health := findSectorRow(t, res.Rows, "Health")
+	if health.ForeignNet != nil || health.ForeignNetDays != 0 {
+		t.Errorf("Health foreign = %v/%d days, want nil/0 (never zero-imputed)", health.ForeignNet, health.ForeignNetDays)
+	}
+	if res.ForeignNet == nil || *res.ForeignNet != 1_000_000_000 || res.ForeignNetDays != 3 {
+		t.Errorf("response foreign = %v over %d days, want +1B over 3", res.ForeignNet, res.ForeignNetDays)
 	}
 }
 
@@ -220,8 +271,8 @@ func TestGetSectorFlow_FilterAndGroupBy(t *testing.T) {
 	cleanupSectorTickers(t, db, ta, tb)
 	seedSectorTicker(t, db, ta, sfDay1, "Financials", "Banks", "Financials")
 	seedSectorTicker(t, db, tb, sfDay1, "Financials", "Financing Service", "Financials")
-	seedSectorDay(t, db, uc.BrokerRepo, ta, sfDay1, 0, 0, nfRow(ta, "AK", "buy", sfDay1, nfBuy10))
-	seedSectorDay(t, db, uc.BrokerRepo, tb, sfDay1, 0, 0, nfRow(tb, "AK", "buy", sfDay1, nfBuy8))
+	seedSectorDay(t, db, uc.BrokerRepo, ta, sfDay1, 0, nfRow(ta, "AK", "buy", sfDay1, nfBuy10))
+	seedSectorDay(t, db, uc.BrokerRepo, tb, sfDay1, 0, nfRow(tb, "AK", "buy", sfDay1, nfBuy8))
 
 	res, err := uc.GetSectorFlow(context.Background(), SectorFlowRequest{From: &sfDay1, To: &sfDay1, GroupBy: "sub_sector"})
 	if err != nil {
@@ -279,7 +330,7 @@ func TestGetSectorFlow_Unclassified(t *testing.T) {
 	tk := "TESTC"
 	cleanupSectorTickers(t, db, tk)
 	seedSectorTicker(t, db, tk, sfDay1, "", "", "")
-	seedSectorDay(t, db, uc.BrokerRepo, tk, sfDay1, 0, 0, nfRow(tk, "AK", "buy", sfDay1, nfBuy2))
+	seedSectorDay(t, db, uc.BrokerRepo, tk, sfDay1, 0, nfRow(tk, "AK", "buy", sfDay1, nfBuy2))
 
 	res, err := uc.GetSectorFlow(context.Background(), SectorFlowRequest{From: &sfDay1, To: &sfDay1})
 	if err != nil {
@@ -314,8 +365,8 @@ func TestGetSectorFlow_EmptyWindow(t *testing.T) {
 	if res.Rows == nil || len(res.Rows) != 0 {
 		t.Fatalf("rows = %v, want empty non-nil array", res.Rows)
 	}
-	if res.CoveredDays != 0 || res.TradeDaysInWindow != 1 || res.OthersNet != 0 {
-		t.Errorf("empty window = covered %d/%d others %d, want 0/1/0", res.CoveredDays, res.TradeDaysInWindow, res.OthersNet)
+	if res.CoveredDays != 0 || res.TradeDaysInWindow != 1 || res.ForeignNet != nil {
+		t.Errorf("empty window = covered %d/%d foreign %v, want 0/1/nil", res.CoveredDays, res.TradeDaysInWindow, res.ForeignNet)
 	}
 }
 
@@ -341,7 +392,7 @@ func TestGetSectorFlow_InvalidBreakdown(t *testing.T) {
 //
 //	AK buy 10B TA, 8B TB, 2B TD, sell 4B TC  → net 16B, 4 tickers, days 1
 //	YP sell 6B TA                            → net −6B, 1 ticker
-//	TA footer: tail +1B, foreign −2B
+//	TA footer: foreign −2B
 //
 // AK's by_ticker ordering (net desc) is TA +10B, TB +8B, TD +2B, TC −4B, so a
 // 3-entry cap must drop TC while tickers_count stays 4.
@@ -352,11 +403,11 @@ func seedBreakdownWorld(t *testing.T, db *sqlx.DB, uc *SectorFlowUseCase) {
 	for _, tk := range []string{ta, tb, tc, td} {
 		seedSectorTicker(t, db, tk, sfDay1, "Financials", "Banks", "Financials")
 	}
-	seedSectorDay(t, db, uc.BrokerRepo, ta, sfDay1, 1_000_000_000, -2_000_000_000,
+	seedSectorDay(t, db, uc.BrokerRepo, ta, sfDay1, -2_000_000_000,
 		nfRow(ta, "AK", "buy", sfDay1, nfBuy10), nfRow(ta, "YP", "sell", sfDay1, nfSell6))
-	seedSectorDay(t, db, uc.BrokerRepo, tb, sfDay1, 0, 0, nfRow(tb, "AK", "buy", sfDay1, nfBuy8))
-	seedSectorDay(t, db, uc.BrokerRepo, tc, sfDay1, 0, 0, nfRow(tc, "AK", "sell", sfDay1, nfSell4))
-	seedSectorDay(t, db, uc.BrokerRepo, td, sfDay1, 0, 0, nfRow(td, "AK", "buy", sfDay1, nfBuy2))
+	seedSectorDay(t, db, uc.BrokerRepo, tb, sfDay1, 0, nfRow(tb, "AK", "buy", sfDay1, nfBuy8))
+	seedSectorDay(t, db, uc.BrokerRepo, tc, sfDay1, 0, nfRow(tc, "AK", "sell", sfDay1, nfSell4))
+	seedSectorDay(t, db, uc.BrokerRepo, td, sfDay1, 0, nfRow(td, "AK", "buy", sfDay1, nfBuy2))
 }
 
 // TestGetSectorFlow_BreakdownBroker — shape A: each sector top_broker carries
@@ -443,23 +494,17 @@ func TestGetSectorFlow_BreakdownTicker(t *testing.T) {
 	if len(fin.TopTickers) != 4 {
 		t.Fatalf("top_tickers = %d entries, want 4: %+v", len(fin.TopTickers), fin.TopTickers)
 	}
-	// Sorted net desc: TESTA 10−6+1 = 5B, TESTB 8B, TESTD 2B, TESTC −4B.
-	if fin.TopTickers[0].Ticker != "TESTB" || fin.TopTickers[0].Net != nfBuy8 {
-		t.Errorf("top_tickers[0] = %+v, want TESTB net 8B", fin.TopTickers[0])
+	// Ordered by gross buy: TESTA 10B, TESTB 8B, TESTD 2B, TESTC 0 (sell only).
+	if fin.TopTickers[0].Ticker != "TESTA" || fin.TopTickers[0].Buy != nfBuy10 {
+		t.Errorf("top_tickers[0] = %+v, want TESTA buy 10B", fin.TopTickers[0])
 	}
 
-	ta := fin.TopTickers[1]
-	if ta.Ticker != "TESTA" {
-		t.Fatalf("top_tickers[1] = %+v, want TESTA", ta)
-	}
+	ta := fin.TopTickers[0]
 	if ta.Buy != nfBuy10 || ta.Sell != nfSell6 {
 		t.Errorf("TESTA buy/sell = %d/%d, want 10B/6B", ta.Buy, ta.Sell)
 	}
-	if ta.OthersNet != 1_000_000_000 || ta.ForeignNet != -2_000_000_000 {
-		t.Errorf("TESTA tail/foreign = %d/%d, want 1B/−2B (footer grain, not broker-attributable)", ta.OthersNet, ta.ForeignNet)
-	}
-	if ta.Net != nfBuy10-nfSell6+1_000_000_000 {
-		t.Errorf("TESTA net = %d, want listed net + tail", ta.Net)
+	if deref(ta.ForeignNet) != -2_000_000_000 || ta.ForeignNetDays != 1 {
+		t.Errorf("TESTA foreign = %v over %d days, want −2B over 1", ta.ForeignNet, ta.ForeignNetDays)
 	}
 	if ta.DaysShown != 1 || ta.BrokersCount != 2 {
 		t.Errorf("TESTA coverage = %d days/%d brokers, want 1/2", ta.DaysShown, ta.BrokersCount)
@@ -469,8 +514,8 @@ func TestGetSectorFlow_BreakdownTicker(t *testing.T) {
 	}
 
 	// Sector-level fields stay the same under either breakdown.
-	if fin.Buy != nfBuy10+nfBuy8+nfBuy2 || fin.Sell != nfSell6+nfSell4 || fin.OthersNet != 1_000_000_000 {
-		t.Errorf("sector row = %+v, want buy 20B sell 10B tail 1B regardless of breakdown", fin)
+	if fin.Buy != nfBuy10+nfBuy8+nfBuy2 || fin.Sell != nfSell6+nfSell4 {
+		t.Errorf("sector row = %+v, want buy 20B sell 10B regardless of breakdown", fin)
 	}
 }
 

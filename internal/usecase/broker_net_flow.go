@@ -31,8 +31,7 @@ type BrokerNetFlowRow struct {
 	Buy        int64  `json:"buy"`
 	Sell       int64  `json:"sell"`
 	Net        int64  `json:"net"` // buy − sell; positive = net accumulation
-	// Per-ticker mode: distinct trading days the broker appeared in any
-	// top-10 list. Days below top-10 are invisible, never inferred.
+	// Per-ticker mode: distinct trading days the broker had a stored row.
 	DaysShown int `json:"days_shown,omitempty"`
 	// Market-wide mode: breadth (sessions = ticker-day listings) and depth
 	// (tickers = distinct tickers where the broker appeared), plus the
@@ -54,11 +53,12 @@ type BrokerNetFlowTickerDetail struct {
 }
 
 // BrokerNetFlowResponse is the structured result of get_broker_net_flow.
-// Coverage is the honesty contract: stored broker rows exist only for
-// anomaly-passing days and on-demand fetches, so trade_days_in_window vs
-// covered_days declares how much of the window this answer actually observes
-// (see CONTEXT.md "Coverage"). OthersNet is the window's unlisted tail —
-// positive = the quiet tail net-bought (same sign as a row's Net).
+// Coverage is the honesty contract: the sweep is a budget-capped rotation and
+// on-demand fetches add days, so trade_days_in_window vs covered_days declares
+// how much of the window this answer actually observes (see CONTEXT.md
+// "Coverage"). There is no response-level net: over the full broker set
+// Σbuy == Σsell, so an aggregate would be structurally zero. Net is reported
+// only per broker, where it is attributable.
 type BrokerNetFlowResponse struct {
 	Mode              string             `json:"mode"` // "ticker" | "market"
 	Ticker            string             `json:"ticker,omitempty"`
@@ -67,7 +67,6 @@ type BrokerNetFlowResponse struct {
 	TradeDaysInWindow int                `json:"trade_days_in_window"`
 	CoveredDays       int                `json:"covered_days"`
 	TickersCovered    int                `json:"tickers_covered,omitempty"` // market-wide mode
-	OthersNet         int64              `json:"others_net"`
 	Rows              []BrokerNetFlowRow `json:"rows"`
 }
 
@@ -92,12 +91,12 @@ func newNetFlowAccumulator() *netFlowAccumulator {
 
 // GetBrokerNetFlow aggregates stored per-stock broker rows over a window into
 // per-broker cumulative net flow. Pure DB read — no upstream call, no
-// inference: a broker below top-10 on a day is not counted that day, and its
-// flow lives in the window's others_net tail. Two modes:
+// inference: every broker the source returned is stored, so a broker's days are
+// its actual activity, not a top-10 appearance. Two modes:
 //   - ticker mode (pass ticker): per-broker net over one ticker's window.
 //   - market mode (omit ticker): per-broker net across every ticker with
-//     stored rows in the window. The population is anomaly-gated + on-demand
-//     fetches (bias toward busy tickers); tickers_covered declares it.
+//     stored rows in the window. The population is the budget-capped sweep
+//     rotation plus on-demand fetches; tickers_covered declares it.
 //
 // from/to default to brokerNetFlowDefaultWindowDays ending at the latest
 // trading day (per-ticker in ticker mode, market-wide in market mode).
@@ -140,7 +139,6 @@ func (uc *BrokerStockSummaryUseCase) GetBrokerNetFlow(ctx context.Context, ticke
 	acc := make(map[string]*netFlowAccumulator)
 	covered := make(map[string]struct{})
 	tickersCovered := make(map[string]struct{})
-	var totalBuy, totalSell int64
 	market := mode == netFlowModeMarket
 	for _, r := range rows {
 		a, ok := acc[r.BrokerCode]
@@ -151,10 +149,8 @@ func (uc *BrokerStockSummaryUseCase) GetBrokerNetFlow(ctx context.Context, ticke
 		val := deref(r.Value)
 		if r.Side == "sell" {
 			a.sell += val
-			totalSell += val
 		} else {
 			a.buy += val
-			totalBuy += val
 		}
 		day := r.TradingDay.Format("2006-01-02")
 		covered[day] = struct{}{}
@@ -182,11 +178,6 @@ func (uc *BrokerStockSummaryUseCase) GetBrokerNetFlow(ctx context.Context, ticke
 	if market {
 		resp.TickersCovered = len(tickersCovered)
 	}
-	// Window tail = Σ listed sell − Σ listed buy across the window's rows,
-	// the same recompute the history reader uses per day — positive = the
-	// unlisted tail net-bought. Summing per-day tails collapses to the global
-	// difference, so no per-day grouping is needed.
-	resp.OthersNet = totalSell - totalBuy
 
 	for code, a := range acc {
 		row := BrokerNetFlowRow{

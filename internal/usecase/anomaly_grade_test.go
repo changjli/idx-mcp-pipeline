@@ -57,29 +57,8 @@ func (f *fakeDisclosureSource) PassedTickersInWindow(_ *sqlx.DB, tickers []strin
 	return out, nil
 }
 
-type fakeBrokerNetSource struct {
-	nets           map[string]repository.TickerNet
-	err            error
-	gotTickers     []string
-	gotTo          time.Time
-	gotTradingDays int
-}
-
-func (f *fakeBrokerNetSource) SumNetByTickers(_ *sqlx.DB, tickers []string, to time.Time, tradingDays int) ([]repository.TickerNet, error) {
-	f.gotTickers = tickers
-	f.gotTo = to
-	f.gotTradingDays = tradingDays
-	if f.err != nil {
-		return nil, f.err
-	}
-	out := make([]repository.TickerNet, 0, len(tickers))
-	for _, ticker := range tickers {
-		if net, ok := f.nets[ticker]; ok {
-			out = append(out, net)
-		}
-	}
-	return out, nil
-}
+// fakeForeignFlowSource (flow_grade_test.go) is reused as the Anomaly Grade's
+// Broker Confirmation seam: both read the same Σ f_nval window.
 
 // ─── Fixture ─────────────────────────────────────────────────────────────────
 
@@ -95,7 +74,7 @@ func (f *fakeBrokerNetSource) SumNetByTickers(_ *sqlx.DB, tickers []string, to t
 //	NORM 0% (baseline only)
 //
 // Baseline = all seven; baseline median = +10%.
-func anomalyGradeScenario() (time.Time, []time.Time, *fakeMeasurementPrices, *fakeAnomalySource, *fakeDisclosureSource, *fakeBrokerNetSource) {
+func anomalyGradeScenario() (time.Time, []time.Time, *fakeMeasurementPrices, *fakeAnomalySource, *fakeDisclosureSource, *fakeForeignFlowSource) {
 	anchor := measurementAnchor()
 	days := measurementCalendar(anchor, 55)
 	targetDays := []time.Time{anchor, days[5], days[10], days[20]}
@@ -125,22 +104,22 @@ func anomalyGradeScenario() (time.Time, []time.Time, *fakeMeasurementPrices, *fa
 		},
 	}}
 	disclosures := &fakeDisclosureSource{passed: []string{"UP1", "VOL1"}}
-	brokers := &fakeBrokerNetSource{nets: map[string]repository.TickerNet{
-		"UP1":  {Ticker: "UP1", Net: 5_000_000_000, Days: 5},
-		"UP2":  {Ticker: "UP2", Net: -5_000_000_000, Days: 4},
-		"DN1":  {Ticker: "DN1", Net: -5_000_000_000, Days: 3},
-		"VOL1": {Ticker: "VOL1", Net: 5_000_000_000, Days: 6},
-		"MIX1": {Ticker: "MIX1", Net: 0, Days: 2},
-		// VOL2 absent: broker-unobserved.
-	}}
+	brokers := &fakeForeignFlowSource{window: &repository.ForeignNetWindow{Rows: []repository.TickerForeignNet{
+		{Ticker: "UP1", ForeignNet: 5_000_000_000, Days: 5},
+		{Ticker: "UP2", ForeignNet: -5_000_000_000, Days: 4},
+		{Ticker: "DN1", ForeignNet: -5_000_000_000, Days: 3},
+		{Ticker: "VOL1", ForeignNet: 5_000_000_000, Days: 6},
+		{Ticker: "MIX1", ForeignNet: 0, Days: 2},
+		// VOL2 absent: foreign-net-unobserved.
+	}}}
 	return anchor, days, priceFake, anomalies, disclosures, brokers
 }
 
-func newAnomalyGradeEngine(prices MeasurementPriceSource, anomalies MeasurementAnomalySource, disclosures MeasurementDisclosureSource, brokers MeasurementBrokerNetSource) *MeasurementEngine {
+func newAnomalyGradeEngine(prices MeasurementPriceSource, anomalies MeasurementAnomalySource, disclosures MeasurementDisclosureSource, brokers MeasurementForeignFlowSource) *MeasurementEngine {
 	engine := NewMeasurementEngine(nil, logrus.New(), nil, prices, nil, "testrev")
 	engine.Anomalies = anomalies
 	engine.Disclosures = disclosures
-	engine.BrokerNet = brokers
+	engine.ForeignFlow = brokers
 	return engine
 }
 
@@ -426,11 +405,11 @@ func TestGradeAnomalies_ReadErrorsPropagate(t *testing.T) {
 	boom := errors.New("db exploded")
 	cases := []struct {
 		name   string
-		mutate func(*fakeAnomalySource, *fakeDisclosureSource, *fakeBrokerNetSource)
+		mutate func(*fakeAnomalySource, *fakeDisclosureSource, *fakeForeignFlowSource)
 	}{
-		{name: "anomalies", mutate: func(a *fakeAnomalySource, _ *fakeDisclosureSource, _ *fakeBrokerNetSource) { a.err = boom }},
-		{name: "disclosures", mutate: func(_ *fakeAnomalySource, d *fakeDisclosureSource, _ *fakeBrokerNetSource) { d.err = boom }},
-		{name: "broker net", mutate: func(_ *fakeAnomalySource, _ *fakeDisclosureSource, b *fakeBrokerNetSource) { b.err = boom }},
+		{name: "anomalies", mutate: func(a *fakeAnomalySource, _ *fakeDisclosureSource, _ *fakeForeignFlowSource) { a.err = boom }},
+		{name: "disclosures", mutate: func(_ *fakeAnomalySource, d *fakeDisclosureSource, _ *fakeForeignFlowSource) { d.err = boom }},
+		{name: "foreign net", mutate: func(_ *fakeAnomalySource, _ *fakeDisclosureSource, b *fakeForeignFlowSource) { b.err = boom }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

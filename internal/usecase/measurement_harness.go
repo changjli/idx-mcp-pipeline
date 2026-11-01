@@ -100,7 +100,7 @@ func (h *MeasurementHarness) GradeAnomalies(ctx context.Context, opts AnomalyGra
 	engine := h.baseEngine()
 	engine.Anomalies = h.anomalyRepo
 	engine.Disclosures = h.disclosureRepo
-	engine.BrokerNet = h.brokerRepo
+	engine.ForeignFlow = h.brokerRepo
 	return engine.GradeAnomalies(ctx, opts)
 }
 

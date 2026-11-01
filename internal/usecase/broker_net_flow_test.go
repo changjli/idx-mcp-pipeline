@@ -67,8 +67,8 @@ func findNetFlowRow(t *testing.T, rows []BrokerNetFlowRow, code string) BrokerNe
 }
 
 // TestGetBrokerNetFlow_TickerMode — cumulative sums across multiple trading
-// days: a broker listed 2 of 3 days (days_shown=2), the unlisted day's flow
-// hidden inside others_net, coverage numbers from the daily_prices calendar.
+// days: a broker observed 2 of 3 days (days_shown=2), coverage numbers from the
+// daily_prices calendar.
 func TestGetBrokerNetFlow_TickerMode(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
@@ -88,7 +88,7 @@ func TestGetBrokerNetFlow_TickerMode(t *testing.T) {
 	}
 	seedNetFlowDay(t, db, uc.Repo, ticker, d1, nfRow(ticker, "AK", "buy", d1, nfBuy10), nfRow(ticker, "XL", "sell", d1, nfSell6))
 	seedNetFlowDay(t, db, uc.Repo, ticker, d2, nfRow(ticker, "AK", "buy", d2, nfBuy8), nfRow(ticker, "MN", "sell", d2, nfSell3))
-	// d3: AK below top-10 — its flow lands in the day tail, not AK's row.
+	// d3: AK absent — it traded no shares that day, so it is not inferred.
 	seedNetFlowDay(t, db, uc.Repo, ticker, d3, nfRow(ticker, "MN", "buy", d3, nfBuy2), nfRow(ticker, "XL", "sell", d3, nfSell5))
 
 	res, err := uc.GetBrokerNetFlow(context.Background(), &ticker, &d1, &d3)
@@ -111,7 +111,7 @@ func TestGetBrokerNetFlow_TickerMode(t *testing.T) {
 		t.Errorf("AK = %+v, want buy 18B net 18B", ak)
 	}
 	if ak.DaysShown != 2 {
-		t.Errorf("AK days_shown = %d, want 2 (d3 below top-10)", ak.DaysShown)
+		t.Errorf("AK days_shown = %d, want 2 (absent on d3)", ak.DaysShown)
 	}
 	mn := findNetFlowRow(t, res.Rows, "MN")
 	if mn.Buy != nfBuy2 || mn.Sell != nfSell3 || mn.Net != nfBuy2-nfSell3 {
@@ -124,18 +124,13 @@ func TestGetBrokerNetFlow_TickerMode(t *testing.T) {
 	if xl.Buy != 0 || xl.Sell != nfSell6+nfSell5 || xl.Net != -(nfSell6+nfSell5) {
 		t.Errorf("XL = %+v, want sell 11B net −11B", xl)
 	}
-	// Window tail = Σ listed sell − Σ listed buy = 14B − 20B = −6B.
-	if res.OthersNet != (nfSell6+nfSell5+nfSell3)-(nfBuy10+nfBuy8+nfBuy2) {
-		t.Errorf("others_net = %d, want −6B", res.OthersNet)
-	}
 	if res.Rows[0].BrokerCode != "AK" {
 		t.Errorf("rows[0] = %s, want AK (top accumulator first)", res.Rows[0].BrokerCode)
 	}
 }
 
 // TestGetBrokerNetFlow_MarketMode — per-broker net across tickers: sessions and
-// tickers breadth, tickers_covered, market-level tail, coverage from the
-// market-wide calendar.
+// tickers breadth, tickers_covered, coverage from the market-wide calendar.
 func TestGetBrokerNetFlow_MarketMode(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
@@ -194,10 +189,6 @@ func TestGetBrokerNetFlow_MarketMode(t *testing.T) {
 	if len(xl.ByTicker) != 2 || xl.ByTicker[0].Ticker != tm || xl.ByTicker[0].Net != nfSell7 {
 		t.Errorf("XL by_ticker = %+v, want TESTM net 7B first", xl.ByTicker)
 	}
-	// Market tail = (6+4)B − (10+7)B = −7B.
-	if res.OthersNet != (nfSell6+nfSell4)-(nfBuy10+nfSell7) {
-		t.Errorf("others_net = %d, want −7B", res.OthersNet)
-	}
 	if res.Rows[0].BrokerCode != "AK" {
 		t.Errorf("rows[0] = %s, want AK", res.Rows[0].BrokerCode)
 	}
@@ -227,9 +218,9 @@ func TestGetBrokerNetFlow_EmptyWindow(t *testing.T) {
 	if len(res.Rows) != 0 {
 		t.Fatalf("rows = %d, want 0", len(res.Rows))
 	}
-	if res.CoveredDays != 0 || res.TradeDaysInWindow != 2 || res.OthersNet != 0 {
-		t.Errorf("empty window = covered %d/%d others %d, want 0/2/0",
-			res.CoveredDays, res.TradeDaysInWindow, res.OthersNet)
+	if res.CoveredDays != 0 || res.TradeDaysInWindow != 2 {
+		t.Errorf("empty window = covered %d/%d, want 0/2",
+			res.CoveredDays, res.TradeDaysInWindow)
 	}
 }
 

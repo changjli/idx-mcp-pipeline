@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -90,17 +91,17 @@ func TestGetStockBrokerSummaryHistory_ReadsStoredRange(t *testing.T) {
 	if res.Days[0].Totals.TVal != 1_000_000_000 {
 		t.Errorf("days[0].Totals.TVal = %d, want 1000000000", res.Days[0].Totals.TVal)
 	}
-	// Issue 03: totals ride through; others_net recomputed from stored rows
-	// (day1 = buy 1B / sell 0.5B → tail net = 0.5B − 1B = −0.5B).
+	// Totals ride through; this fixture is a partial set (sell side is half of
+	// t_val), so coverage reports incomplete rather than implying the market.
 	if res.Days[0].TotalBuyValue != 1_000_000_000 || res.Days[0].TotalSellValue != 1_000_000_000 {
 		t.Errorf("days[0] totals = %d/%d, want 1000000000/1000000000",
 			res.Days[0].TotalBuyValue, res.Days[0].TotalSellValue)
 	}
-	if res.Days[0].OthersNet != -500_000_000 {
-		t.Errorf("days[0].OthersNet = %d, want -500000000 (sell 0.5B − buy 1B)", res.Days[0].OthersNet)
+	if res.Days[0].Coverage.Complete {
+		t.Errorf("days[0] coverage = %+v, want incomplete (0.5B of 1B sell side)", res.Days[0].Coverage)
 	}
-	if res.Days[0].Totals.OthersNet != -500_000_000 {
-		t.Errorf("days[0].Totals.OthersNet = %d, want -500000000", res.Days[0].Totals.OthersNet)
+	if res.Days[0].Coverage.Buyers != 1 || res.Days[0].Coverage.Sellers != 1 {
+		t.Errorf("days[0] coverage counts = %+v, want 1/1", res.Days[0].Coverage)
 	}
 	if res.Days[1].TradingDay != "2026-08-11" {
 		t.Errorf("days[1].TradingDay = %q, want 2026-08-11", res.Days[1].TradingDay)
@@ -149,6 +150,70 @@ func TestGetStockBrokerSummaryHistory_BackwardsRange(t *testing.T) {
 	)
 	if !errors.Is(err, ErrInvalidRange) {
 		t.Errorf("expected ErrInvalidRange, got %v", err)
+	}
+}
+
+// TestGetStockBrokerSummaryHistory_ProjectsTopTen — the stored set is the full
+// broker list, the response is the top ten per side, and coverage is measured
+// over all of it before projection.
+func TestGetStockBrokerSummaryHistory_ProjectsTopTen(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
+	uc := newHistoryTestUC(t, db)
+
+	ticker := "TESTX"
+	day := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+	db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	t.Cleanup(func() {
+		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	})
+
+	const n = 12
+	rows := make([]entity.BrokerStockSummary, 0, 2*n)
+	for i := 0; i < n; i++ {
+		code := fmt.Sprintf("B%02d", i)
+		rows = append(rows,
+			entity.BrokerStockSummary{Ticker: ticker, BrokerCode: code, Side: "buy", TradingDay: day, Lot: i64p(100), Value: i64p(1_000_000_000), AvgPrice: i64p(100), Rank: i32p(int32(i + 1))},
+			entity.BrokerStockSummary{Ticker: ticker, BrokerCode: code, Side: "sell", TradingDay: day, Lot: i64p(100), Value: i64p(1_000_000_000), AvgPrice: i64p(100), Rank: i32p(int32(i + 1))},
+		)
+	}
+	totals := &entity.BrokerStockSummaryTotals{
+		Ticker: ticker, TradingDay: day,
+		TVal: i64p(n * 1_000_000_000), TLot: i64p(2 * n * 100), Avg: i64p(100),
+	}
+	if err := uc.Repo.UpsertDay(db, rows, totals); err != nil {
+		t.Fatalf("UpsertDay: %v", err)
+	}
+
+	res, err := uc.GetStockBrokerSummaryHistory(context.Background(), ticker, day, day)
+	if err != nil {
+		t.Fatalf("GetStockBrokerSummaryHistory: %v", err)
+	}
+	if len(res.Days) != 1 {
+		t.Fatalf("days = %d, want 1", len(res.Days))
+	}
+	got := res.Days[0]
+	if len(got.Buyers) != brokerSummaryTopN || len(got.Sellers) != brokerSummaryTopN {
+		t.Errorf("projection = %d buyers/%d sellers, want %d per side", len(got.Buyers), len(got.Sellers), brokerSummaryTopN)
+	}
+	if got.Buyers[0].Rank != 1 || got.Buyers[len(got.Buyers)-1].Rank != brokerSummaryTopN {
+		t.Errorf("buyer ranks = %d..%d, want 1..%d", got.Buyers[0].Rank, got.Buyers[len(got.Buyers)-1].Rank, brokerSummaryTopN)
+	}
+	if !got.Coverage.Complete || got.Coverage.Brokers != n || got.Coverage.Buyers != n || got.Coverage.Sellers != n {
+		t.Errorf("coverage = %+v, want complete over all %d stored brokers", got.Coverage, n)
+	}
+
+	stored, err := uc.Repo.FindByTickerAndDateRange(db, ticker, day, day)
+	if err != nil {
+		t.Fatalf("FindByTickerAndDateRange: %v", err)
+	}
+	if len(stored) != 2*n {
+		t.Errorf("stored rows = %d, want %d (full set)", len(stored), 2*n)
 	}
 }
 

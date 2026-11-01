@@ -130,15 +130,15 @@ type TickerForwardReturns struct {
 	ForeignNet   *int64                          `json:"foreign_net,omitempty"`
 
 	// Anomaly Grade drill-down, empty on a screen row: the triggering anomaly
-	// types, the resolved Direction Bucket, the ticker-day's total net
-	// accumulation over the Flow Lead-in Window (nil when unobserved), its
-	// Broker Confirmation state, and whether a passed-filter Disclosure landed
-	// in the gate window (CONTEXT: Direction Bucket, Broker Confirmation).
-	AnomalyTypes    []string `json:"anomaly_types,omitempty"`
-	Direction       string   `json:"direction,omitempty"`
-	BrokerNet       *int64   `json:"broker_net,omitempty"`
-	BrokerState     string   `json:"broker_state,omitempty"`
-	DisclosureState string   `json:"disclosure_state,omitempty"`
+	// types, the resolved Direction Bucket, the ticker-day's foreign net over the
+	// Flow Lead-in Window (nil when unobserved), its Broker Confirmation state,
+	// and whether a passed-filter Disclosure landed in the gate window (CONTEXT:
+	// Direction Bucket, Broker Confirmation).
+	AnomalyTypes     []string `json:"anomaly_types,omitempty"`
+	Direction        string   `json:"direction,omitempty"`
+	LeadInForeignNet *int64   `json:"lead_in_foreign_net,omitempty"`
+	BrokerState      string   `json:"broker_state,omitempty"`
+	DisclosureState  string   `json:"disclosure_state,omitempty"`
 }
 
 // MeasurementCounts is the funnel in flat counts: the universe the Screen saw,
@@ -286,14 +286,14 @@ type MeasurementEngine struct {
 	// Revision is the git revision stamped into every report. The CLI supplies
 	// it so the engine stays pure and testable.
 	Revision string
-	// Anomalies, Disclosures and BrokerNet are the Anomaly Grade's reads. The
-	// screen grader never touches them, so the engine's original construction
-	// is unchanged; GradeAnomalies requires all three to be set.
+	// Anomalies and Disclosures are the Anomaly Grade's own reads; Broker
+	// Confirmation reuses ForeignFlow (the Flow Column's Σ f_nval read) so one
+	// definition serves both graders and the screener.
 	Anomalies   MeasurementAnomalySource
 	Disclosures MeasurementDisclosureSource
-	BrokerNet   MeasurementBrokerNetSource
-	// ForeignFlow is the Flow Grade's read of the Flow Column (Σ f_nval). The
-	// other graders never touch it; GradeFlow requires it to be set.
+	// ForeignFlow is the Flow Grade's read of the Flow Column (Σ f_nval) and the
+	// Anomaly Grade's Broker Confirmation read. The other graders never touch it;
+	// GradeFlow and GradeAnomalies require it to be set.
 	ForeignFlow MeasurementForeignFlowSource
 	// DisclosureFilings is the Disclosure Grade's read of a filing day's passed
 	// and rejected disclosures. The other graders never touch it;

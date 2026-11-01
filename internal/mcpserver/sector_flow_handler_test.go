@@ -52,7 +52,7 @@ func TestHandleGetSectorFlowSuccess(t *testing.T) {
 		TradeDaysInWindow: 20, CoveredDays: 6, TickersCovered: 12,
 		Rows: []usecase.SectorFlowRow{{
 			Sector: "Financials", Buy: 30_000_000_000, Sell: 12_000_000_000,
-			Net: 18_500_000_000, OthersNet: 500_000_000, ForeignNet: -1_000_000_000,
+			ForeignNet: i64ptr(-1_000_000_000), ForeignNetDays: 4,
 			TickersCovered: 12, DaysCovered: 6, BrokersCount: 7,
 			TopBrokers: []usecase.SectorFlowBrokerRow{{BrokerCode: "AK", Buy: 20_000_000_000, Net: 20_000_000_000}},
 		}},
@@ -79,8 +79,8 @@ func TestHandleGetSectorFlowSuccess(t *testing.T) {
 	if got.GroupBy != "sektor" || got.Sector != "Financials" || len(got.Rows) != 1 {
 		t.Fatalf("response = %+v, want sektor/Financials with one row", got)
 	}
-	if got.Rows[0].Net != 18_500_000_000 || got.Rows[0].TopBrokers[0].BrokerCode != "AK" {
-		t.Errorf("row = %+v, want net 18.5B with AK top broker", got.Rows[0])
+	if got.Rows[0].ForeignNet == nil || *got.Rows[0].ForeignNet != -1_000_000_000 || got.Rows[0].TopBrokers[0].BrokerCode != "AK" {
+		t.Errorf("row = %+v, want foreign_net −1B with AK top broker", got.Rows[0])
 	}
 	if !got.DataStale {
 		t.Error("data_stale must be true on nil wiring (no source_status)")

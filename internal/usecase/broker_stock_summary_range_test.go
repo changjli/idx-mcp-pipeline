@@ -13,6 +13,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -99,6 +100,11 @@ func TestGetStockBrokerSummaryRange_IteratesTradingDays(t *testing.T) {
 	}
 	if len(stored) != 6 {
 		t.Errorf("expected 6 persisted rows (3 days × 2), got %d", len(stored))
+	}
+	for _, row := range stored {
+		if row.Source != entity.BrokerSourceBackfill {
+			t.Errorf("row provenance = %q, want %q", row.Source, entity.BrokerSourceBackfill)
+		}
 	}
 }
 

@@ -23,10 +23,13 @@ func NewBrokerStockSummaryRepository(log *logrus.Logger) *BrokerStockSummaryRepo
 }
 
 // UpsertDay atomically replaces one ticker+day's broker rows and totals in a
-// single transaction. Rows that dropped out of IPOT's top-10 on a refetch are
-// deleted (not accumulated), and the totals row is written in the same
-// transaction so rows and totals can never diverge. Idempotent: refetching the
-// same day yields the same rows, no duplicates.
+// single transaction. Rows that disappeared from a refetch are deleted (not
+// accumulated), and the totals row is written in the same transaction so rows
+// and totals can never diverge. Idempotent: refetching the same day yields the
+// same rows, no duplicates.
+//
+// A caller that leaves Source empty is seeding a legacy-shaped row (the DB
+// tests do this); production writers always state live, sweep or backfill.
 func (r *BrokerStockSummaryRepository) UpsertDay(db *sqlx.DB, rows []entity.BrokerStockSummary, totals *entity.BrokerStockSummaryTotals) error {
 	// The day's key comes from the rows or the totals row.
 	var ticker string
@@ -40,14 +43,23 @@ func (r *BrokerStockSummaryRepository) UpsertDay(db *sqlx.DB, rows []entity.Brok
 		return nil // nothing to write
 	}
 
+	for i := range rows {
+		if rows[i].Source == "" {
+			rows[i].Source = entity.BrokerSourceLegacyIPOT
+		}
+	}
+	if totals != nil && totals.Source == "" {
+		totals.Source = entity.BrokerSourceLegacyIPOT
+	}
+
 	tx, err := db.Beginx()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	// Replace the day's rows wholesale so brokers that dropped out of the
-	// top-10 are removed, not kept as stale rows. Runs even when rows is empty
+	// Replace the day's rows wholesale so brokers that disappeared from a
+	// refetch are removed, not kept as stale rows. Runs even when rows is empty
 	// (a caller clearing a day) so rows and totals can never diverge.
 	if _, err := tx.Exec(
 		"DELETE FROM broker_stock_summaries WHERE ticker = $1 AND trading_day = $2",
@@ -68,14 +80,14 @@ func (r *BrokerStockSummaryRepository) UpsertDay(db *sqlx.DB, rows []entity.Brok
 
 	if totals != nil {
 		if _, err := tx.NamedExec(`
-			INSERT INTO broker_stock_summary_totals (ticker, trading_day, t_val, f_nval, t_lot, avg, others_net)
-			VALUES (:ticker, :trading_day, :t_val, :f_nval, :t_lot, :avg, :others_net)
+			INSERT INTO broker_stock_summary_totals (ticker, trading_day, t_val, f_nval, t_lot, avg, source)
+			VALUES (:ticker, :trading_day, :t_val, :f_nval, :t_lot, :avg, :source)
 			ON CONFLICT (ticker, trading_day) DO UPDATE SET
 				t_val = EXCLUDED.t_val,
 				f_nval = EXCLUDED.f_nval,
 				t_lot = EXCLUDED.t_lot,
 				avg = EXCLUDED.avg,
-				others_net = EXCLUDED.others_net
+				source = EXCLUDED.source
 		`, totals); err != nil {
 			return err
 		}
@@ -87,25 +99,26 @@ func (r *BrokerStockSummaryRepository) UpsertDay(db *sqlx.DB, rows []entity.Brok
 // buildMultiRowUpsert builds a single multi-row INSERT ... ON CONFLICT for a
 // batch of broker rows (one round trip instead of one per row).
 func buildMultiRowUpsert(rows []entity.BrokerStockSummary) (string, []interface{}, error) {
-	const cols = 8 // ticker, broker_code, side, trading_day, lot, value, avg_price, rank
+	const cols = 9 // ticker, broker_code, side, trading_day, lot, value, avg_price, rank, source
 	valueStrings := make([]string, 0, len(rows))
 	args := make([]interface{}, 0, len(rows)*cols)
 	for i, r := range rows {
 		base := i * cols
 		valueStrings = append(valueStrings, fmt.Sprintf(
-			"($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
-			base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8,
+			"($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+			base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9,
 		))
-		args = append(args, r.Ticker, r.BrokerCode, r.Side, r.TradingDay, r.Lot, r.Value, r.AvgPrice, r.Rank)
+		args = append(args, r.Ticker, r.BrokerCode, r.Side, r.TradingDay, r.Lot, r.Value, r.AvgPrice, r.Rank, r.Source)
 	}
 	query := fmt.Sprintf(`
-		INSERT INTO broker_stock_summaries (ticker, broker_code, side, trading_day, lot, value, avg_price, rank)
+		INSERT INTO broker_stock_summaries (ticker, broker_code, side, trading_day, lot, value, avg_price, rank, source)
 		VALUES %s
 		ON CONFLICT (ticker, trading_day, broker_code, side) DO UPDATE SET
 			lot = EXCLUDED.lot,
 			value = EXCLUDED.value,
 			avg_price = EXCLUDED.avg_price,
-			rank = EXCLUDED.rank
+			rank = EXCLUDED.rank,
+			source = EXCLUDED.source
 	`, strings.Join(valueStrings, ","))
 	return query, args, nil
 }
@@ -230,8 +243,8 @@ func (r *BrokerStockSummaryRepository) FindByDateRangeAll(db *sqlx.DB, from, to 
 
 // FindTotalsByDateRangeAll returns the stored footer summaries for every
 // ticker between two trading days (inclusive), ordered by trading day then
-// ticker. Feeds get_sector_flow's per-sector tail (others_net) and foreign net
-// — the market-completeness the listed top-10 rows alone can't give.
+// ticker. Feeds get_sector_flow's foreign net and per-ticker observed-day
+// coverage.
 func (r *BrokerStockSummaryRepository) FindTotalsByDateRangeAll(db *sqlx.DB, from, to time.Time) ([]entity.BrokerStockSummaryTotals, error) {
 	var totals []entity.BrokerStockSummaryTotals
 	err := db.Select(&totals,
@@ -275,90 +288,22 @@ type ForeignNetWindow struct {
 	Rows      []TickerForeignNet
 }
 
-// TickerNet is one ticker's total net accumulation over a window: Σ listed
-// buy − Σ listed sell plus the window's Others Net, in the Net Flow convention
-// (positive = net accumulation). Days is how many stored days the sum rests on.
-// A ticker with no stored broker data in the window is absent rather than
-// present with a zero — "not observed" and "net zero" are different answers.
-type TickerNet struct {
-	Ticker string
-	Net    int64
-	Days   int
-}
-
-// SumNetByTickers sums each given ticker's total net accumulation over the
-// `tradingDays` most recent market-wide trading days at or before `to`. It is
-// Broker Confirmation's read (CONTEXT): the listed top-10 rows' buy − sell plus
-// the footer's others_net tail, so the unlisted tail a top-10 read cannot
-// attribute is still counted. Pure DB read.
-//
-// The window walks the same market-wide stored day axis the screener's flow
-// window uses (`SumForeignNetByTickers`), and `to` is the day before the anchor
-// for the Flow Lead-in Window, so weekends and holidays never shorten it.
-// Observed means a stored totals row exists for the ticker in the window: a
-// ticker with none is absent from the result, never a zero net over no days.
-func (r *BrokerStockSummaryRepository) SumNetByTickers(db *sqlx.DB, tickers []string, to time.Time, tradingDays int) ([]TickerNet, error) {
-	nets := []TickerNet{}
-	if len(tickers) == 0 {
-		return nets, nil
-	}
-	err := db.Select(&nets, `
-		WITH window_days AS (
-			SELECT MIN(trading_day) AS day FROM (
-				SELECT DISTINCT trading_day FROM daily_prices
-				WHERE trading_day <= $1::date
-				ORDER BY trading_day DESC
-				LIMIT $2
-			) recent
-		),
-		listed AS (
-			SELECT ticker,
-			       COALESCE(SUM(CASE WHEN side = 'buy' THEN value ELSE -value END), 0)::bigint AS net
-			FROM broker_stock_summaries
-			WHERE ticker = ANY(string_to_array($3, ','))
-			  AND trading_day BETWEEN (SELECT day FROM window_days) AND $1::date
-			GROUP BY ticker
-		),
-		tail AS (
-			SELECT ticker,
-			       COALESCE(SUM(others_net), 0)::bigint AS net,
-			       COUNT(*)::int AS days
-			FROM broker_stock_summary_totals
-			WHERE ticker = ANY(string_to_array($3, ','))
-			  AND trading_day BETWEEN (SELECT day FROM window_days) AND $1::date
-			GROUP BY ticker
-		)
-		SELECT COALESCE(l.ticker, t.ticker) AS ticker,
-		       COALESCE(l.net, 0) + COALESCE(t.net, 0) AS net,
-		       COALESCE(t.days, 0) AS days
-		FROM listed l
-		FULL OUTER JOIN tail t ON t.ticker = l.ticker
-		WHERE COALESCE(t.days, 0) > 0
-		ORDER BY ticker`,
-		to.Format("2006-01-02"), tradingDays, strings.Join(tickers, ","))
-	if err != nil {
-		return nil, err
-	}
-	return nets, nil
-}
-
 // SumForeignNetByTickers sums the stored foreign net (f_nval) of the footer
 // totals for each given ticker over the `tradingDays` most recent market-wide
-// trading days at or before `to`. It is the screener's broker-flow column: a
-// pure DB read, and deliberately the footer grain — f_nval covers the whole
-// day's foreign flow including brokers below IPOT's top-10, which the listed
-// rows alone cannot.
+// trading days at or before `to`. It is the screener's broker-flow column and
+// Broker Confirmation's read: a pure DB read at the ticker-day grain, so it
+// covers foreign flow the per-broker rows cannot attribute.
 //
 // The window walks the same market-wide stored day axis the screener's other
 // windows use, so weekends and holidays never shorten it, and it is bound as a
 // calendar date (`::date`) for the reason FindByTickersUpTo documents: a
 // timestamptz parameter would let the session timezone pick the day.
 //
-// The population is anomaly-gated and therefore sparse by design: a ticker with
-// no stored rows in the window is simply absent from Rows, and a stored footer
-// whose f_nval is null contributes no day — so a ticker whose every stored day
-// had a null foreign net is absent too, rather than reported as a zero net over
-// no days. Nothing here infers a missing day.
+// Broker coverage is a budget-capped rotation and therefore sparse by design: a
+// ticker with no stored rows in the window is simply absent from Rows, and a
+// stored footer whose f_nval is null contributes no day — so a ticker whose
+// every stored day had a null foreign net is absent too, rather than reported
+// as a zero net over no days. Nothing here infers a missing day.
 func (r *BrokerStockSummaryRepository) SumForeignNetByTickers(db *sqlx.DB, tickers []string, to time.Time, tradingDays int) (*ForeignNetWindow, error) {
 	window := &ForeignNetWindow{Rows: []TickerForeignNet{}}
 

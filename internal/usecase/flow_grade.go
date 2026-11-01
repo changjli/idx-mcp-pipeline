@@ -475,7 +475,7 @@ func flowGradeFlags(replayDates int, sign []FlowBucket, magnitude []FlowTercile,
 	}
 	if counts.Observed > 0 && counts.Unobserved > counts.Observed {
 		flags = append(flags, fmt.Sprintf(
-			"sparse-coverage: observed foreign net on %d of %d pooled row(s) (%.0f%%); bucket medians rest on the sparse anomaly-gated broker population",
+			"sparse-coverage: observed foreign net on %d of %d pooled row(s) (%.0f%%); bucket medians rest on the sparse budget-capped broker population",
 			counts.Observed, counts.Baseline, 100*float64(counts.Observed)/float64(counts.Baseline)))
 	}
 	return flags
@@ -606,7 +606,7 @@ func flowGradeNotes(flowWindow int) []string {
 	return []string{
 		"Forward Returns are close-to-close over market-wide trading days; execution realism (fills, slippage, fees) is not modeled.",
 		fmt.Sprintf("The Flow Column is Σ f_nval over the %d stored trading days ending ON the anchor — the screener's foreign-net window, deliberately distinct from the Anomaly Grade's Flow Lead-in Window ending the day before.", flowWindow),
-		"foreign_net is a raw Σ over however many of the window's days carried a stored footer; each bucket declares its covered-day spread, and coverage is anomaly-gated and sparse by design, so a coverage-driven result is visible rather than hidden.",
+		"foreign_net is a raw Σ over however many of the window's days carried a stored footer; each bucket declares its covered-day spread, and coverage is a budget-capped rotation and sparse by design, so a coverage-driven result is visible rather than hidden.",
 		"The Liquidity Baseline is the hard-filter stage on shipped screener defaults (traded on the anchor day, value floor, suspension window), before structural filters and ranking; the liquidity_baseline block repeats it in both the survivor and baseline slots (Excess 0) so its medians are readable in one place.",
 		"Unobserved rows are excluded from the signed buckets and reported as their own bucket, never zero-imputed.",
 	}

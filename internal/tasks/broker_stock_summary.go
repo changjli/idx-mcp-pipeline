@@ -24,8 +24,8 @@ type BrokerStockSummaryPayload struct {
 // EnqueueBrokerStockSummary enqueues an idx:broker_stock_summary task for a
 // ticker+day. The TaskID is keyed by ticker+date, so a signal for a ticker+day
 // that already has a pending/active task is deduped (ErrTaskIDConflict) — at
-// most one outstanding fetch per (ticker, trading_day). The IPOT client's 1h
-// cache additionally makes a re-run after completion a no-op upstream.
+// most one outstanding fetch per (ticker, trading_day). Postgres holds the
+// result; the DB-first read path is ticket 07.
 func EnqueueBrokerStockSummary(enq pipeline.Enqueuer, ticker string, date time.Time) (*asynq.TaskInfo, error) {
 	return Graph.Node(TypeBrokerStockSummary).Enqueue(enq, date, []string{"ticker=" + ticker})
 }

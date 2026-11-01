@@ -14,6 +14,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -101,16 +102,22 @@ func TestGetStockBrokerSummary_FetchPersistReturn(t *testing.T) {
 		t.Errorf("Totals.TVal = %d, want 71200000000", res.Totals.TVal)
 	}
 
-	// Issue 03 aggregates: total buy/sell = footer t_val; others_net = the
-	// unlisted tail (Σ sellers − Σ buyers = 12.3B − 18.6B = −6.3B).
+	// Gross values are the day's t_val (every share has a buyer and a seller);
+	// the fixture is a partial broker set, so coverage is honest about it.
 	if res.TotalBuyValue != 71_200_000_000 {
 		t.Errorf("TotalBuyValue = %d, want 71200000000 (footer t_val)", res.TotalBuyValue)
 	}
 	if res.TotalSellValue != 71_200_000_000 {
 		t.Errorf("TotalSellValue = %d, want 71200000000 (footer t_val)", res.TotalSellValue)
 	}
-	if res.OthersNet != -6_300_000_000 {
-		t.Errorf("OthersNet = %d, want -6300000000 (12.3B sellers − 18.6B buyers)", res.OthersNet)
+	if res.Coverage.Complete {
+		t.Errorf("Coverage.Complete = true, want false (rows cover 18.6B/12.3B of 71.2B)")
+	}
+	if res.Coverage.Buyers != 2 || res.Coverage.Sellers != 1 || res.Coverage.Brokers != 3 {
+		t.Errorf("coverage counts = %+v, want 2 buyers/1 seller/3 brokers", res.Coverage)
+	}
+	if res.Coverage.BuyValueCovered != 18_600_000_000 || res.Coverage.SellValueCovered != 12_300_000_000 {
+		t.Errorf("coverage values = %d/%d, want 18.6B/12.3B", res.Coverage.BuyValueCovered, res.Coverage.SellValueCovered)
 	}
 
 	// Persisted: rows present in DB.
@@ -122,19 +129,76 @@ func TestGetStockBrokerSummary_FetchPersistReturn(t *testing.T) {
 		t.Errorf("expected 3 persisted rows, got %d", len(stored))
 	}
 
-	// Persisted: others_net written to the totals row.
+	// Persisted: the day is stamped with the on-demand writer's provenance.
 	ptotals, err := uc.Repo.FindTotalsByTickerAndDay(db, ticker, day)
 	if err != nil {
 		t.Fatalf("FindTotalsByTickerAndDay: %v", err)
 	}
-	if ptotals.OthersNet == nil || *ptotals.OthersNet != -6_300_000_000 {
-		t.Errorf("persisted others_net = %v, want -6300000000", ptotals.OthersNet)
+	if ptotals.Source != entity.BrokerSourceLive {
+		t.Errorf("persisted totals source = %q, want %q", ptotals.Source, entity.BrokerSourceLive)
 	}
 }
 
-// TestGetStockBrokerSummary_AllTopN — the listed top-N covers the whole market
-// (Σ buyers = Σ sellers = t_val), so the tail is empty and others_net = 0.
-func TestGetStockBrokerSummary_AllTopN(t *testing.T) {
+// TestGetStockBrokerSummary_ProjectionCapsAtTen — every broker is stored, but
+// the tool's contract is at most ten buyers and ten sellers; coverage still
+// measures the full set.
+func TestGetStockBrokerSummary_ProjectionCapsAtTen(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
+	uc, f := newTestUC(t, db)
+
+	ticker := "TESTP"
+	day := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+	db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	t.Cleanup(func() {
+		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	})
+
+	// 15 buyers and 15 sellers, each side worth 15B (the source's Σbuy == Σsell).
+	buyers := make([]broker.Row, 15)
+	sellers := make([]broker.Row, 15)
+	for i := 0; i < 15; i++ {
+		code := fmt.Sprintf("%c%c", 'A'+i, 'A'+i)
+		buyers[i] = broker.Row{BrokerCode: code, Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: i + 1}
+		sellers[i] = broker.Row{BrokerCode: code, Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: i + 1}
+	}
+	f.res = &broker.Result{
+		Buyers:  buyers,
+		Sellers: sellers,
+		Totals:  broker.Totals{TVal: 15_000_000_000, TLot: 3000, Avg: 100},
+	}
+
+	res, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day)
+	if err != nil {
+		t.Fatalf("GetStockBrokerSummary: %v", err)
+	}
+	if len(res.Buyers) != brokerSummaryTopN || len(res.Sellers) != brokerSummaryTopN {
+		t.Errorf("response = %d buyers/%d sellers, want top %d per side", len(res.Buyers), len(res.Sellers), brokerSummaryTopN)
+	}
+	if res.Buyers[0].Rank != 1 || res.Sellers[0].Rank != 1 {
+		t.Errorf("projection ranks = %d/%d, want dense 1..N", res.Buyers[0].Rank, res.Sellers[0].Rank)
+	}
+	if !res.Coverage.Complete || res.Coverage.Brokers != 15 || res.Coverage.Buyers != 15 || res.Coverage.Sellers != 15 {
+		t.Errorf("coverage = %+v, want complete over all 15 stored brokers", res.Coverage)
+	}
+
+	stored, err := uc.Repo.FindByTickerAndDay(db, ticker, day)
+	if err != nil {
+		t.Fatalf("FindByTickerAndDay: %v", err)
+	}
+	if len(stored) != 30 {
+		t.Errorf("persisted rows = %d, want 30 (full set, not top ten per side)", len(stored))
+	}
+}
+
+// TestGetStockBrokerSummary_CompleteSet — the listed set reconciles to t_val on
+// both sides, so coverage reports complete.
+func TestGetStockBrokerSummary_CompleteSet(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
 		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
@@ -168,9 +232,9 @@ func TestGetStockBrokerSummary_AllTopN(t *testing.T) {
 		t.Fatalf("GetStockBrokerSummary: %v", err)
 	}
 
-	// Σ buyers = Σ sellers = t_val = 11B → nothing unlisted → tail nets to zero.
-	if res.OthersNet != 0 {
-		t.Errorf("OthersNet = %d, want 0 (top-N covers the whole market)", res.OthersNet)
+	// Σ buyers = Σ sellers = t_val → the stored set is the whole market.
+	if !res.Coverage.Complete || res.Coverage.Brokers != 4 {
+		t.Errorf("coverage = %+v, want complete over all 4 brokers", res.Coverage)
 	}
 	if res.TotalBuyValue != 11_000_000_000 || res.TotalSellValue != 11_000_000_000 {
 		t.Errorf("totals = %d/%d, want 11000000000/11000000000", res.TotalBuyValue, res.TotalSellValue)

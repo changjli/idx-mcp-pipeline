@@ -13,6 +13,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -130,8 +131,8 @@ func seedSweepTicker(t *testing.T, db *sqlx.DB, ticker string, dailyValue int64)
 // the rotation orders on.
 func seedObserved(t *testing.T, db *sqlx.DB, ticker string, day time.Time) {
 	t.Helper()
-	db.MustExec(`INSERT INTO broker_stock_summary_totals (ticker, trading_day, t_val, f_nval, t_lot, avg, others_net)
-		VALUES ($1, $2, 1, NULL, 1, 1, 0)
+	db.MustExec(`INSERT INTO broker_stock_summary_totals (ticker, trading_day, t_val, f_nval, t_lot, avg)
+		VALUES ($1, $2, 1, NULL, 1, 1)
 		ON CONFLICT (ticker, trading_day) DO NOTHING`, ticker, day)
 }
 
@@ -241,6 +242,13 @@ func TestSweepAnchorDay_FetchesAndPersists(t *testing.T) {
 	}
 	if rows != 6 {
 		t.Errorf("persisted rows = %d, want 6 (3 tickers × 2 sides)", rows)
+	}
+	var sources []string
+	if err := db.Select(&sources, "SELECT DISTINCT source FROM broker_stock_summaries WHERE trading_day = $1", sweepAnchor); err != nil {
+		t.Fatalf("read sources: %v", err)
+	}
+	if len(sources) != 1 || sources[0] != entity.BrokerSourceSweep {
+		t.Errorf("row provenance = %v, want only %q", sources, entity.BrokerSourceSweep)
 	}
 }
 

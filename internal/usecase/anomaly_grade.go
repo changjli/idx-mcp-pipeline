@@ -60,13 +60,6 @@ type MeasurementDisclosureSource interface {
 	PassedTickersInWindow(db *sqlx.DB, tickers []string, from, to time.Time) ([]string, error)
 }
 
-// MeasurementBrokerNetSource is the Anomaly Grade's broker read: per-ticker
-// total net accumulation over the Flow Lead-in Window. The concrete
-// *repository.BrokerStockSummaryRepository satisfies it.
-type MeasurementBrokerNetSource interface {
-	SumNetByTickers(db *sqlx.DB, tickers []string, to time.Time, tradingDays int) ([]repository.TickerNet, error)
-}
-
 // AnomalyGradeOptions is a parsed `grade anomalies` request: one or more Replay
 // Dates, an optional holdout seal, and the Flow Lead-in Window length.
 type AnomalyGradeOptions struct {
@@ -169,8 +162,8 @@ type anomalyObservation struct {
 // scores them against the Liquidity Baseline, and splits them by Direction
 // Bucket and by Anomaly Confluence (CONTEXT; ADR-0013).
 func (e *MeasurementEngine) GradeAnomalies(ctx context.Context, opts AnomalyGradeOptions) (*AnomalyGradeReport, error) {
-	if e.Anomalies == nil || e.Disclosures == nil || e.BrokerNet == nil {
-		return nil, fmt.Errorf("%w: anomaly grade requires anomaly, disclosure and broker-net sources", ErrInvalidArgument)
+	if e.Anomalies == nil || e.Disclosures == nil || e.ForeignFlow == nil {
+		return nil, fmt.Errorf("%w: anomaly grade requires anomaly, disclosure and foreign-flow sources", ErrInvalidArgument)
 	}
 	flowWindow, err := resolveAnomalyFlowWindow(opts.FlowWindowDays)
 	if err != nil {
@@ -261,7 +254,7 @@ func (e *MeasurementEngine) GradeAnomalies(ctx context.Context, opts AnomalyGrad
 }
 
 // replayAnomaliesAt performs one anchor's Anomaly Grade reads: the stored
-// anomalies (deduped to ticker-days), the Liquidity Baseline, the broker net
+// anomalies (deduped to ticker-days), the Liquidity Baseline, the foreign net
 // over the Flow Lead-in Window, disclosure presence over the gate window, and
 // the batched forward window.
 func (e *MeasurementEngine) replayAnomaliesAt(ctx context.Context, anchor time.Time, flowWindow int) (*anomalyReplayResult, error) {
@@ -288,16 +281,18 @@ func (e *MeasurementEngine) replayAnomaliesAt(ctx context.Context, anchor time.T
 		baselineCloses[candidate.Ticker] = candidate.Close
 	}
 
-	// Broker Confirmation: total net accumulation over the Flow Lead-in Window,
-	// the `flowWindow` stored trading days ending the day BEFORE the anchor.
-	netByTicker := make(map[string]repository.TickerNet, len(tickers))
+	// Broker Confirmation: the foreign net over the Flow Lead-in Window, the
+	// `flowWindow` stored trading days ending the day BEFORE the anchor. The
+	// full broker set makes an all-broker aggregate structurally zero, so the
+	// signed, attributable foreign figure is the confirmation dimension.
+	foreignByTicker := make(map[string]repository.TickerForeignNet, len(tickers))
 	if len(tickers) > 0 {
-		nets, err := e.BrokerNet.SumNetByTickers(e.DB, tickers, anchor.AddDate(0, 0, -1), flowWindow)
+		window, err := e.ForeignFlow.SumForeignNetByTickers(e.DB, tickers, anchor.AddDate(0, 0, -1), flowWindow)
 		if err != nil {
-			return nil, fmt.Errorf("read broker net as of %s: %w", anchor.Format("2006-01-02"), err)
+			return nil, fmt.Errorf("read foreign net as of %s: %w", anchor.Format("2006-01-02"), err)
 		}
-		for _, net := range nets {
-			netByTicker[net.Ticker] = net
+		for _, row := range window.Rows {
+			foreignByTicker[row.Ticker] = row
 		}
 	}
 
@@ -335,10 +330,10 @@ func (e *MeasurementEngine) replayAnomaliesAt(ctx context.Context, anchor time.T
 		} else {
 			row.DisclosureState = disclosureAbsent
 		}
-		if net, ok := netByTicker[obs.Ticker]; ok {
-			netValue := net.Net
-			row.BrokerNet = &netValue
-			row.BrokerState = brokerState(obs.Direction, net.Net)
+		if net, ok := foreignByTicker[obs.Ticker]; ok {
+			netValue := net.ForeignNet
+			row.LeadInForeignNet = &netValue
+			row.BrokerState = brokerState(obs.Direction, net.ForeignNet)
 		} else {
 			row.BrokerState = brokerUnobserved
 		}
@@ -673,7 +668,7 @@ func bucketMedian(buckets []AnomalyBucket, state string, horizon int) (*float64,
 func anomalyGradeNotes(flowWindow int) []string {
 	return []string{
 		"Forward Returns are close-to-close over market-wide trading days; execution realism (fills, slippage, fees) is not modeled.",
-		fmt.Sprintf("Broker Confirmation reads total net accumulation (listed buy − sell plus the unlisted tail) over the %d stored trading days ending the day BEFORE the anchor — the Flow Lead-in Window, deliberately not the screener's foreign-net column, whose window ends on the anchor.", flowWindow),
+		fmt.Sprintf("Broker Confirmation reads the lead-in window's foreign net (Σ f_nval) over the %d stored trading days ending the day BEFORE the anchor — the Flow Lead-in Window, deliberately not the screener's foreign-net column, whose window ends on the anchor.", flowWindow),
 		fmt.Sprintf("Disclosure presence is a passed_filter Disclosure for the ticker announced within %d days before the anchor, matching get_market_anomalies.", pipeline.DisclosureFilterLookbackDays),
 		"Unobserved broker rows are excluded from the confirmed/not split and reported as their own bucket, never zero-imputed.",
 		"Anomaly observations are bounded by the pipeline's 90-day anomaly retention, not by stored prices.",
@@ -689,7 +684,7 @@ func resolveAnomalyFlowWindow(days int) (int, error) {
 
 // compile-time checks: the concrete repositories satisfy the Anomaly Grade seams.
 var (
-	_ MeasurementAnomalySource    = (*repository.AnomalyRepository)(nil)
-	_ MeasurementDisclosureSource = (*repository.DisclosureRepository)(nil)
-	_ MeasurementBrokerNetSource  = (*repository.BrokerStockSummaryRepository)(nil)
+	_ MeasurementAnomalySource     = (*repository.AnomalyRepository)(nil)
+	_ MeasurementDisclosureSource  = (*repository.DisclosureRepository)(nil)
+	_ MeasurementForeignFlowSource = (*repository.BrokerStockSummaryRepository)(nil)
 )

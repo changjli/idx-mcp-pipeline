@@ -199,7 +199,6 @@ func seedFlowTotals(t *testing.T, db *sqlx.DB, repo *BrokerStockSummaryRepositor
 			FNVal:      stored,
 			TLot:       i64(0),
 			Avg:        i64(0),
-			OthersNet:  i64(0),
 		}
 		if err := repo.UpsertDay(db, nil, totals); err != nil {
 			t.Fatalf("seed flow totals %s day-%d: %v", ticker, back, err)

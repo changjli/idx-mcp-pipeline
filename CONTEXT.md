@@ -33,23 +33,19 @@ Per-broker aggregate trading activity across all stocks for a date (V1). No tick
 _Avoid_: broker report, orderbook
 
 **Broker Stock Summary**:
-Per-ticker, per-day broker table: top-10 buyers and top-10 sellers by value for one ticker on one day, plus footer totals (`t_val`, `f_nval`) and `others_net`. IPOT lists only the top-10 per side — brokers below the cut appear only inside `others_net`. Persisted for anomaly-passing days and on-demand `get_stock_broker_summary` fetches; this sparse coverage is the norm, never an error.
-_Avoid_: bandarmologi, broker table (use for the raw IPOT artifact)
-
-**Others Net**:
-The unlisted tail's net in one stock-day's broker table: `Σ listed sellers − Σ listed buyers` = the tail's net in buy−sell convention — positive = the quiet tail net-bought, negative = net-sold. Same sign convention as Net Flow (positive = accumulation). A single aggregate; the tail cannot be attributed to specific brokers. Computed by the pipeline, and recomputed by the history reader from stored rows (always correct for pre-000013 rows).
-_Avoid_: tail net value, residual
+Per-ticker, per-day broker table: every broker the source returned, with a dense per-side rank, plus the day's totals (`t_val`, `f_nval`) and provenance (`legacy_ipot | live | sweep | backfill`). The tools project the top ten buyers and top ten sellers at read time. Persisted by the daily ADTV sweep — a budget-capped rotation over the liquid universe, so a given ticker is observed on some days, not all — by on-demand `get_stock_broker_summary` fetches, and by the history backfill; this sparse coverage is the norm, never an error. The day's `coverage` block declares whether the stored brokers reconcile to `t_val` or are a legacy/partial set.
+_Avoid_: bandarmologi, broker table (use for the raw vendor artifact)
 
 **Net Flow**:
-Per-broker cumulative net over a `(ticker, from, to)` window: `Σ listed-day buy values − Σ listed-day sell values`, positive = net accumulation. Computed from stored top-10 rows; a broker below top-10 on a day contributes only to that day's Others Net and is never inferred from it.
+Per-broker cumulative net over a `(ticker, from, to)` window: `Σ buy values − Σ sell values` for that broker, positive = net accumulation, computed from the full stored broker set. There is deliberately no aggregate net: every share has a buyer and a seller, so `Σbuy == Σsell` across all brokers and a sector/market net would be structurally zero. Net is attributable only per broker.
 _Avoid_: flow, net value (ambiguous with a single day)
 
 **Coverage**:
-How much of a window a Net Flow answer actually observes: `covered_days` (distinct trading days with stored broker rows) vs `trade_days_in_window` (distinct EOD days in `daily_prices`). Reported so partial data reads as partial, never as silence.
+The honesty claim on a flow answer, in two shapes. Window coverage: `covered_days` (distinct trading days with stored broker rows) vs `trade_days_in_window` (distinct EOD days in `daily_prices`). Ticker-day coverage: `coverage.complete` is true only when both stored side sums equal that day's `t_val` — so a legacy top-10 or partial set reads incomplete rather than as the whole market. Reported so partial data reads as partial, never as silence or a zero.
 _Avoid_: completeness, freshness (owned by Stale)
 
 **Market-Wide Stance**:
-`get_broker_net_flow`'s ticker-less mode: per-broker Net Flow summed across all tickers with stored broker rows in the window, each broker row carrying a per-ticker breakdown (`by_ticker`) so the stance is attributable — which stocks a broker accumulated, not just how much. Population is anomaly-gated (skews to busy stocks); the response declares `tickers_covered` so the bias is visible, not hidden.
+`get_broker_net_flow`'s ticker-less mode: per-broker Net Flow summed across all tickers with stored broker rows in the window, each broker row carrying a per-ticker breakdown (`by_ticker`) so the stance is attributable — which stocks a broker accumulated, not just how much. Population is the budget-capped sweep rotation plus on-demand fetches; the response declares `tickers_covered` so the bias is visible, not hidden.
 _Avoid_: market sentiment, foreign flow (out of scope)
 
 **Financial Statement**:
@@ -103,11 +99,11 @@ The number of usable stored rows an indicator needs before it reports a value at
 _Avoid_: lookback period, minimum history
 
 **Flow Column**:
-A screen row's `foreign_net` — the stored foreign net (Σ `f_nval`) from the Broker Stock Summary footer totals over `flow_window_days` stored trading days ending on the anchor day. It is joined on every call (never a toggle: the column is flagged per row, not switched per request) and read for the survivors only. The footer grain is what makes it complete — `f_nval` covers brokers below IPOT's top-10 that the listed rows alone cannot attribute. It is **not** a registry indicator and **not** a Structural Filter target: the registry computes from price series, this is a stored broker fact. It is a sort key (`sort: foreign_net`), where an unobserved row ranks last in either direction.
+A screen row's `foreign_net` — the stored foreign net (Σ `f_nval`) from the Broker Stock Summary totals over `flow_window_days` stored trading days ending on the anchor day. It is joined on every call (never a toggle: the column is flagged per row, not switched per request) and read for the survivors only. The ticker-day grain is what makes it complete — `f_nval` covers the whole day's foreign flow, not just the brokers above a listing cut. It is **not** a registry indicator and **not** a Structural Filter target: the registry computes from price series, this is a stored broker fact. It is a sort key (`sort: foreign_net`), where an unobserved row ranks last in either direction.
 _Avoid_: foreign flow, bandarmology, smart money
 
 **Column Coverage**:
-A screen row's per-column declaration of what an optional column actually observes: `{observed, days}`, keyed by column name so a later column lands without a schema change. The response's `flow_days_in_window` is the denominator the day count reads against — "7 of 20". It is what keeps a missing number from reading as a zero: an uncovered row's `foreign_net` is null with `observed: false`, never 0. Broker coverage is sparse by design (the population is anomaly-gated), so unobserved is the normal case, not an error.
+A screen row's per-column declaration of what an optional column actually observes: `{observed, days}`, keyed by column name so a later column lands without a schema change. The response's `flow_days_in_window` is the denominator the day count reads against — "7 of 20". It is what keeps a missing number from reading as a zero: an uncovered row's `foreign_net` is null with `observed: false`, never 0. Broker coverage is sparse by design (a budget-capped sweep rotation), so unobserved is the normal case, not an error.
 _Avoid_: completeness, data quality, null flag
 
 ## Measurement
@@ -206,7 +202,7 @@ The Grader that scores Anomalies: each anomaly ticker-day's Forward Returns agai
 One of the three anomaly populations an Anomaly Grade measures separately: `up` (a price Anomaly ≥ +5%), `down` (a price Anomaly ≤ −5%), and `volume_spike` (a volume Anomaly with no ≥5% price move). A ticker-day carrying both a volume and a price row belongs to the price row's bucket. The split exists because follow-through is directional, and a `volume_spike` is a participation event with no direction of its own — it is never folded into `up`. _Avoid_: anomaly type, signal class
 
 **Broker Confirmation**:
-Whether the broker tape agrees with an Anomaly's direction over the **Flow Lead-in Window**: total net accumulation — Σ listed buy − Σ listed sell plus the window's Others Net — is positive for `up` and negative for `down`. A `volume_spike`, having no direction, is split by net sign (accumulation / distribution / flat) instead of confirmed/not. An anomaly ticker-day with no stored broker rows in the window is **unobserved**: excluded from the confirmed/not split and reported as its own bucket, never zero-imputed. Distinct from the Flow Column, whose foreign-only net is ticket 04's subject. _Avoid_: bandarmology, smart money, foreign flow
+Whether the broker tape agrees with an Anomaly's direction over the **Flow Lead-in Window**: the window's foreign net (Σ `f_nval`) is positive for `up` and negative for `down`. A `volume_spike`, having no direction, is split by net sign (accumulation / distribution / flat) instead of confirmed/not. An anomaly ticker-day with no observed foreign net in the window is **unobserved**: excluded from the confirmed/not split and reported as its own bucket, never zero-imputed. It is the Flow Column's figure over a different window (the lead-in ends the day before the anchor). _Avoid_: bandarmology, smart money, aggregate net
 
 **Flow Lead-in Window**:
 The `flow_window_days` (default 20) stored Trading Days ending the Trading Day **before** an Anomaly Grade's anchor — the flow *into* the anomaly. Deliberately distinct from the Flow Column's window, which ends *on* the anchor day: including the anomaly day's own tape would make Broker Confirmation partly the move it is meant to corroborate. _Avoid_: flow window (that one is the Flow Column's, ending on the anchor)
@@ -262,5 +258,5 @@ _Avoid_: cookie, session cookie
 - **Source Status → Pipeline**: each Wave-1 source has one `source_status` row; `get_pipeline_status` is its MCP-readable face.
 - **Structural Filter → Indicator Registry**: a filter names a registry spec, and the filter's key and the row column's key are the same canonical string (`ma_distance:20:50`) — which is why a filter's own number appears in the row it judged, and why the filter's indicator is computed even when it was not requested as a column.
 - **Flow Column → Broker Stock Summary**: a screen row's `foreign_net` is Σ `f_nval` over the flow window, read from the same stored footer totals `get_sector_flow` aggregates — one source, so a ticker's flow reads the same in a sector breakdown and in a shortlist row.
-- **Flow Grade → Flow Column**: the Flow Grade buckets by exactly the Flow Column's `foreign_net`, over its window ending on the anchor, so a measured edge transfers to the sort key and to any future filter on that column; it is distinct from the Anomaly Grade's Broker Confirmation, which reads total net over a lead-in window ending the day before.
+- **Flow Grade → Flow Column**: the Flow Grade buckets by exactly the Flow Column's `foreign_net`, over its window ending on the anchor, so a measured edge transfers to the sort key and to any future filter on that column; it is distinct from the Anomaly Grade's Broker Confirmation, which reads the same foreign net over a lead-in window ending the day before.
 - **Column Coverage → Flow Column**: every row flags whether its optional column was observed and over how many days, against the response's `flow_days_in_window` denominator (the same covered-vs-spanning shape Coverage names for a Net Flow window).

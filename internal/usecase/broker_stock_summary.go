@@ -104,46 +104,63 @@ type BrokerSummaryRow struct {
 	Rank       int    `json:"rank"`
 }
 
-// BrokerSummaryTotals is the footer summary line in the response. FNVal is null
-// when the foreign net is unobserved (the broker endpoint does not carry it;
-// ticket 06's foreign-flow pass fills it) — never a fabricated zero.
+// brokerSummaryTopN is the read-time projection: every broker is stored, but the
+// tools keep their historical top-ten-per-side shape.
+const brokerSummaryTopN = 10
+
+// BrokerSummaryCoverage declares how much of a ticker-day the stored broker set
+// actually observes. Complete is true only when both side sums reconcile to the
+// day's t_val — the invariant a full payload satisfies, and the flag that keeps a
+// legacy top-10 day from reading as the whole market. Brokers counts distinct
+// codes across both sides.
+type BrokerSummaryCoverage struct {
+	Brokers          int   `json:"brokers"`
+	Buyers           int   `json:"buyers"`
+	Sellers          int   `json:"sellers"`
+	BuyValueCovered  int64 `json:"buy_value_covered"`
+	SellValueCovered int64 `json:"sell_value_covered"`
+	Complete         bool  `json:"complete"`
+}
+
+// BrokerSummaryTotals is the summary line in the response. FNVal is null when
+// the foreign net is unobserved (the broker endpoint does not carry it; ticket
+// 06's foreign-flow pass fills it) — never a fabricated zero.
 type BrokerSummaryTotals struct {
-	TVal      int64  `json:"t_val"`
-	FNVal     *int64 `json:"f_nval"`
-	TLot      int64  `json:"t_lot"`
-	Avg       int64  `json:"avg"`
-	OthersNet int64  `json:"others_net"` // tail net = Σ sell − Σ buy over non-listed brokers
+	TVal  int64  `json:"t_val"`
+	FNVal *int64 `json:"f_nval"`
+	TLot  int64  `json:"t_lot"`
+	Avg   int64  `json:"avg"`
 }
 
 // BrokerStockSummaryResponse is the structured MCP tool result.
 // AsOf + Cause are set only when the requested date returned empty and the
 // publish-lag fallback served a prior day's data (or explained the empty).
 // TotalBuyValue/TotalSellValue = t_val (every share has a buyer and a seller);
-// OthersNet is the unlisted tail, which nets to zero once the full broker set is
-// stored (retired with the top-10 projection in ticket 05).
+// Buyers/Sellers are the top ten per side from the full stored set, and
+// Coverage declares whether that set reconciles to t_val.
 type BrokerStockSummaryResponse struct {
-	Ticker         string              `json:"ticker"`
-	TradingDay     string              `json:"trading_day"`
-	AsOf           string              `json:"as_of,omitempty"`
-	Cause          string              `json:"cause,omitempty"`
-	TotalBuyValue  int64               `json:"total_buy_value"`
-	TotalSellValue int64               `json:"total_sell_value"`
-	OthersNet      int64               `json:"others_net"`
-	Totals         BrokerSummaryTotals `json:"totals"`
-	Buyers         []BrokerSummaryRow  `json:"buyers"`
-	Sellers        []BrokerSummaryRow  `json:"sellers"`
+	Ticker         string                `json:"ticker"`
+	TradingDay     string                `json:"trading_day"`
+	AsOf           string                `json:"as_of,omitempty"`
+	Cause          string                `json:"cause,omitempty"`
+	TotalBuyValue  int64                 `json:"total_buy_value"`
+	TotalSellValue int64                 `json:"total_sell_value"`
+	Coverage       BrokerSummaryCoverage `json:"coverage"`
+	Totals         BrokerSummaryTotals   `json:"totals"`
+	Buyers         []BrokerSummaryRow    `json:"buyers"`
+	Sellers        []BrokerSummaryRow    `json:"sellers"`
 }
 
 // BrokerStockSummaryDay is one trading day's stored top-N + totals in a
 // history response.
 type BrokerStockSummaryDay struct {
-	TradingDay     string              `json:"trading_day"`
-	TotalBuyValue  int64               `json:"total_buy_value"`
-	TotalSellValue int64               `json:"total_sell_value"`
-	OthersNet      int64               `json:"others_net"`
-	Totals         BrokerSummaryTotals `json:"totals"`
-	Buyers         []BrokerSummaryRow  `json:"buyers"`
-	Sellers        []BrokerSummaryRow  `json:"sellers"`
+	TradingDay     string                `json:"trading_day"`
+	TotalBuyValue  int64                 `json:"total_buy_value"`
+	TotalSellValue int64                 `json:"total_sell_value"`
+	Coverage       BrokerSummaryCoverage `json:"coverage"`
+	Totals         BrokerSummaryTotals   `json:"totals"`
+	Buyers         []BrokerSummaryRow    `json:"buyers"`
+	Sellers        []BrokerSummaryRow    `json:"sellers"`
 }
 
 // BrokerStockSummaryHistoryResponse is the structured result of a stored
@@ -194,7 +211,7 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummary(ctx context.Context, 
 		day = *latest
 	}
 
-	d, err := uc.fetchAndPersistDay(ctx, ticker, day)
+	d, err := uc.fetchAndPersistDay(ctx, ticker, day, entity.BrokerSourceLive)
 	if err != nil {
 		if errors.Is(err, ErrPersist) {
 			return nil, err
@@ -214,7 +231,7 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummary(ctx context.Context, 
 		TradingDay:     d.TradingDay,
 		TotalBuyValue:  d.TotalBuyValue,
 		TotalSellValue: d.TotalSellValue,
-		OthersNet:      d.OthersNet,
+		Coverage:       d.Coverage,
 		Totals:         d.Totals,
 		Buyers:         d.Buyers,
 		Sellers:        d.Sellers,
@@ -249,7 +266,7 @@ func (uc *BrokerStockSummaryUseCase) fallbackEmpty(ctx context.Context, ticker s
 			continue
 		}
 		probed++
-		d, err := uc.fetchAndPersistDay(ctx, ticker, day)
+		d, err := uc.fetchAndPersistDay(ctx, ticker, day, entity.BrokerSourceLive)
 		if err != nil {
 			uc.Log.Warnf("broker_stock_summary fallback: probe day %s failed: %v", day.Format("2006-01-02"), err)
 			continue
@@ -262,7 +279,7 @@ func (uc *BrokerStockSummaryUseCase) fallbackEmpty(ctx context.Context, ticker s
 				Cause:          cause,
 				TotalBuyValue:  d.TotalBuyValue,
 				TotalSellValue: d.TotalSellValue,
-				OthersNet:      d.OthersNet,
+				Coverage:       d.Coverage,
 				Totals:         d.Totals,
 				Buyers:         d.Buyers,
 				Sellers:        d.Sellers,
@@ -318,7 +335,7 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryRange(ctx context.Cont
 		Days:   []BrokerStockSummaryDay{},
 	}
 	for _, day := range days {
-		d, err := uc.fetchAndPersistDay(ctx, ticker, day)
+		d, err := uc.fetchAndPersistDay(ctx, ticker, day, entity.BrokerSourceBackfill)
 		if err != nil {
 			uc.Log.Warnf("broker_stock_summary range: day %s failed: %v", day.Format("2006-01-02"), err)
 			resp.Failed++
@@ -336,10 +353,11 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryRange(ctx context.Cont
 	return resp, nil
 }
 
-// fetchAndPersistDay fetches one ticker+day from the source, persists it, and
-// returns the day-level result. An empty source result (non-trading day or not
-// yet published) returns an empty day — nothing persisted, no error.
-func (uc *BrokerStockSummaryUseCase) fetchAndPersistDay(ctx context.Context, ticker string, day time.Time) (*BrokerStockSummaryDay, error) {
+// fetchAndPersistDay fetches one ticker+day from the source, persists it under
+// the given provenance, and returns the day-level result. An empty source result
+// (non-trading day or not yet published) returns an empty day — nothing
+// persisted, no error.
+func (uc *BrokerStockSummaryUseCase) fetchAndPersistDay(ctx context.Context, ticker string, day time.Time, source string) (*BrokerStockSummaryDay, error) {
 	res, err := uc.Fetcher.Fetch(ctx, ticker, day)
 	if err != nil {
 		return nil, err
@@ -347,11 +365,10 @@ func (uc *BrokerStockSummaryUseCase) fetchAndPersistDay(ctx context.Context, tic
 	if len(res.Buyers) == 0 && len(res.Sellers) == 0 {
 		return &BrokerStockSummaryDay{TradingDay: day.Format("2006-01-02")}, nil
 	}
-	others := othersNet(res.Buyers, res.Sellers)
-	if err := uc.persist(ticker, day, res, others); err != nil {
+	if err := uc.persist(ticker, day, res, source); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrPersist, err)
 	}
-	return dayFromResult(ticker, day, res, others), nil
+	return dayFromResult(ticker, day, res), nil
 }
 
 // GetStockBrokerSummaryHistory reads the persisted broker summary rows for a
@@ -396,8 +413,6 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryHistory(ctx context.Co
 	}
 
 	dayIndex := make(map[string]int)
-	dayBuy := make(map[string]int64)
-	daySell := make(map[string]int64)
 	for _, r := range rows {
 		key := r.TradingDay.Format("2006-01-02")
 		idx, ok := dayIndex[key]
@@ -422,34 +437,34 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryHistory(ctx context.Co
 			Rank:       int(deref32(r.Rank)),
 		}
 		if r.Side == "buy" {
-			dayBuy[key] += row.Value
 			resp.Days[idx].Buyers = append(resp.Days[idx].Buyers, row)
 		} else {
-			daySell[key] += row.Value
 			resp.Days[idx].Sellers = append(resp.Days[idx].Sellers, row)
 		}
 	}
 
-	// others_net is recomputed from the stored rows rather than read from the
-	// persisted totals: rows are already loaded, and it stays correct for rows
-	// written before the others_net column existed.
+	// Coverage is measured over the full stored set, then the response is
+	// projected to the tools' top-ten-per-side shape. A legacy top-10 day has
+	// side sums below t_val, so it reports incomplete rather than pretending the
+	// stored rows are the whole market.
 	for i := range resp.Days {
-		key := resp.Days[i].TradingDay
-		others := daySell[key] - dayBuy[key]
-		resp.Days[i].OthersNet = others
-		resp.Days[i].Totals.OthersNet = others
+		day := &resp.Days[i]
+		day.Coverage = coverageForRows(day.Buyers, day.Sellers, day.Totals.TVal)
+		day.Buyers = topN(day.Buyers)
+		day.Sellers = topN(day.Sellers)
 	}
 	return resp, nil
 }
 
-// persist writes the fetched rows and totals for one ticker+day atomically.
-func (uc *BrokerStockSummaryUseCase) persist(ticker string, day time.Time, res *broker.Result, others int64) error {
+// persist writes the fetched rows and totals for one ticker+day atomically,
+// stamped with the writer's provenance.
+func (uc *BrokerStockSummaryUseCase) persist(ticker string, day time.Time, res *broker.Result, source string) error {
 	rows := make([]entity.BrokerStockSummary, 0, len(res.Buyers)+len(res.Sellers))
 	for _, b := range res.Buyers {
-		rows = append(rows, toEntity(ticker, day, "buy", b))
+		rows = append(rows, toEntity(ticker, day, "buy", b, source))
 	}
 	for _, s := range res.Sellers {
-		rows = append(rows, toEntity(ticker, day, "sell", s))
+		rows = append(rows, toEntity(ticker, day, "sell", s, source))
 	}
 
 	totals := &entity.BrokerStockSummaryTotals{
@@ -459,29 +474,40 @@ func (uc *BrokerStockSummaryUseCase) persist(ticker string, day time.Time, res *
 		FNVal:      res.Totals.FNVal,
 		TLot:       i64p(res.Totals.TLot),
 		Avg:        i64p(res.Totals.Avg),
-		OthersNet:  i64p(others),
+		Source:     source,
 	}
 	return uc.Repo.UpsertDay(uc.DB, rows, totals)
 }
 
-// othersNet is the unlisted tail's net = total net − Σ listed net. Total net
-// clears to zero (every share has a buyer and a seller), so the tail's net is
-// −Σ listed net = Σ sellers − Σ buyers. Positive ⇒ brokers outside the top-10
-// net-bought (the quiet tail). Equals t_val-based total − Σ listed brokers' net,
-// matching the ticket definition. All-top-N (buyers+sellers cover the market)
-// yields 0.
-func othersNet(buyers, sellers []broker.Row) int64 {
-	var buy, sell int64
+// coverageForRows declares how much of a ticker-day the given stored rows
+// observe. Complete requires both sides to reconcile to t_val: the source's own
+// invariant, which only a full broker set can satisfy. Brokers counts distinct
+// codes across both sides.
+func coverageForRows(buyers, sellers []BrokerSummaryRow, tVal int64) BrokerSummaryCoverage {
+	seen := make(map[string]struct{}, len(buyers)+len(sellers))
+	cov := BrokerSummaryCoverage{Buyers: len(buyers), Sellers: len(sellers)}
 	for _, b := range buyers {
-		buy += b.Value
+		seen[b.BrokerCode] = struct{}{}
+		cov.BuyValueCovered += b.Value
 	}
 	for _, s := range sellers {
-		sell += s.Value
+		seen[s.BrokerCode] = struct{}{}
+		cov.SellValueCovered += s.Value
 	}
-	return sell - buy
+	cov.Brokers = len(seen)
+	cov.Complete = tVal > 0 && cov.BuyValueCovered == tVal && cov.SellValueCovered == tVal
+	return cov
 }
 
-func toEntity(ticker string, day time.Time, side string, r broker.Row) entity.BrokerStockSummary {
+// topN projects a ranked side to the read-time top-N cap.
+func topN(rows []BrokerSummaryRow) []BrokerSummaryRow {
+	if len(rows) > brokerSummaryTopN {
+		return rows[:brokerSummaryTopN]
+	}
+	return rows
+}
+
+func toEntity(ticker string, day time.Time, side string, r broker.Row, source string) entity.BrokerStockSummary {
 	rank := int32(r.Rank)
 	return entity.BrokerStockSummary{
 		Ticker:     ticker,
@@ -492,22 +518,22 @@ func toEntity(ticker string, day time.Time, side string, r broker.Row) entity.Br
 		Value:      i64p(r.Value),
 		AvgPrice:   i64p(r.AvgPrice),
 		Rank:       &rank,
+		Source:     source,
 	}
 }
 
-// dayFromResult builds a day-level result from a fetched source result.
-func dayFromResult(ticker string, day time.Time, res *broker.Result, others int64) *BrokerStockSummaryDay {
+// dayFromResult builds a day-level result from a fetched source result: full
+// coverage over every broker, then the top-N projection.
+func dayFromResult(ticker string, day time.Time, res *broker.Result) *BrokerStockSummaryDay {
 	d := &BrokerStockSummaryDay{
 		TradingDay:     day.Format("2006-01-02"),
 		TotalBuyValue:  res.Totals.TVal,
 		TotalSellValue: res.Totals.TVal,
-		OthersNet:      others,
 		Totals: BrokerSummaryTotals{
-			TVal:      res.Totals.TVal,
-			FNVal:     res.Totals.FNVal,
-			TLot:      res.Totals.TLot,
-			Avg:       res.Totals.Avg,
-			OthersNet: others,
+			TVal:  res.Totals.TVal,
+			FNVal: res.Totals.FNVal,
+			TLot:  res.Totals.TLot,
+			Avg:   res.Totals.Avg,
 		},
 		Buyers:  make([]BrokerSummaryRow, 0, len(res.Buyers)),
 		Sellers: make([]BrokerSummaryRow, 0, len(res.Sellers)),
@@ -530,6 +556,9 @@ func dayFromResult(ticker string, day time.Time, res *broker.Result, others int6
 			Rank:       s.Rank,
 		})
 	}
+	d.Coverage = coverageForRows(d.Buyers, d.Sellers, res.Totals.TVal)
+	d.Buyers = topN(d.Buyers)
+	d.Sellers = topN(d.Sellers)
 	return d
 }
 
