@@ -174,6 +174,125 @@ func TestFetch_NoKeyIsAnAuthError(t *testing.T) {
 	}
 }
 
+// TestFetchRange_PinsWindowAndForeignLane is the 10a client change: a range is
+// one request with from/to, the f lane pinned, market RG, and the f payload
+// parsed without the all-investor reconciliation.
+func TestFetchRange_PinsWindowAndForeignLane(t *testing.T) {
+	respBody := []byte(`{"success":true,"data":[
+		{"code":"HD","buy_freq":2,"buy_volume":100,"buy_value":1000.0,
+		 "sell_freq":1,"sell_volume":100,"sell_value":900.0,
+		 "buy_avg":10.0,"sell_avg":9.0}],"error":null}`)
+
+	var gotQuery map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = map[string]string{
+			"ticker":   r.URL.Query().Get("ticker"),
+			"from":     r.URL.Query().Get("from"),
+			"to":       r.URL.Query().Get("to"),
+			"investor": r.URL.Query().Get("investor"),
+			"market":   r.URL.Query().Get("market"),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Monthly-Remaining", "99")
+		_, _ = w.Write(respBody)
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, APIKey: "test-key", Timeout: 5 * time.Second}, testLogger())
+	from := time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+
+	res, _, err := c.FetchRangeWithKey(context.Background(), "test-key", "fire", from, to, broker.InvestorForeign)
+	if err != nil {
+		t.Fatalf("FetchRangeWithKey: %v", err)
+	}
+	want := map[string]string{
+		"ticker":   "FIRE",
+		"from":     "2026-10-27",
+		"to":       "2026-11-02",
+		"investor": "f",
+		"market":   "RG",
+	}
+	for k, v := range want {
+		if gotQuery[k] != v {
+			t.Errorf("query %s = %q, want %q", k, gotQuery[k], v)
+		}
+	}
+	if res.Investor != broker.InvestorForeign {
+		t.Errorf("Investor = %q, want f", res.Investor)
+	}
+	if res.Totals.FNVal == nil || *res.Totals.FNVal != 100 {
+		t.Errorf("FNVal = %v, want 100 (1000 buy − 900 sell)", res.Totals.FNVal)
+	}
+}
+
+func TestFetchRange_RejectsInvertedWindowAndUnsupportedInvestor(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"success":true,"data":[],"error":null}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, APIKey: "test-key", Timeout: 5 * time.Second}, testLogger())
+	from := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)
+
+	if _, _, err := c.FetchRangeWithKey(context.Background(), "test-key", "FIRE", from, to, broker.InvestorForeign); !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("inverted window err = %v, want ErrInvalidRequest", err)
+	}
+	if _, _, err := c.FetchRangeWithKey(context.Background(), "test-key", "FIRE", to, from, "d"); !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("unsupported investor err = %v, want ErrInvalidRequest", err)
+	}
+	if calls != 0 {
+		t.Errorf("server calls = %d, want 0 (rejected before the request)", calls)
+	}
+}
+
+// TestFetchBatchRange_PostsWindowAndForeignLane pins the batch range body: one
+// window, one investor lane, market RG.
+func TestFetchBatchRange_PostsWindowAndForeignLane(t *testing.T) {
+	respBody := []byte(`{"success":true,"data":{
+		"FIRE":[{"code":"HD","buy_freq":2,"buy_volume":100,"buy_value":1000.0,
+		         "sell_freq":1,"sell_volume":100,"sell_value":900.0,
+		         "buy_avg":10.0,"sell_avg":9.0}],
+		"GRPH":[{"code":"AK","buy_freq":1,"buy_volume":200,"buy_value":2000.0,
+		         "sell_freq":2,"sell_volume":200,"sell_value":2100.0,
+		         "buy_avg":10.0,"sell_avg":10.5}]
+	},"error":null}`)
+
+	var gotBody batchRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		_, _ = w.Write(respBody)
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, APIKey: "test-key", Timeout: 5 * time.Second}, testLogger())
+	from := time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+
+	batch, _, err := c.FetchBatchRangeWithKey(context.Background(), "test-key",
+		[]string{"FIRE", "GRPH"}, from, to, broker.InvestorForeign)
+	if err != nil {
+		t.Fatalf("FetchBatchRangeWithKey: %v", err)
+	}
+	if gotBody.From != "2026-10-27" || gotBody.To != "2026-11-02" {
+		t.Errorf("from/to = %q/%q, want the window", gotBody.From, gotBody.To)
+	}
+	if gotBody.Investor != "f" || gotBody.Market != "RG" {
+		t.Errorf("investor/market = %q/%q, want f/RG", gotBody.Investor, gotBody.Market)
+	}
+	if len(batch.Results) != 2 {
+		t.Fatalf("results = %d, want 2", len(batch.Results))
+	}
+	if got := batch.Results["FIRE"].Totals.FNVal; got == nil || *got != 100 {
+		t.Errorf("FIRE FNVal = %v, want 100", got)
+	}
+}
+
 // TestFetchBatch_PostsOneDayBatch pins the batch contract: POST JSON, one date
 // (from == to), regular market, all investors, deduplicated tickers, and the
 // per-ticker response shape parsed into broker.Batch.

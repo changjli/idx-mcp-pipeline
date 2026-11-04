@@ -40,11 +40,20 @@ type wireEnvelope struct {
 // ParseBrokerSummary parses the single-ticker broker-summary response
 // (GET /stocks/broker-summary) into a source-neutral result.
 //
-// The conversion enforces the source invariants: shares become lots (÷100), a
-// zero side contributes no row, rank is dense by value within its side, and the
-// totals are derived from the full set. An empty day is an empty result, not an
-// error.
-func ParseBrokerSummary(ticker string, body []byte) (*broker.Result, error) {
+// investor selects the lane's invariants: all keeps the day-grain
+// Σbuy == Σsell reconciliation when the window is a single day; f is validated
+// structurally and never reconciles (a foreign day legitimately has a net).
+// singleDay is the from == to case. Multi-day all windows are structural too:
+// the vendor's aggregate rounds, so the two sides can differ by ≈1e-6 relative
+// even when the window is complete (measured 2026-11-02).
+//
+// The conversion also enforces: shares become lots (÷100), a zero side
+// contributes no row, rank is dense by value within its side, and the totals
+// are derived from the full set. An empty day is an empty result, not an error.
+func ParseBrokerSummary(ticker, investor string, singleDay bool, body []byte) (*broker.Result, error) {
+	if err := validateInvestor(investor); err != nil {
+		return nil, err
+	}
 	var env wireEnvelope
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, fmt.Errorf("%w: decode response: %v", ErrMalformedPayload, err)
@@ -53,14 +62,14 @@ func ParseBrokerSummary(ticker string, body []byte) (*broker.Result, error) {
 		return nil, fmt.Errorf("%w: success=false error=%s", ErrMalformedPayload, rawText(env.Error))
 	}
 	if len(env.Data) == 0 || string(env.Data) == "null" {
-		return &broker.Result{Buyers: []broker.Row{}, Sellers: []broker.Row{}}, nil
+		return &broker.Result{Investor: investor, Buyers: []broker.Row{}, Sellers: []broker.Row{}}, nil
 	}
 
 	var rows []wireRow
 	if err := json.Unmarshal(env.Data, &rows); err != nil {
 		return nil, fmt.Errorf("%w: data is not a broker row array: %v", ErrMalformedPayload, err)
 	}
-	return buildResult(ticker, rows)
+	return buildResult(ticker, investor, singleDay, rows)
 }
 
 // ParseBrokerSummaryBatch parses the batch broker-summary response
@@ -73,7 +82,10 @@ func ParseBrokerSummary(ticker string, body []byte) (*broker.Result, error) {
 // so one bad payload must not throw away the other 49 already-paid ticker-days.
 // A batch-level problem (non-JSON, success=false, data not an object) is an
 // error and nothing is returned.
-func ParseBrokerSummaryBatch(body []byte) (*broker.Batch, error) {
+func ParseBrokerSummaryBatch(investor string, singleDay bool, body []byte) (*broker.Batch, error) {
+	if err := validateInvestor(investor); err != nil {
+		return nil, err
+	}
 	var env wireEnvelope
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, fmt.Errorf("%w: decode response: %v", ErrMalformedPayload, err)
@@ -103,7 +115,7 @@ func ParseBrokerSummaryBatch(body []byte) (*broker.Batch, error) {
 		if len(raw) == 0 || string(raw) == "null" {
 			// The vendor listed the ticker but returned no rows: an empty day,
 			// not a malformed payload.
-			batch.Results[ticker] = &broker.Result{Buyers: []broker.Row{}, Sellers: []broker.Row{}}
+			batch.Results[ticker] = &broker.Result{Investor: investor, Buyers: []broker.Row{}, Sellers: []broker.Row{}}
 			continue
 		}
 		var rows []wireRow
@@ -111,7 +123,7 @@ func ParseBrokerSummaryBatch(body []byte) (*broker.Batch, error) {
 			batch.Invalid[ticker] = fmt.Errorf("%w: %s data is not a broker row array: %v", ErrMalformedPayload, ticker, err)
 			continue
 		}
-		res, err := buildResult(ticker, rows)
+		res, err := buildResult(ticker, investor, singleDay, rows)
 		if err != nil {
 			batch.Invalid[ticker] = err
 			continue
@@ -122,8 +134,8 @@ func ParseBrokerSummaryBatch(body []byte) (*broker.Batch, error) {
 }
 
 // buildResult converts wire rows into buyers, sellers and derived totals.
-func buildResult(ticker string, rows []wireRow) (*broker.Result, error) {
-	res := &broker.Result{Buyers: []broker.Row{}, Sellers: []broker.Row{}}
+func buildResult(ticker, investor string, singleDay bool, rows []wireRow) (*broker.Result, error) {
+	res := &broker.Result{Investor: investor, Buyers: []broker.Row{}, Sellers: []broker.Row{}}
 	seenBuy := make(map[string]bool, len(rows))
 	seenSell := make(map[string]bool, len(rows))
 	var buyValue, sellValue, sellLot int64
@@ -145,6 +157,14 @@ func buildResult(ticker string, rows []wireRow) (*broker.Result, error) {
 		}
 		if w.SellVolume == 0 && w.SellValue != 0 {
 			return nil, fmt.Errorf("%w: %s broker %s has sell value without sell volume", ErrMalformedPayload, ticker, code)
+		}
+		// The foreign lane is validated structurally: the vendor's average is
+		// the row's value per share. The all lane keeps its historical rounding
+		// tolerance (the parser rounds avg to the schema's integer).
+		if investor == broker.InvestorForeign {
+			if err := validateRowAverages(ticker, code, w); err != nil {
+				return nil, err
+			}
 		}
 
 		if w.BuyVolume > 0 {
@@ -178,23 +198,72 @@ func buildResult(ticker string, rows []wireRow) (*broker.Result, error) {
 		}
 	}
 
-	// Every share has a buyer and a seller, so a complete payload reconciles
-	// exactly. A mismatch means the response is partial or drifted — refuse it
-	// rather than persist half a day.
-	if buyValue != sellValue {
+	// Every share has a buyer and a seller, so a complete single all-investor
+	// day reconciles exactly. That is a day-grain property: a multi-day window
+	// is the vendor's aggregate and can differ by a few rupiah per billion even
+	// when complete (measured 2026-11-02: Rp1,375,500 on a Rp1.37tn year), so
+	// only the single-day all lane refuses a mismatch. The f lane never
+	// reconciles — a foreign day has a net by construction.
+	if investor == broker.InvestorAll && singleDay && buyValue != sellValue {
 		return nil, fmt.Errorf("%w: %s Σbuy=%d ≠ Σsell=%d", ErrMalformedPayload, ticker, buyValue, sellValue)
 	}
 
 	rankByValue(res.Buyers)
 	rankByValue(res.Sellers)
 
+	if investor == broker.InvestorForeign {
+		// The f payload carries no totals block. Net foreign is the only total
+		// the lane observes; the day-total fields stay zero here and the writer
+		// stores NULL for them.
+		net := buyValue - sellValue
+		res.Totals = broker.Totals{FNVal: &net}
+		return res, nil
+	}
+
 	res.Totals = broker.Totals{TVal: sellValue, TLot: sellLot}
 	if sellLot > 0 {
 		res.Totals.Avg = roundToInt64(float64(sellValue) / float64(sellLot*100))
 	}
-	// FNVal stays nil: the broker endpoint carries no foreign net, and
-	// unobserved must never be persisted as zero (ticket 06 fills it).
+	// FNVal stays nil in the all lane: the all payload carries no foreign net,
+	// and unobserved must never be persisted as zero.
 	return res, nil
+}
+
+// validateInvestor accepts only the two lanes the pipeline stores.
+func validateInvestor(investor string) error {
+	switch investor {
+	case broker.InvestorAll, broker.InvestorForeign:
+		return nil
+	default:
+		return fmt.Errorf("%w: unsupported investor %q (want %q or %q)",
+			ErrInvalidRequest, investor, broker.InvestorAll, broker.InvestorForeign)
+	}
+}
+
+// validateRowAverages enforces the foreign lane's structural invariant
+// avg = value / volume on both sides. A zero side has no average to check.
+func validateRowAverages(ticker, code string, w wireRow) error {
+	type side struct {
+		name   string
+		volume int64
+		value  float64
+		avg    float64
+	}
+	for _, s := range []side{
+		{"buy", w.BuyVolume, w.BuyValue, w.BuyAvg},
+		{"sell", w.SellVolume, w.SellValue, w.SellAvg},
+	} {
+		if s.volume == 0 {
+			continue
+		}
+		implied := s.value / float64(s.volume)
+		tolerance := math.Max(1, math.Abs(s.avg)) * 1e-6
+		if math.Abs(implied-s.avg) > tolerance {
+			return fmt.Errorf("%w: %s broker %s %s avg=%g ≠ value/volume=%g",
+				ErrMalformedPayload, ticker, code, s.name, s.avg, implied)
+		}
+	}
+	return nil
 }
 
 // rankByValue sorts a side by value desc (broker code breaks ties for

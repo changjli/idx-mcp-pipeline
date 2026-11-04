@@ -131,23 +131,40 @@ func (c *Client) Fetch(ctx context.Context, ticker string, date time.Time) (*bro
 // FetchWithKey is Fetch with an explicit Bearer key, and it also returns the
 // quota headers from the response. The pool uses the headers to keep its
 // per-key remaining authoritative; a plain Fetch discards them.
+//
+// A single day is the degenerate window, not a separate request path.
 func (c *Client) FetchWithKey(ctx context.Context, key, ticker string, date time.Time) (*broker.Result, CallOutcome, error) {
+	return c.FetchRangeWithKey(ctx, key, ticker, date, date, broker.InvestorAll)
+}
+
+// FetchRangeWithKey fetches one ticker over [from, to] with an explicit Bearer
+// key and investor lane, returning the quota headers. The vendor aggregates a
+// range into one row per broker (it does not paginate), so the span costs the
+// same one unit as a day. market is always pinned to RG: foreign-flow defaults
+// to ALL on the vendor side, and a mixed board must never be stored.
+func (c *Client) FetchRangeWithKey(ctx context.Context, key, ticker string, from, to time.Time, investor string) (*broker.Result, CallOutcome, error) {
 	if strings.TrimSpace(key) == "" {
 		return nil, CallOutcome{}, fmt.Errorf("%w: no API key configured (INDEXALPHA_KEYS)", ErrUnauthorized)
 	}
+	if err := validateInvestor(investor); err != nil {
+		return nil, CallOutcome{}, err
+	}
+	if to.Before(from) {
+		return nil, CallOutcome{}, fmt.Errorf("%w: to %s is before from %s", ErrInvalidRequest, to.Format("2006-01-02"), from.Format("2006-01-02"))
+	}
 
 	ticker = strings.ToUpper(strings.TrimSpace(ticker))
-	day := date.Format("2006-01-02")
+	fromDay, toDay := from.Format("2006-01-02"), to.Format("2006-01-02")
 
 	q := url.Values{}
 	q.Set("ticker", ticker)
-	q.Set("from", day)
-	q.Set("to", day) // from == to: a range would aggregate into one row per broker
-	q.Set("investor", "all")
-	q.Set("market", "RG") // foreign flow defaults to ALL; never rely on defaults
+	q.Set("from", fromDay)
+	q.Set("to", toDay)
+	q.Set("investor", investor)
+	q.Set("market", broker.MarketRegular)
 	u := c.baseURL + "/stocks/broker-summary?" + q.Encode()
 
-	c.log.Debugf("indexalpha: fetching %s %s", ticker, day)
+	c.log.Debugf("indexalpha: fetching %s %s..%s investor=%s", ticker, fromDay, toDay, investor)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -170,12 +187,18 @@ func (c *Client) FetchWithKey(ctx context.Context, key, ticker string, date time
 	if err := classifyStatus(resp, body); err != nil {
 		return nil, outcome, err
 	}
-	res, err := ParseBrokerSummary(ticker, body)
+	res, err := ParseBrokerSummary(ticker, investor, sameDay(from, to), body)
 	return res, outcome, err
 }
 
-// batchRequest is the POST body shared by the batch endpoints. The foreign-flow
-// batch omits investor and adds nothing else, so the same shape works for both.
+// sameDay reports whether a request is the degenerate one-day window.
+func sameDay(from, to time.Time) bool {
+	fy, fm, fd := from.Date()
+	ty, tm, td := to.Date()
+	return fy == ty && fm == tm && fd == td
+}
+
+// batchRequest is the POST body for the broker-summary batch endpoint.
 type batchRequest struct {
 	Tickers  []string `json:"tickers"`
 	From     string   `json:"from"`
@@ -193,36 +216,48 @@ func (c *Client) FetchBatch(ctx context.Context, tickers []string, date time.Tim
 }
 
 // FetchBatchWithKey is FetchBatch with an explicit Bearer key, returning the
-// quota headers too.
-//
-// The request is single-day by construction (from == to), pins the regular
-// market and the all-investor view, and rejects an empty or oversized batch
-// before spending a request: the vendor's limit is 50 tickers, and a bigger
-// batch is rejected whole. Tickers are deduplicated before sending so a
-// duplicate cannot double-charge the monthly counter.
+// quota headers too. It is the day-grain all-investor compatibility path.
 func (c *Client) FetchBatchWithKey(ctx context.Context, key string, tickers []string, date time.Time) (*broker.Batch, CallOutcome, error) {
+	return c.FetchBatchRangeWithKey(ctx, key, tickers, date, date, broker.InvestorAll)
+}
+
+// FetchBatchRangeWithKey fetches up to 50 tickers over [from, to] with an
+// explicit Bearer key and investor lane, returning the quota headers too.
+//
+// The request pins the regular market and the requested lane, and rejects an
+// empty or oversized batch before spending a request: the vendor's limit is 50
+// tickers, and a bigger batch is rejected whole. Tickers are deduplicated before
+// sending so a duplicate cannot double-charge the monthly counter. The daily
+// request cap counts this call once regardless of span or ticker count.
+func (c *Client) FetchBatchRangeWithKey(ctx context.Context, key string, tickers []string, from, to time.Time, investor string) (*broker.Batch, CallOutcome, error) {
 	if strings.TrimSpace(key) == "" {
 		return nil, CallOutcome{}, fmt.Errorf("%w: no API key configured (INDEXALPHA_KEYS)", ErrUnauthorized)
+	}
+	if err := validateInvestor(investor); err != nil {
+		return nil, CallOutcome{}, err
+	}
+	if to.Before(from) {
+		return nil, CallOutcome{}, fmt.Errorf("%w: to %s is before from %s", ErrInvalidRequest, to.Format("2006-01-02"), from.Format("2006-01-02"))
 	}
 
 	batchTickers, err := normalizeBatchTickers(tickers)
 	if err != nil {
 		return nil, CallOutcome{}, err
 	}
-	day := date.Format("2006-01-02")
+	fromDay, toDay := from.Format("2006-01-02"), to.Format("2006-01-02")
 	payload, err := json.Marshal(batchRequest{
 		Tickers:  batchTickers,
-		From:     day,
-		To:       day, // from == to: a range aggregates into one row per broker
-		Investor: "all",
-		Market:   "RG",
+		From:     fromDay,
+		To:       toDay,
+		Investor: investor,
+		Market:   broker.MarketRegular,
 	})
 	if err != nil {
 		return nil, CallOutcome{}, fmt.Errorf("indexalpha: marshal batch request: %w", err)
 	}
 	u := c.baseURL + "/stocks/broker-summary/batch"
 
-	c.log.Debugf("indexalpha: fetching %d tickers %s (batch)", len(batchTickers), day)
+	c.log.Debugf("indexalpha: fetching %d tickers %s..%s investor=%s (batch)", len(batchTickers), fromDay, toDay, investor)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
 	if err != nil {
@@ -246,7 +281,7 @@ func (c *Client) FetchBatchWithKey(ctx context.Context, key string, tickers []st
 	if err := classifyStatus(resp, body); err != nil {
 		return nil, outcome, err
 	}
-	batch, err := ParseBrokerSummaryBatch(body)
+	batch, err := ParseBrokerSummaryBatch(investor, sameDay(from, to), body)
 	return batch, outcome, err
 }
 

@@ -28,7 +28,20 @@ var ErrDailyLimit = errors.New("broker: daily request limit")
 // and retry later.
 var ErrRateLimited = errors.New("broker: rate limited")
 
-// Row is one broker's buy or sell activity for a ticker+day.
+// Investor lanes the pipeline stores. The vendor also exposes d (domestic) and
+// or (an alias for all); neither is a pipeline lane, so they are rejected at
+// the client boundary rather than stored under a misleading investor value.
+const (
+	InvestorAll     = "all"
+	InvestorForeign = "f"
+)
+
+// MarketRegular is the only board the pipeline stores. Negotiated-market
+// ingestion is out of scope, and market defaults differ between vendor
+// endpoints, so every call pins this value.
+const MarketRegular = "RG"
+
+// Row is one broker's buy or sell activity for a ticker+window.
 type Row struct {
 	BrokerCode string
 	Lot        int64
@@ -37,7 +50,9 @@ type Row struct {
 	Rank       int
 }
 
-// Totals is a source's summary line for one ticker+day.
+// Totals is a source's summary line for one ticker+window. TVal, TLot and Avg
+// are all-investor totals; in the f lane they are unobserved (zero in memory,
+// written as NULL), and only FNVal is set.
 type Totals struct {
 	TVal  int64  // total value (rupiah)
 	FNVal *int64 // foreign net value (rupiah); nil = unobserved, never zero
@@ -45,19 +60,16 @@ type Totals struct {
 	Avg   int64  // average price (rupiah per share)
 }
 
-// Result is one ticker+day's broker activity as returned by a source.
+// Result is one ticker+window's broker activity as returned by a source.
+//
+// Investor is the lane the rows belong to. It is carried with the result so a
+// writer stamps the same lane the source was asked for; an empty value is the
+// legacy all-investor lane.
 type Result struct {
-	Buyers  []Row
-	Sellers []Row
-	Totals  Totals
-}
-
-// ForeignFlow is one ticker+day's foreign activity as returned by a source.
-// NetForeign is buy − sell (positive = foreign accumulation).
-type ForeignFlow struct {
-	ForeignBuy  int64
-	ForeignSell int64
-	NetForeign  int64
+	Investor string
+	Buyers   []Row
+	Sellers  []Row
+	Totals   Totals
 }
 
 // MaxBatchTickers is the vendor's hard limit on tickers per batch request. It is

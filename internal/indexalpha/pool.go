@@ -263,9 +263,17 @@ func (p *Pool) seedKey(ctx context.Context, idx int) error {
 // and rotating keys through the pool. It satisfies the usecase's
 // BrokerSummaryFetcher. A call costs one quota unit.
 func (p *Pool) Fetch(ctx context.Context, ticker string, date time.Time) (*broker.Result, error) {
+	return p.FetchRange(ctx, ticker, date, date, broker.InvestorAll)
+}
+
+// FetchRange fetches one ticker over [from, to] in the requested investor lane.
+// A range costs the same one unit as a day (the vendor aggregates, it does not
+// paginate), and one daily request. It is the seam the window-grain read path
+// and backfill use; the day/all Fetch is its degenerate case.
+func (p *Pool) FetchRange(ctx context.Context, ticker string, from, to time.Time, investor string) (*broker.Result, error) {
 	var res *broker.Result
 	err := p.Do(ctx, 1, func(ctx context.Context, key string) (CallOutcome, error) {
-		r, outcome, err := p.client.FetchWithKey(ctx, key, ticker, date)
+		r, outcome, err := p.client.FetchRangeWithKey(ctx, key, ticker, from, to, investor)
 		if err == nil {
 			res = r
 		}
@@ -282,6 +290,12 @@ func (p *Pool) Fetch(ctx context.Context, ticker string, date time.Time) (*broke
 // tickers requested (a batch of 50 costs 50 monthly units and one daily
 // request). It satisfies the usecase's BrokerSummaryBatchFetcher.
 func (p *Pool) FetchBatch(ctx context.Context, tickers []string, date time.Time) (*broker.Batch, error) {
+	return p.FetchBatchRange(ctx, tickers, date, date, broker.InvestorAll)
+}
+
+// FetchBatchRange is FetchBatch over a window and an investor lane. The span
+// does not change the cost: one unit per requested ticker, one daily request.
+func (p *Pool) FetchBatchRange(ctx context.Context, tickers []string, from, to time.Time, investor string) (*broker.Batch, error) {
 	if len(tickers) == 0 {
 		return &broker.Batch{Results: map[string]*broker.Result{}, Invalid: map[string]error{}}, nil
 	}
@@ -291,7 +305,7 @@ func (p *Pool) FetchBatch(ctx context.Context, tickers []string, date time.Time)
 	}
 	var batch *broker.Batch
 	err := p.Do(ctx, len(tickers), func(ctx context.Context, key string) (CallOutcome, error) {
-		b, outcome, err := p.client.FetchBatchWithKey(ctx, key, tickers, date)
+		b, outcome, err := p.client.FetchBatchRangeWithKey(ctx, key, tickers, from, to, investor)
 		if err == nil {
 			batch = b
 		}

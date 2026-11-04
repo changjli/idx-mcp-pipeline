@@ -9,6 +9,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 )
 
@@ -172,6 +173,142 @@ func TestHasStoredDay(t *testing.T) {
 	}
 	if ok {
 		t.Error("HasStoredDay = true for a day with no rows, want false")
+	}
+}
+
+// TestBrokerStockSummaryRepository_WindowLaneCoexistence is ticket 10a's
+// additive guarantee: an f window and an all-investor legacy day coexist for the
+// same ticker, the upsert replaces only its own window+lane, and every old read
+// stays pinned to the one-day all lane.
+func TestBrokerStockSummaryRepository_WindowLaneCoexistence(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+
+	db := sqlx.MustConnect("pgx", dsn)
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+	repo := NewBrokerStockSummaryRepository(log)
+
+	ticker := "TESTW"
+	day := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+	winFrom := day.AddDate(0, 0, -4)
+
+	cleanup := func() {
+		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	// Legacy all-investor day.
+	allRows := []entity.BrokerStockSummary{
+		{Ticker: ticker, BrokerCode: "AK", Side: "buy", TradingDay: day, Lot: i64(10), Value: i64(1000), AvgPrice: i64(100), Rank: i32(1)},
+	}
+	allTotals := &entity.BrokerStockSummaryTotals{
+		Ticker: ticker, TradingDay: day, TVal: i64(1000), TLot: i64(10), Avg: i64(100), Source: entity.BrokerSourceLegacyIPOT,
+	}
+	if err := repo.UpsertDay(db, allRows, allTotals); err != nil {
+		t.Fatalf("UpsertDay(all): %v", err)
+	}
+
+	// Foreign day for the same ticker+day: same window key, different lane.
+	fTotals := &entity.BrokerStockSummaryTotals{
+		Ticker: ticker, TradingDay: day, WinFrom: day, Investor: broker.InvestorForeign, Market: broker.MarketRegular,
+		FNVal: i64(-100), Source: entity.BrokerSourceLive,
+	}
+	fRows := []entity.BrokerStockSummary{
+		{Ticker: ticker, BrokerCode: "AK", Side: "buy", TradingDay: day, WinFrom: day, Investor: broker.InvestorForeign, Market: broker.MarketRegular, Lot: i64(5), Value: i64(500), AvgPrice: i64(100), Rank: i32(1), Source: entity.BrokerSourceLive},
+	}
+	if err := repo.UpsertWindow(db, fRows, fTotals); err != nil {
+		t.Fatalf("UpsertWindow(f day): %v", err)
+	}
+
+	// Old readers see only the all lane.
+	stored, err := repo.FindByTickerAndDay(db, ticker, day)
+	if err != nil {
+		t.Fatalf("FindByTickerAndDay: %v", err)
+	}
+	if len(stored) != 1 || stored[0].Investor != broker.InvestorAll || !stored[0].WinFrom.Equal(day) {
+		t.Fatalf("old read returned %+v, want the single all-lane day row", stored)
+	}
+	oldTotals, err := repo.FindTotalsByTickerAndDay(db, ticker, day)
+	if err != nil {
+		t.Fatalf("FindTotalsByTickerAndDay: %v", err)
+	}
+	if oldTotals.Investor != broker.InvestorAll || oldTotals.TVal == nil || *oldTotals.TVal != 1000 {
+		t.Fatalf("old totals = %+v, want the all-lane day totals", oldTotals)
+	}
+
+	// Refetching the f day replaces only the f day, not the all day.
+	fRows = append(fRows, entity.BrokerStockSummary{
+		Ticker: ticker, BrokerCode: "CC", Side: "sell", TradingDay: day, WinFrom: day,
+		Investor: broker.InvestorForeign, Market: broker.MarketRegular,
+		Lot: i64(5), Value: i64(400), AvgPrice: i64(80), Rank: i32(1), Source: entity.BrokerSourceLive,
+	})
+	if err := repo.UpsertWindow(db, fRows, fTotals); err != nil {
+		t.Fatalf("UpsertWindow(f day refetch): %v", err)
+	}
+
+	// A foreign window ending on the same day, with a different win_from, is a
+	// separate key and must not disturb either day row.
+	winRows := []entity.BrokerStockSummary{
+		{Ticker: ticker, BrokerCode: "HD", Side: "buy", TradingDay: day, WinFrom: winFrom,
+			Investor: broker.InvestorForeign, Market: broker.MarketRegular,
+			Lot: i64(7), Value: i64(700), AvgPrice: i64(100), Rank: i32(1), Source: entity.BrokerSourceWindow},
+	}
+	winTotals := &entity.BrokerStockSummaryTotals{
+		Ticker: ticker, TradingDay: day, WinFrom: winFrom, Investor: broker.InvestorForeign,
+		Market: broker.MarketRegular, FNVal: i64(700), Source: entity.BrokerSourceWindow,
+	}
+	if err := repo.UpsertWindow(db, winRows, winTotals); err != nil {
+		t.Fatalf("UpsertWindow(f window): %v", err)
+	}
+
+	var byLane struct {
+		All int `db:"all_rows"`
+		F   int `db:"f_rows"`
+	}
+	if err := db.Get(&byLane, `SELECT
+		COUNT(*) FILTER (WHERE investor = 'all') AS all_rows,
+		COUNT(*) FILTER (WHERE investor = 'f') AS f_rows
+		FROM broker_stock_summaries WHERE ticker = $1`, ticker); err != nil {
+		t.Fatalf("count by lane: %v", err)
+	}
+	if byLane.All != 1 || byLane.F != 3 {
+		t.Fatalf("rows by lane = all %d / f %d, want 1 / 3 (f day refetch replaced, f window separate)", byLane.All, byLane.F)
+	}
+
+	// The old range read also ignores both f windows.
+	rangeRows, err := repo.FindByTickerAndDateRange(db, ticker, winFrom, day)
+	if err != nil {
+		t.Fatalf("FindByTickerAndDateRange: %v", err)
+	}
+	if len(rangeRows) != 1 || rangeRows[0].Investor != broker.InvestorAll {
+		t.Fatalf("old range read returned %d rows, want the single all-lane day", len(rangeRows))
+	}
+
+	// The f totals row has no day totals, only f_nval.
+	var fStored entity.BrokerStockSummaryTotals
+	if err := db.Get(&fStored, `SELECT * FROM broker_stock_summary_totals
+		WHERE ticker = $1 AND trading_day = $2 AND win_from = $2 AND investor = 'f'`, ticker, day); err != nil {
+		t.Fatalf("read f totals: %v", err)
+	}
+	if fStored.TVal != nil || fStored.TLot != nil || fStored.Avg != nil {
+		t.Errorf("f totals day columns = %v/%v/%v, want NULL", fStored.TVal, fStored.TLot, fStored.Avg)
+	}
+	if fStored.FNVal == nil || *fStored.FNVal != -100 {
+		t.Errorf("f totals f_nval = %v, want -100", fStored.FNVal)
+	}
+
+	// A row set with mixed lanes is a programming error, not a silent write.
+	bad := []entity.BrokerStockSummary{
+		{Ticker: ticker, BrokerCode: "AK", Side: "buy", TradingDay: day, WinFrom: day, Investor: broker.InvestorForeign, Market: broker.MarketRegular},
+		{Ticker: ticker, BrokerCode: "CC", Side: "sell", TradingDay: day, WinFrom: day, Investor: broker.InvestorAll, Market: broker.MarketRegular},
+	}
+	if err := repo.UpsertWindow(db, bad, nil); err == nil {
+		t.Fatal("UpsertWindow accepted a row set with mixed investor lanes")
 	}
 }
 

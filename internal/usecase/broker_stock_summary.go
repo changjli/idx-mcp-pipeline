@@ -123,8 +123,9 @@ type BrokerSummaryCoverage struct {
 }
 
 // BrokerSummaryTotals is the summary line in the response. FNVal is null when
-// the foreign net is unobserved (the broker endpoint does not carry it; ticket
-// 06's foreign-flow pass fills it) — never a fabricated zero.
+// the foreign net is unobserved — never a fabricated zero. The all lane never
+// carries it; the f lane derives it from its rows (ticket 10a). This response
+// shape stays on the all lane until 10b flips the read path.
 type BrokerSummaryTotals struct {
 	TVal  int64  `json:"t_val"`
 	FNVal *int64 `json:"f_nval"`
@@ -459,21 +460,34 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryHistory(ctx context.Co
 // persist writes the fetched rows and totals for one ticker+day atomically,
 // stamped with the writer's provenance.
 func (uc *BrokerStockSummaryUseCase) persist(ticker string, day time.Time, res *broker.Result, source string) error {
+	investor := res.Investor
+	if investor == "" {
+		investor = broker.InvestorAll
+	}
 	rows := make([]entity.BrokerStockSummary, 0, len(res.Buyers)+len(res.Sellers))
 	for _, b := range res.Buyers {
-		rows = append(rows, toEntity(ticker, day, "buy", b, source))
+		rows = append(rows, toEntity(ticker, day, day, investor, "buy", b, source))
 	}
 	for _, s := range res.Sellers {
-		rows = append(rows, toEntity(ticker, day, "sell", s, source))
+		rows = append(rows, toEntity(ticker, day, day, investor, "sell", s, source))
 	}
 
+	// The f lane has no all-investor day totals: t_val, t_lot and avg stay
+	// unobserved (NULL), never a foreign gross masquerading as the day total.
+	var tval, tlot, avg *int64
+	if investor == broker.InvestorAll {
+		tval, tlot, avg = i64p(res.Totals.TVal), i64p(res.Totals.TLot), i64p(res.Totals.Avg)
+	}
 	totals := &entity.BrokerStockSummaryTotals{
 		Ticker:     ticker,
 		TradingDay: day,
-		TVal:       i64p(res.Totals.TVal),
+		WinFrom:    day,
+		Investor:   investor,
+		Market:     broker.MarketRegular,
+		TVal:       tval,
 		FNVal:      res.Totals.FNVal,
-		TLot:       i64p(res.Totals.TLot),
-		Avg:        i64p(res.Totals.Avg),
+		TLot:       tlot,
+		Avg:        avg,
 		Source:     source,
 	}
 	return uc.Repo.UpsertDay(uc.DB, rows, totals)
@@ -507,13 +521,16 @@ func topN(rows []BrokerSummaryRow) []BrokerSummaryRow {
 	return rows
 }
 
-func toEntity(ticker string, day time.Time, side string, r broker.Row, source string) entity.BrokerStockSummary {
+func toEntity(ticker string, winFrom, day time.Time, investor, side string, r broker.Row, source string) entity.BrokerStockSummary {
 	rank := int32(r.Rank)
 	return entity.BrokerStockSummary{
 		Ticker:     ticker,
 		BrokerCode: r.BrokerCode,
 		Side:       side,
 		TradingDay: day,
+		WinFrom:    winFrom,
+		Investor:   investor,
+		Market:     broker.MarketRegular,
 		Lot:        i64p(r.Lot),
 		Value:      i64p(r.Value),
 		AvgPrice:   i64p(r.AvgPrice),

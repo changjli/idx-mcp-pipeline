@@ -22,7 +22,8 @@ var (
 	ErrUpstream = errors.New("indexalpha: upstream error")
 
 	// ErrInvalidRequest means the caller asked for something the contract
-	// forbids before any HTTP call was made: an empty batch, or one over the
-	// 50-ticker limit. It is a programming error, never a vendor condition.
+	// forbids before any HTTP call was made: an empty batch, one over the
+	// 50-ticker limit, an unsupported investor lane, or an inverted window. It
+	// is a programming error, never a vendor condition.
 	ErrInvalidRequest = errors.New("indexalpha: invalid request")
 )

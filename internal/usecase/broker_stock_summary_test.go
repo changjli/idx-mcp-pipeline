@@ -498,3 +498,50 @@ func TestGetStockBrokerSummary_UnobservedForeignNetPersistsNull(t *testing.T) {
 		t.Errorf("persisted f_nval = %v, want NULL (unobserved)", *stored.FNVal)
 	}
 }
+
+// TestPersist_ForeignLaneWritesNullDayTotals is ticket 10a's writer rule: an f
+// result stores its rows and f_nval, but t_val/t_lot/avg stay NULL because the
+// f payload has no all-investor totals. The writer must never persist the
+// foreign sell gross as the day's transaction value.
+func TestPersist_ForeignLaneWritesNullDayTotals(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
+	uc, _ := newTestUC(t, db)
+
+	ticker := "TESTF"
+	day := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+	db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	t.Cleanup(func() {
+		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	})
+
+	res := &broker.Result{
+		Investor: broker.InvestorForeign,
+		Buyers:   []broker.Row{{BrokerCode: "HD", Lot: 100, Value: 1_000_000, AvgPrice: 100, Rank: 1}},
+		Sellers:  []broker.Row{{BrokerCode: "CC", Lot: 90, Value: 900_000, AvgPrice: 100, Rank: 1}},
+		Totals:   broker.Totals{FNVal: i64p(100_000)},
+	}
+	if err := uc.persist(ticker, day, res, entity.BrokerSourceLive); err != nil {
+		t.Fatalf("persist(f): %v", err)
+	}
+
+	var stored entity.BrokerStockSummaryTotals
+	if err := db.Get(&stored, `SELECT * FROM broker_stock_summary_totals
+		WHERE ticker = $1 AND trading_day = $2 AND win_from = $2 AND investor = 'f'`, ticker, day); err != nil {
+		t.Fatalf("read f totals: %v", err)
+	}
+	if stored.TVal != nil || stored.TLot != nil || stored.Avg != nil {
+		t.Errorf("f day totals = %v/%v/%v, want NULL", stored.TVal, stored.TLot, stored.Avg)
+	}
+	if stored.FNVal == nil || *stored.FNVal != 100_000 {
+		t.Errorf("f_nval = %v, want 100000", stored.FNVal)
+	}
+	if stored.Investor != broker.InvestorForeign || stored.Market != broker.MarketRegular {
+		t.Errorf("lane/market = %q/%q, want f/RG", stored.Investor, stored.Market)
+	}
+}

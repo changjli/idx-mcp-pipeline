@@ -63,10 +63,10 @@ func TestCleanup_EndToEnd(t *testing.T) {
 	db.MustExec("INSERT INTO broker_summaries (broker_code, trading_day) VALUES ($1,$2)", "CLNPB", fresh)
 
 	// broker_stock_summaries + totals: CLNPA expired, CLNPB fresh.
-	db.MustExec("INSERT INTO broker_stock_summaries (ticker, broker_code, side, trading_day) VALUES ($1,'AA','buy',$2)", "CLNPA", old90)
-	db.MustExec("INSERT INTO broker_stock_summaries (ticker, broker_code, side, trading_day) VALUES ($1,'AA','buy',$2)", "CLNPB", fresh)
-	db.MustExec("INSERT INTO broker_stock_summary_totals (ticker, trading_day) VALUES ($1,$2)", "CLNPA", old90)
-	db.MustExec("INSERT INTO broker_stock_summary_totals (ticker, trading_day) VALUES ($1,$2)", "CLNPB", fresh)
+	db.MustExec("INSERT INTO broker_stock_summaries (ticker, broker_code, side, trading_day, win_from, investor, market) VALUES ($1,'AA','buy',$2,$2,'all','RG')", "CLNPA", old90)
+	db.MustExec("INSERT INTO broker_stock_summaries (ticker, broker_code, side, trading_day, win_from, investor, market) VALUES ($1,'AA','buy',$2,$2,'all','RG')", "CLNPB", fresh)
+	db.MustExec("INSERT INTO broker_stock_summary_totals (ticker, trading_day, win_from, investor, market) VALUES ($1,$2,$2,'all','RG')", "CLNPA", old90)
+	db.MustExec("INSERT INTO broker_stock_summary_totals (ticker, trading_day, win_from, investor, market) VALUES ($1,$2,$2,'all','RG')", "CLNPB", fresh)
 
 	// anomalies: CLNPA expired, CLNPB fresh.
 	db.MustExec("INSERT INTO anomalies (ticker, trading_day, type, direction) VALUES ($1,$2,'volume','up')", "CLNPA", old90)

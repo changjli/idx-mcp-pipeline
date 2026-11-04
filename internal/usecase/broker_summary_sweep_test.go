@@ -131,9 +131,9 @@ func seedSweepTicker(t *testing.T, db *sqlx.DB, ticker string, dailyValue int64)
 // the rotation orders on.
 func seedObserved(t *testing.T, db *sqlx.DB, ticker string, day time.Time) {
 	t.Helper()
-	db.MustExec(`INSERT INTO broker_stock_summary_totals (ticker, trading_day, t_val, f_nval, t_lot, avg)
-		VALUES ($1, $2, 1, NULL, 1, 1)
-		ON CONFLICT (ticker, trading_day) DO NOTHING`, ticker, day)
+	db.MustExec(`INSERT INTO broker_stock_summary_totals (ticker, trading_day, win_from, investor, market, t_val, f_nval, t_lot, avg)
+		VALUES ($1, $2, $2, 'all', 'RG', 1, NULL, 1, 1)
+		ON CONFLICT (ticker, trading_day, win_from, investor) DO NOTHING`, ticker, day)
 }
 
 func sweepCleanup(t *testing.T, db *sqlx.DB, tickers []string) {

@@ -955,6 +955,61 @@ func TestPool_FetchBatchMetersTickersAndOneRequest(t *testing.T) {
 	}
 }
 
+// TestPool_FetchBatchRangeSendsWindowAndLane pins the 10a range seam: the pool
+// forwards from/to/investor unchanged and still meters one unit per ticker and
+// one daily request for the whole span.
+func TestPool_FetchBatchRangeSendsWindowAndLane(t *testing.T) {
+	clock := newFakeClock()
+	var got batchRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/usage" {
+			_, _ = w.Write([]byte(usageJSON(150, "2026-11-30T00:00:00", true)))
+			return
+		}
+		if r.URL.Path != "/stocks/broker-summary/batch" || r.Method != http.MethodPost {
+			t.Errorf("%s %s, want POST /stocks/broker-summary/batch", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.Header().Set("X-Monthly-Remaining", "98")
+		w.Header().Set("X-Monthly-Reset", "1795784282")
+		_, _ = w.Write([]byte(`{"success":true,"data":{
+			"FIRE":[{"code":"HD","buy_freq":1,"buy_volume":100,"buy_value":1000.0,
+			         "sell_freq":1,"sell_volume":100,"sell_value":900.0,
+			         "buy_avg":10.0,"sell_avg":9.0}],
+			"GRPH":[{"code":"AK","buy_freq":1,"buy_volume":200,"buy_value":2000.0,
+			         "sell_freq":2,"sell_volume":200,"sell_value":2100.0,
+			         "buy_avg":10.0,"sell_avg":10.5}]
+		},"error":null}`))
+	}))
+	defer srv.Close()
+
+	p := newTestPool(t, srv.URL, []string{"k1"}, 0, clock)
+	from := time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)
+	batch, err := p.FetchBatchRange(context.Background(), []string{"FIRE", "GRPH"}, from, to, broker.InvestorForeign)
+	if err != nil {
+		t.Fatalf("FetchBatchRange: %v", err)
+	}
+	if got.From != "2026-10-27" || got.To != "2026-11-02" {
+		t.Errorf("from/to = %q/%q, want the window", got.From, got.To)
+	}
+	if got.Investor != broker.InvestorForeign || got.Market != broker.MarketRegular {
+		t.Errorf("investor/market = %q/%q, want f/RG", got.Investor, got.Market)
+	}
+	if len(batch.Results) != 2 {
+		t.Fatalf("results = %d, want 2", len(batch.Results))
+	}
+	st := p.Status()
+	if st.TotalRemaining != 98 {
+		t.Errorf("TotalRemaining = %d, want 98 (one unit per ticker)", st.TotalRemaining)
+	}
+	if st.DailyRequests != 1 {
+		t.Errorf("DailyRequests = %d, want 1 for the whole window", st.DailyRequests)
+	}
+}
+
 // TestPool_BatchCapacityIsSmallestUsableKey sizes a batch against the tightest
 // usable key, so an oversized request can never 403 away a key's units.
 func TestPool_BatchCapacityIsSmallestUsableKey(t *testing.T) {

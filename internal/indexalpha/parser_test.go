@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 )
 
 // TestParseBrokerSummary_ConvertsSharesToLotsAndRanks drives the fixture day:
@@ -13,7 +15,7 @@ import (
 func TestParseBrokerSummary_ConvertsSharesToLotsAndRanks(t *testing.T) {
 	body := mustReadFixture(t, "bbri-2026-10-22.json")
 
-	res, err := ParseBrokerSummary("BBRI", body)
+	res, err := ParseBrokerSummary("BBRI", broker.InvestorAll, true, body)
 	if err != nil {
 		t.Fatalf("ParseBrokerSummary: %v", err)
 	}
@@ -58,7 +60,7 @@ func TestParseBrokerSummary_ConvertsSharesToLotsAndRanks(t *testing.T) {
 func TestParseBrokerSummary_ReconcilesAgainstPublishedValue(t *testing.T) {
 	body := mustReadFixture(t, "bbri-2026-10-22.json")
 
-	res, err := ParseBrokerSummary("BBRI", body)
+	res, err := ParseBrokerSummary("BBRI", broker.InvestorAll, true, body)
 	if err != nil {
 		t.Fatalf("ParseBrokerSummary: %v", err)
 	}
@@ -91,12 +93,75 @@ func TestParseBrokerSummary_ReconcilesAgainstPublishedValue(t *testing.T) {
 }
 
 func TestParseBrokerSummary_EmptyDayIsNotAnError(t *testing.T) {
-	res, err := ParseBrokerSummary("BBRI", []byte(`{"success":true,"data":[],"error":null}`))
+	res, err := ParseBrokerSummary("BBRI", broker.InvestorAll, true, []byte(`{"success":true,"data":[],"error":null}`))
 	if err != nil {
 		t.Fatalf("ParseBrokerSummary: %v", err)
 	}
 	if len(res.Buyers) != 0 || len(res.Sellers) != 0 || res.Totals.TVal != 0 {
 		t.Fatalf("empty day = %+v, want zero rows and totals", res)
+	}
+}
+
+// TestParseBrokerSummary_ForeignLaneCarriesNetAndSkipsReconciliation is the
+// ticket-10a parser change: an f payload has a net (Σbuy ≠ Σsell) and must parse,
+// with f_nval derived from the rows and the all-investor day totals left
+// unobserved.
+func TestParseBrokerSummary_ForeignLaneCarriesNetAndSkipsReconciliation(t *testing.T) {
+	body := mustReadFixture(t, "bbri-2026-10-22-f.json")
+
+	res, err := ParseBrokerSummary("BBRI", broker.InvestorForeign, true, body)
+	if err != nil {
+		t.Fatalf("ParseBrokerSummary(f): %v", err)
+	}
+	if res.Investor != broker.InvestorForeign {
+		t.Errorf("Investor = %q, want %q", res.Investor, broker.InvestorForeign)
+	}
+	if len(res.Buyers) != 4 || len(res.Sellers) != 3 {
+		t.Fatalf("rows = %d buys/%d sells, want 4/3 (PD buy-only, MI zero dropped)",
+			len(res.Buyers), len(res.Sellers))
+	}
+	const wantNet = int64(-90_681_503_000)
+	if res.Totals.FNVal == nil || *res.Totals.FNVal != wantNet {
+		t.Fatalf("Totals.FNVal = %v, want %d", res.Totals.FNVal, wantNet)
+	}
+	if res.Totals.TVal != 0 || res.Totals.TLot != 0 || res.Totals.Avg != 0 {
+		t.Errorf("f day totals = %d/%d/%d, want zero (unobserved; the writer stores NULL)",
+			res.Totals.TVal, res.Totals.TLot, res.Totals.Avg)
+	}
+}
+
+// TestParseBrokerSummary_AllReconciliationIsDayGrain pins the probe-10-0
+// finding: a multi-day all window may differ slightly between the two sides
+// and must still parse; only the single-day all lane refuses a mismatch.
+func TestParseBrokerSummary_AllReconciliationIsDayGrain(t *testing.T) {
+	body := []byte(`{"success":true,"data":[
+		{"code":"AK","buy_freq":1,"buy_volume":100,"buy_value":1000.0,
+		 "sell_freq":1,"sell_volume":100,"sell_value":999.0,
+		 "buy_avg":10.0,"sell_avg":9.99}]}`)
+
+	if _, err := ParseBrokerSummary("X", broker.InvestorAll, true, body); !errors.Is(err, ErrMalformedPayload) {
+		t.Fatalf("single-day all mismatch err = %v, want ErrMalformedPayload", err)
+	}
+	res, err := ParseBrokerSummary("X", broker.InvestorAll, false, body)
+	if err != nil {
+		t.Fatalf("multi-day all window rejected: %v", err)
+	}
+	if res.Totals.TVal != 999 {
+		t.Errorf("Totals.TVal = %d, want 999 (the vendor's window total)", res.Totals.TVal)
+	}
+}
+
+func TestParseBrokerSummary_ForeignLaneValidatesAverages(t *testing.T) {
+	body := []byte(`{"success":true,"data":[
+		{"code":"AK","buy_volume":100,"buy_value":1000.0,"buy_avg":9.0}]}`)
+	if _, err := ParseBrokerSummary("X", broker.InvestorForeign, true, body); !errors.Is(err, ErrMalformedPayload) {
+		t.Fatalf("err = %v, want ErrMalformedPayload (avg 9 ≠ value/volume 10)", err)
+	}
+}
+
+func TestParseBrokerSummary_RejectsUnsupportedInvestor(t *testing.T) {
+	if _, err := ParseBrokerSummary("X", "d", true, []byte(`{"success":true,"data":[]}`)); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("err = %v, want ErrInvalidRequest", err)
 	}
 }
 
@@ -118,7 +183,7 @@ func TestParseBrokerSummary_MalformedPayloads(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParseBrokerSummary("BBRI", []byte(tc.body))
+			_, err := ParseBrokerSummary("BBRI", broker.InvestorAll, true, []byte(tc.body))
 			if !errors.Is(err, ErrMalformedPayload) {
 				t.Fatalf("err = %v, want ErrMalformedPayload", err)
 			}
@@ -153,7 +218,7 @@ func TestParseBrokerSummaryBatch_PerTickerIsolation(t *testing.T) {
 		"NULLY":null
 	},"error":null}`)
 
-	batch, err := ParseBrokerSummaryBatch(body)
+	batch, err := ParseBrokerSummaryBatch(broker.InvestorAll, true, body)
 	if err != nil {
 		t.Fatalf("ParseBrokerSummaryBatch: %v", err)
 	}
@@ -188,7 +253,7 @@ func TestParseBrokerSummaryBatch_BatchLevelErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := ParseBrokerSummaryBatch([]byte(tc.body)); !errors.Is(err, ErrMalformedPayload) {
+			if _, err := ParseBrokerSummaryBatch(broker.InvestorAll, true, []byte(tc.body)); !errors.Is(err, ErrMalformedPayload) {
 				t.Fatalf("err = %v, want ErrMalformedPayload", err)
 			}
 		})
