@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/indicator"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
@@ -94,6 +96,35 @@ type ScreenerSource interface {
 // *repository.BrokerStockSummaryRepository satisfies it.
 type ScreenerFlowSource interface {
 	SumForeignNetByTickers(db *sqlx.DB, tickers []string, to time.Time, tradingDays int) (*repository.ForeignNetWindow, error)
+}
+
+// ScreenerWindowFetcher fetches one ticker's foreign window when the partition
+// does not cover the screener's trailing flow window. A window costs one unit,
+// regardless of its span; *indexalpha.Pool satisfies it.
+type ScreenerWindowFetcher interface {
+	FetchRange(ctx context.Context, ticker string, from, to time.Time, investor string) (*broker.Result, error)
+}
+
+// ScreenerBudget is the quota view the flow column's compose-else-fetch path
+// consults before spending: the units the pool can still spend (reserve already
+// deducted).
+type ScreenerBudget interface {
+	Available() int
+}
+
+// ScreenStocksOption installs optional screener dependencies.
+type ScreenStocksOption func(*ScreenStocksUseCase)
+
+// WithScreenFlowSource installs the flow column's fetch-and-cache path: a
+// stored-window read that covers the trailing window answers for zero units; a
+// miss spends one unit per ticker while the budget allows, then renders
+// uncovered rather than zero.
+func WithScreenFlowSource(fetcher ScreenerWindowFetcher, budget ScreenerBudget, repo *repository.BrokerStockSummaryRepository) ScreenStocksOption {
+	return func(uc *ScreenStocksUseCase) {
+		uc.FlowFetcher = fetcher
+		uc.FlowBudget = budget
+		uc.BrokerRepo = repo
+	}
 }
 
 // ScreenStocksRequest is a parsed caller request. Every field is optional: the
@@ -189,14 +220,20 @@ type ScreenStocksResponse struct {
 	// how many market-wide trading days that window actually spans. The pair is
 	// the denominator a row's coverage days reads against — "7 of 20" — so an
 	// over-long ask shows up as a short window rather than as a thin ticker.
-	FlowWindowDays   int                  `json:"flow_window_days"`
-	FlowDaysInWindow int                  `json:"flow_days_in_window"`
-	Indicators       []string             `json:"indicators"`
-	Filters          []ScreenStocksFilter `json:"filters"`
-	Sort             string               `json:"sort"`
-	Order            string               `json:"order"`
-	Limit            int                  `json:"limit"`
-	Funnel           ScreenStocksFunnel   `json:"funnel"`
+	FlowWindowDays   int `json:"flow_window_days"`
+	FlowDaysInWindow int `json:"flow_days_in_window"`
+	// FlowFetched counts tickers whose uncovered trailing window was fetched
+	// and cached on this call (one unit each). FlowSkipped counts uncovered
+	// tickers left unobserved because the budget ran out or the fetch failed —
+	// their column is null and flagged, never zero.
+	FlowFetched int                  `json:"flow_fetched"`
+	FlowSkipped int                  `json:"flow_skipped"`
+	Indicators  []string             `json:"indicators"`
+	Filters     []ScreenStocksFilter `json:"filters"`
+	Sort        string               `json:"sort"`
+	Order       string               `json:"order"`
+	Limit       int                  `json:"limit"`
+	Funnel      ScreenStocksFunnel   `json:"funnel"`
 	// TotalMatches is how many tickers passed every filter; Count is how many
 	// are returned after the row cap. TotalMatches > Count is the cut.
 	TotalMatches int               `json:"total_matches"`
@@ -205,10 +242,11 @@ type ScreenStocksResponse struct {
 }
 
 // ScreenStocksUseCase runs the whole-universe funnel — the deterministic stage
-// 1 of the daily flow: one call turns the persisted market into a ranked
-// shortlist. Pure DB read, no upstream call, no persist (Heroku H12
-// constraint, ADR-0009). The hard filters run in SQL, so the expensive part
-// (per-ticker indicator computation) only ever touches survivors.
+// 1 of the daily flow. The hard filters run in SQL, so the expensive part
+// (per-ticker indicator computation) only ever touches survivors. The broker
+// flow column reads the stored partition first and may spend one unit per
+// uncovered ticker (budget-guarded) to fetch and cache its trailing window; the
+// replay entry point disables that spending.
 type ScreenStocksUseCase struct {
 	DB     *sqlx.DB
 	Log    *logrus.Logger
@@ -216,10 +254,19 @@ type ScreenStocksUseCase struct {
 	// Flow is the stored broker read behind the row's foreign-net column, which
 	// is always joined — the column is flagged per row, never toggled per call.
 	Flow ScreenerFlowSource
+	// FlowFetcher + FlowBudget + BrokerRepo make the column's compose-else-fetch
+	// path. They are optional: without them the column is a pure store read.
+	FlowFetcher ScreenerWindowFetcher
+	FlowBudget  ScreenerBudget
+	BrokerRepo  *repository.BrokerStockSummaryRepository
 }
 
-func NewScreenStocksUseCase(db *sqlx.DB, log *logrus.Logger, source ScreenerSource, flow ScreenerFlowSource) *ScreenStocksUseCase {
-	return &ScreenStocksUseCase{DB: db, Log: log, Source: source, Flow: flow}
+func NewScreenStocksUseCase(db *sqlx.DB, log *logrus.Logger, source ScreenerSource, flow ScreenerFlowSource, opts ...ScreenStocksOption) *ScreenStocksUseCase {
+	uc := &ScreenStocksUseCase{DB: db, Log: log, Source: source, Flow: flow}
+	for _, opt := range opts {
+		opt(uc)
+	}
+	return uc
 }
 
 // ScreenStocks validates the request, then runs the funnel in order: SQL hard
@@ -230,7 +277,7 @@ func NewScreenStocksUseCase(db *sqlx.DB, log *logrus.Logger, source ScreenerSour
 // read, so a bad parameter costs one round trip and returns the same structured
 // error whether it arrived over MCP or from another caller.
 func (uc *ScreenStocksUseCase) ScreenStocks(ctx context.Context, req ScreenStocksRequest) (*ScreenStocksResponse, error) {
-	return uc.screen(ctx, req, true)
+	return uc.screen(ctx, req, true, true)
 }
 
 // ScreenAllSurvivors runs the same funnel as ScreenStocks but returns every
@@ -238,14 +285,18 @@ func (uc *ScreenStocksUseCase) ScreenStocks(ctx context.Context, req ScreenStock
 // its only caller: a grader must see the whole survivor population, and
 // re-implementing the funnel outside this usecase is exactly the drift the
 // harness exists to prevent. Ranking still runs, so the order matches a Screen's
-// — the row cap is the only behavior that differs.
+// — the row cap is the only behavior that differs. It also never fetches: a
+// historical replay grades what the partition holds (exact cover or
+// unobserved) and must not spend quota.
 func (uc *ScreenStocksUseCase) ScreenAllSurvivors(ctx context.Context, req ScreenStocksRequest) (*ScreenStocksResponse, error) {
-	return uc.screen(ctx, req, false)
+	return uc.screen(ctx, req, false, false)
 }
 
 // screen is the shared funnel. capRows applies the request's row cap; a Replay
-// passes false so nothing is silently dropped from a measurement.
-func (uc *ScreenStocksUseCase) screen(ctx context.Context, req ScreenStocksRequest, capRows bool) (*ScreenStocksResponse, error) {
+// passes false so nothing is silently dropped from a measurement. fetchFlow
+// enables the flow column's one-unit-per-ticker fallback; the replay passes
+// false.
+func (uc *ScreenStocksUseCase) screen(ctx context.Context, req ScreenStocksRequest, capRows, fetchFlow bool) (*ScreenStocksResponse, error) {
 	window, err := resolveIndicatorWindow(req.Window)
 	if err != nil {
 		return nil, err
@@ -325,6 +376,14 @@ func (uc *ScreenStocksUseCase) screen(ctx context.Context, req ScreenStocksReque
 		foreignNet[observed.Ticker] = observed
 	}
 
+	// Compose-else-fetch: an uncovered trailing window is fetched once and
+	// cached, while the budget allows. A ticker that is still uncovered stays
+	// null and flagged — never a fabricated zero.
+	fetched, skipped := 0, 0
+	if fetchFlow {
+		fetched, skipped = uc.fillUncoveredFlow(ctx, tickers, *anchor, flow.From, flow.TradeDays, foreignNet)
+	}
+
 	windows := groupPricesByTicker(prices)
 	required := bindingRequiredRows(requests)
 
@@ -393,6 +452,8 @@ func (uc *ScreenStocksUseCase) screen(ctx context.Context, req ScreenStocksReque
 		SuspensionWindowDays: suspensionDays,
 		FlowWindowDays:       flowDays,
 		FlowDaysInWindow:     flow.TradeDays,
+		FlowFetched:          fetched,
+		FlowSkipped:          skipped,
 		Indicators:           keys,
 		Filters:              filters,
 		Sort:                 sortKey,
@@ -407,6 +468,56 @@ func (uc *ScreenStocksUseCase) screen(ctx context.Context, req ScreenStocksReque
 		Count:        len(rows),
 		Rows:         rows,
 	}, nil
+}
+
+// fillUncoveredFlow fetches the trailing window for survivors the partition does
+// not cover, one unit per ticker, while the pool's available budget lasts. Each
+// fetched window is cached as a `window` answer cache (never composed with
+// another overlapping window). A ticker left uncovered — budget spent, empty
+// answer, or a failed call — is counted, so the response declares the shortfall;
+// its column stays null, never zero.
+func (uc *ScreenStocksUseCase) fillUncoveredFlow(ctx context.Context, tickers []string, anchor, windowFrom time.Time, tradeDays int, foreignNet map[string]repository.TickerForeignNet) (fetched, skipped int) {
+	if uc.FlowFetcher == nil || uc.BrokerRepo == nil || tradeDays == 0 || windowFrom.IsZero() {
+		return 0, 0
+	}
+	pending := 0
+	for _, ticker := range tickers {
+		if _, ok := foreignNet[ticker]; !ok {
+			pending++
+		}
+	}
+	for _, ticker := range tickers {
+		if _, ok := foreignNet[ticker]; ok {
+			continue
+		}
+		if uc.FlowBudget != nil && uc.FlowBudget.Available() <= 0 {
+			break
+		}
+		res, err := uc.FlowFetcher.FetchRange(ctx, ticker, windowFrom, anchor, brokerReadLane)
+		if err != nil {
+			uc.Log.Warnf("screener flow: fetch %s %s..%s failed: %v", ticker,
+				windowFrom.Format("2006-01-02"), anchor.Format("2006-01-02"), err)
+			// A pool-class failure (quota, daily cap, rate limit) will fail the
+			// same way for every remaining ticker: stop instead of burning the
+			// loop, and let the counters declare the shortfall.
+			if errors.Is(err, broker.ErrQuotaExhausted) || errors.Is(err, broker.ErrDailyLimit) || errors.Is(err, broker.ErrRateLimited) {
+				break
+			}
+			continue
+		}
+		if len(res.Buyers) == 0 && len(res.Sellers) == 0 {
+			continue
+		}
+		if err := persistBrokerWindow(uc.DB, uc.BrokerRepo, ticker, windowFrom, anchor, res, brokerReadLane, entity.BrokerSourceWindow); err != nil {
+			uc.Log.Warnf("screener flow: persist %s %s..%s failed: %v", ticker,
+				windowFrom.Format("2006-01-02"), anchor.Format("2006-01-02"), err)
+			continue
+		}
+		net := foreignNetFromRows(res.Buyers, res.Sellers)
+		foreignNet[ticker] = repository.TickerForeignNet{Ticker: ticker, ForeignNet: net, Days: tradeDays}
+		fetched++
+	}
+	return fetched, pending - fetched
 }
 
 // rankRows orders the shortlist deterministically: by the sort key first, with

@@ -119,7 +119,7 @@ func TestHandleGetBrokerNetFlowSuccess(t *testing.T) {
 	db := sqlx.MustConnect("pgx", dsn)
 	s := netFlowTestServer(t, db)
 
-	ticker := "TESTN"
+	ticker := "TSTNF"
 	d1 := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
 	d2 := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
 	t.Cleanup(func() {
@@ -137,11 +137,14 @@ func TestHandleGetBrokerNetFlowSuccess(t *testing.T) {
 		VALUES ($1, $2, 100, 101, 99, 100, 1000, 100000, 10, 'idx')`, ticker, d2)
 	repo := repository.NewBrokerStockSummaryRepository(logrus.New())
 	rows := []entity.BrokerStockSummary{
-		{Ticker: ticker, BrokerCode: "AK", Side: "buy", TradingDay: d1, Value: i64ptr(10_000_000_000)},
-		{Ticker: ticker, BrokerCode: "XL", Side: "sell", TradingDay: d1, Value: i64ptr(6_000_000_000)},
+		{Ticker: ticker, BrokerCode: "AK", Side: "buy", TradingDay: d1, WinFrom: d1, Investor: "f", Market: "RG", Value: i64ptr(10_000_000_000), Source: entity.BrokerSourceLive},
+		{Ticker: ticker, BrokerCode: "XL", Side: "sell", TradingDay: d1, WinFrom: d1, Investor: "f", Market: "RG", Value: i64ptr(6_000_000_000), Source: entity.BrokerSourceLive},
 	}
-	totals := &entity.BrokerStockSummaryTotals{Ticker: ticker, TradingDay: d1, TVal: i64ptr(0)}
-	if err := repo.UpsertDay(db, rows, totals); err != nil {
+	totals := &entity.BrokerStockSummaryTotals{
+		Ticker: ticker, TradingDay: d1, WinFrom: d1, Investor: "f", Market: "RG",
+		FNVal: i64ptr(4_000_000_000), Source: entity.BrokerSourceLive,
+	}
+	if err := repo.UpsertWindow(db, rows, totals); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -181,7 +184,7 @@ func TestHandleGetBrokerNetFlowEmptyWindow(t *testing.T) {
 	db := sqlx.MustConnect("pgx", dsn)
 	s := netFlowTestServer(t, db)
 
-	ticker := "TESTN"
+	ticker := "TSTNF"
 	d1 := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
 	d2 := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
 	t.Cleanup(func() {

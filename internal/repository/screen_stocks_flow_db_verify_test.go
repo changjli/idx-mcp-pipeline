@@ -9,35 +9,37 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 )
 
-// The screener's broker-flow column is one statement over
-// broker_stock_summary_totals, and this is the only place it runs against a
-// real Postgres: the window walk, the sparse-population honesty (an uncovered
-// ticker is absent, never a zero), and the day count that makes the value
-// readable either hold in SQL or the column silently lies. Skipped unless
-// IDX_MCP_DB_DSN is set; cleanup is scoped to the TESTS* tickers only.
+// The screener's broker-flow column is one exact-cover solve over
+// broker_stock_summary_totals, and this is the only place it runs against a real
+// Postgres: the window walk, the exact-cover rule (a partial cover is never
+// partially summed), the no-double-count rule for overlapping caches, and the
+// sparse-population honesty (an uncovered ticker is absent, never a zero).
+// Skipped unless IDX_MCP_DB_DSN is set; cleanup is scoped to the TESTS* tickers.
 const (
-	flowTickerCovered  = "TESTSA" // foreign net on 3 of the seeded days
-	flowTickerPartial  = "TESTSB" // foreign net on the anchor day only
-	flowTickerZero     = "TESTSC" // stored, but the window's net is exactly zero
+	flowTickerCovered  = "TESTSA" // day rows exactly tile 0..9
+	flowTickerPartial  = "TESTSB" // only the anchor day: not an exact cover
+	flowTickerZero     = "TESTSC" // exact cover whose net is exactly zero
 	flowTickerAbsent   = "TESTSD" // no stored broker rows at all
-	flowTickerNullNet  = "TESTSE" // stored footer rows whose f_nval is null
-	flowTickerOutside  = "TESTSF" // stored, but older than the window
+	flowTickerNullNet  = "TESTSE" // an exact cover whose f_nval is null
+	flowTickerOutside  = "TESTSF" // stored, but entirely outside the window
 	flowTickerUniverse = "TESTSG" // price rows only, no broker rows
+	flowTickerOverlap  = "TESTSH" // a 10-day cache overlapping day rows 0..4
 )
 
 var flowTickers = []string{
 	flowTickerCovered, flowTickerPartial, flowTickerZero,
-	flowTickerAbsent, flowTickerNullNet, flowTickerOutside, flowTickerUniverse,
+	flowTickerAbsent, flowTickerNullNet, flowTickerOutside, flowTickerUniverse, flowTickerOverlap,
 }
 
-// TestSumForeignNetByTickers_WindowAndCoverage verifies the screener's flow
-// read end to end against Postgres: the window walks stored trading days, only
-// stored footer rows inside it count, and a ticker with nothing stored is
-// absent from the result rather than present as a zero.
-func TestSumForeignNetByTickers_WindowAndCoverage(t *testing.T) {
+const flowAnchor = "2026-08-12"
+
+// TestSumForeignNetByTickers_ExactCover verifies the screener's flow read end to
+// end against Postgres.
+func TestSumForeignNetByTickers_ExactCover(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
 		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
@@ -77,27 +79,33 @@ func TestSumForeignNetByTickers_WindowAndCoverage(t *testing.T) {
 		}
 	}
 
-	// Three days of foreign net inside a 5-day window, and two days outside it
-	// (day 7 and day 9 back) that must not be summed in.
-	seedFlowTotals(t, db, brokerRepo, flowTickerCovered, map[int]int64{
-		0: 2_000_000_000, 2: -500_000_000, 4: 1_500_000_000, 7: 99_000_000_000, 9: 99_000_000_000,
+	// An exact cover over the whole 10-day range, with the 5-day window's sum
+	// (0..4) being 3B and the wide sum 201B.
+	seedDayWindow(t, db, brokerRepo, flowTickerCovered, map[int]int64{
+		0: 0, 1: 1_000_000_000, 2: 0, 3: 2_000_000_000, 4: 0,
+		5: 0, 6: 0, 7: 99_000_000_000, 8: 0, 9: 99_000_000_000,
 	})
-	// Only the anchor day is stored: observed, but thin.
-	seedFlowTotals(t, db, brokerRepo, flowTickerPartial, map[int]int64{0: 750_000_000})
-	// Stored and observed, net exactly zero — distinguishable from no data only
-	// by the day count, which is the whole point of carrying it.
-	seedFlowTotals(t, db, brokerRepo, flowTickerZero, map[int]int64{0: 400_000_000, 1: -400_000_000})
-	// Footer rows with a null foreign net contribute no day and no value.
-	seedFlowTotals(t, db, brokerRepo, flowTickerNullNet, map[int]int64{0: 0, 1: 0}, true)
+	// One stored day cannot exactly cover a 5-day window.
+	seedDayWindow(t, db, brokerRepo, flowTickerPartial, map[int]int64{0: 750_000_000})
+	// An exact cover whose net is exactly zero: observed, distinguishable from
+	// missing by the day count.
+	seedDayWindow(t, db, brokerRepo, flowTickerZero, map[int]int64{
+		0: 400_000_000, 1: -400_000_000, 2: 0, 3: 0, 4: 0,
+	})
+	// An exact cover whose every footer has a null foreign net: unobserved.
+	seedDayWindow(t, db, brokerRepo, flowTickerNullNet, map[int]int64{0: 0, 1: 0, 2: 0, 3: 0, 4: 0}, true)
 	// Stored, but entirely outside the window.
-	seedFlowTotals(t, db, brokerRepo, flowTickerOutside, map[int]int64{8: 5_000_000_000, 9: 5_000_000_000})
+	seedDayWindow(t, db, brokerRepo, flowTickerOutside, map[int]int64{8: 5_000_000_000, 9: 5_000_000_000})
+	// A 10-day answer cache overlapping day rows 0..4. Neither the 5-day read
+	// (cache is wider than the request) nor the 10-day read (cache wins, day
+	// rows skipped) may double-count.
+	seedDayWindow(t, db, brokerRepo, flowTickerOverlap, map[int]int64{0: 0, 1: 1_000_000_000, 2: 0, 3: 2_000_000_000, 4: 0})
+	seedWindowTotals(t, db, brokerRepo, flowTickerOverlap, day(9), anchor, 7_000_000_000)
 
 	window, err := brokerRepo.SumForeignNetByTickers(db, flowTickers, anchor, 5)
 	if err != nil {
 		t.Fatalf("SumForeignNetByTickers: %v", err)
 	}
-
-	// The window walks stored trading days: 5 back from the anchor is day 4.
 	if got := window.From.Format("2006-01-02"); got != day(4).Format("2006-01-02") {
 		t.Errorf("window start = %s, want %s", got, day(4).Format("2006-01-02"))
 	}
@@ -110,53 +118,45 @@ func TestSumForeignNetByTickers_WindowAndCoverage(t *testing.T) {
 		got[row.Ticker] = row
 	}
 
-	// Summed over the window only: the day-7 and day-9 rows are out of range.
-	if row := got[flowTickerCovered]; row.ForeignNet != 3_000_000_000 || row.Days != 3 {
-		t.Errorf("%s = %d over %d days, want 3B over 3 days",
-			flowTickerCovered, row.ForeignNet, row.Days)
+	if row := got[flowTickerCovered]; row.ForeignNet != 3_000_000_000 || row.Days != 5 {
+		t.Errorf("%s = %d over %d days, want 3B over 5 days", flowTickerCovered, row.ForeignNet, row.Days)
 	}
-	// Observed and thin: 1 of 5 days, which reads only against the denominator.
-	if row := got[flowTickerPartial]; row.ForeignNet != 750_000_000 || row.Days != 1 {
-		t.Errorf("%s = %d over %d days, want 750M over 1 day",
-			flowTickerPartial, row.ForeignNet, row.Days)
+	// Observed zero over a full cover.
+	if row := got[flowTickerZero]; row.ForeignNet != 0 || row.Days != 5 {
+		t.Errorf("%s = %d over %d days, want 0 over 5 days (observed, not missing)", flowTickerZero, row.ForeignNet, row.Days)
 	}
-	// A stored zero is observed, not missing.
-	if row := got[flowTickerZero]; row.ForeignNet != 0 || row.Days != 2 {
-		t.Errorf("%s = %d over %d days, want 0 over 2 days (observed, not missing)",
-			flowTickerZero, row.ForeignNet, row.Days)
-	}
-	// A null foreign net is not a day: the row is absent entirely, so nothing
-	// renders as a zero the caller never observed.
-	if _, ok := got[flowTickerNullNet]; ok {
-		t.Errorf("%s has only null foreign nets yet reported %+v, want absent",
-			flowTickerNullNet, got[flowTickerNullNet])
-	}
-	// Stored, but outside: absent rather than a stale number.
-	if _, ok := got[flowTickerOutside]; ok {
-		t.Errorf("%s stored only outside the window yet reported %+v, want absent",
-			flowTickerOutside, got[flowTickerOutside])
-	}
-	// Nothing stored at all: absent, never a zero.
-	if _, ok := got[flowTickerAbsent]; ok {
-		t.Errorf("%s has no stored broker rows yet reported %+v, want absent",
-			flowTickerAbsent, got[flowTickerAbsent])
-	}
-	if _, ok := got[flowTickerUniverse]; ok {
-		t.Errorf("%s has no broker rows yet reported %+v, want absent",
-			flowTickerUniverse, got[flowTickerUniverse])
+	// The 5-day read uses the day rows: the 10-day cache cannot answer it.
+	if row := got[flowTickerOverlap]; row.ForeignNet != 3_000_000_000 || row.Days != 5 {
+		t.Errorf("%s = %d over %d days, want 3B over 5 days (cache is wider than the request)",
+			flowTickerOverlap, row.ForeignNet, row.Days)
 	}
 
-	// A wider window reaches the days a narrow one excluded — this is what makes
-	// the parameter meaningful rather than decorative.
-	wide, err := brokerRepo.SumForeignNetByTickers(db, []string{flowTickerCovered}, anchor, 10)
+	for _, ticker := range []string{flowTickerPartial, flowTickerNullNet, flowTickerOutside, flowTickerAbsent, flowTickerUniverse} {
+		if row, ok := got[ticker]; ok {
+			t.Errorf("%s should be unobserved (no exact cover), got %+v", ticker, row)
+		}
+	}
+
+	// A wider window reaches the days a narrow one excluded.
+	wide, err := brokerRepo.SumForeignNetByTickers(db, flowTickers, anchor, 10)
 	if err != nil {
 		t.Fatalf("SumForeignNetByTickers at 10 days: %v", err)
+	}
+	wideGot := map[string]TickerForeignNet{}
+	for _, row := range wide.Rows {
+		wideGot[row.Ticker] = row
 	}
 	if wide.TradeDays != 10 {
 		t.Errorf("trade_days at 10 = %d, want 10", wide.TradeDays)
 	}
-	if len(wide.Rows) != 1 || wide.Rows[0].ForeignNet != 3_000_000_000+198_000_000_000 || wide.Rows[0].Days != 5 {
-		t.Errorf("wide window = %+v, want 201B over 5 days", wide.Rows)
+	if row := wideGot[flowTickerCovered]; row.ForeignNet != 201_000_000_000 || row.Days != 10 {
+		t.Errorf("wide %s = %d over %d days, want 201B over 10 days", flowTickerCovered, row.ForeignNet, row.Days)
+	}
+	// The 10-day cache answers the 10-day read; its overlapping day rows are
+	// skipped, not added.
+	if row := wideGot[flowTickerOverlap]; row.ForeignNet != 7_000_000_000 || row.Days != 10 {
+		t.Errorf("wide %s = %d over %d days, want 7B over 10 days (cache wins, no double count)",
+			flowTickerOverlap, row.ForeignNet, row.Days)
 	}
 
 	// A window longer than the stored history spans what exists, and the
@@ -167,6 +167,9 @@ func TestSumForeignNetByTickers_WindowAndCoverage(t *testing.T) {
 	}
 	if over.TradeDays != 10 {
 		t.Errorf("trade_days at an over-long window = %d, want the 10 stored days", over.TradeDays)
+	}
+	if len(over.Rows) != 1 || over.Rows[0].ForeignNet != 201_000_000_000 {
+		t.Errorf("over-long window = %+v, want the 10 stored days summed", over.Rows)
 	}
 
 	// No tickers: the window is still described, with no rows.
@@ -179,29 +182,47 @@ func TestSumForeignNetByTickers_WindowAndCoverage(t *testing.T) {
 	}
 }
 
-// seedFlowTotals stores one footer totals row per `back` day before the anchor,
-// with the given foreign net. nullNet stores the days with a null f_nval
-// instead, which is a stored day without an observed foreign net.
-func seedFlowTotals(t *testing.T, db *sqlx.DB, repo *BrokerStockSummaryRepository, ticker string, nets map[int]int64, nullNet ...bool) {
+// seedDayWindow stores one one-day foreign window per `back` day before the
+// anchor, with the given foreign net. nullNet stores null f_nval instead, which
+// is a stored day without an observed foreign net.
+func seedDayWindow(t *testing.T, db *sqlx.DB, repo *BrokerStockSummaryRepository, ticker string, nets map[int]int64, nullNet ...bool) {
 	t.Helper()
-	anchor := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+	anchor, _ := time.Parse("2006-01-02", flowAnchor)
 	nulls := len(nullNet) > 0 && nullNet[0]
-
 	for back, net := range nets {
+		day := anchor.AddDate(0, 0, -back)
 		var stored *int64
 		if !nulls {
 			stored = i64(net)
 		}
 		totals := &entity.BrokerStockSummaryTotals{
 			Ticker:     ticker,
-			TradingDay: anchor.AddDate(0, 0, -back),
-			TVal:       i64(0),
+			TradingDay: day,
+			WinFrom:    day,
+			Investor:   broker.InvestorForeign,
+			Market:     broker.MarketRegular,
 			FNVal:      stored,
-			TLot:       i64(0),
-			Avg:        i64(0),
+			Source:     entity.BrokerSourceArchive,
 		}
-		if err := repo.UpsertDay(db, nil, totals); err != nil {
+		if err := repo.UpsertWindow(db, nil, totals); err != nil {
 			t.Fatalf("seed flow totals %s day-%d: %v", ticker, back, err)
 		}
+	}
+}
+
+// seedWindowTotals stores one multi-day window footer with a foreign net.
+func seedWindowTotals(t *testing.T, db *sqlx.DB, repo *BrokerStockSummaryRepository, ticker string, from, to time.Time, net int64) {
+	t.Helper()
+	totals := &entity.BrokerStockSummaryTotals{
+		Ticker:     ticker,
+		TradingDay: to,
+		WinFrom:    from,
+		Investor:   broker.InvestorForeign,
+		Market:     broker.MarketRegular,
+		FNVal:      i64(net),
+		Source:     entity.BrokerSourceWindow,
+	}
+	if err := repo.UpsertWindow(db, nil, totals); err != nil {
+		t.Fatalf("seed window totals %s: %v", ticker, err)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
@@ -51,15 +52,24 @@ func seedSectorTicker(t *testing.T, db *sqlx.DB, ticker string, day time.Time, s
 		ON CONFLICT (ticker, trading_day) DO NOTHING`, ticker, day)
 }
 
-// seedSectorDay writes one ticker+day's stored rows plus its footer totals (the
-// foreign net the sector aggregation reads).
+// seedSectorDay writes one ticker+day's stored foreign rows plus its footer
+// totals (the foreign net the sector aggregation reads).
 func seedSectorDay(t *testing.T, db *sqlx.DB, repo *repository.BrokerStockSummaryRepository, ticker string, day time.Time, foreignNet int64, rows ...entity.BrokerStockSummary) {
 	t.Helper()
-	totals := &entity.BrokerStockSummaryTotals{
-		Ticker: ticker, TradingDay: day,
-		TVal: i64p(0), FNVal: i64p(foreignNet), TLot: i64p(0), Avg: i64p(0),
+	for i := range rows {
+		rows[i].WinFrom = day
+		rows[i].Investor = broker.InvestorForeign
+		rows[i].Market = broker.MarketRegular
+		if rows[i].Source == "" {
+			rows[i].Source = entity.BrokerSourceLive
+		}
 	}
-	if err := repo.UpsertDay(db, rows, totals); err != nil {
+	totals := &entity.BrokerStockSummaryTotals{
+		Ticker: ticker, TradingDay: day, WinFrom: day,
+		Investor: broker.InvestorForeign, Market: broker.MarketRegular,
+		FNVal: i64p(foreignNet), Source: entity.BrokerSourceLive,
+	}
+	if err := repo.UpsertWindow(db, rows, totals); err != nil {
 		t.Fatalf("seedSectorDay %s %s: %v", ticker, day.Format("2006-01-02"), err)
 	}
 }

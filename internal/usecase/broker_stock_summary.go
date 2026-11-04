@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,17 +22,19 @@ import (
 // tickerPattern matches IDX ticker codes (2-6 uppercase letters).
 var tickerPattern = regexp.MustCompile(`^[A-Z]{2,6}$`)
 
-// BrokerSummaryFetcher fetches a per-ticker broker summary from a market-data
-// source. *indexalpha.Client satisfies this; tests use a fake.
+// BrokerSummaryFetcher fetches per-ticker broker activity from a market-data
+// source. FetchRange is the primitive: a day is the degenerate window, and a
+// range costs the same one unit as a day. *indexalpha.Pool satisfies this.
 type BrokerSummaryFetcher interface {
-	Fetch(ctx context.Context, ticker string, date time.Time) (*broker.Result, error)
+	FetchRange(ctx context.Context, ticker string, from, to time.Time, investor string) (*broker.Result, error)
 }
 
 // BrokerSummaryBatchFetcher fetches one batch of at most broker.MaxBatchTickers
-// tickers for one trading day. *indexalpha.Pool satisfies it; the batch is
-// metered by the number of tickers requested.
+// tickers for one window and one investor lane. *indexalpha.Pool satisfies it;
+// the batch is metered by the number of tickers requested.
 type BrokerSummaryBatchFetcher interface {
 	FetchBatch(ctx context.Context, tickers []string, date time.Time) (*broker.Batch, error)
+	FetchBatchRange(ctx context.Context, tickers []string, from, to time.Time, investor string) (*broker.Batch, error)
 }
 
 // BrokerSweepBudget is the quota view the anchor-day sweep plans against:
@@ -45,8 +48,9 @@ type BrokerSweepBudget interface {
 	EnsureSeeded(ctx context.Context) error
 }
 
-// BrokerStockSummaryUseCase orchestrates the on-demand per-stock broker
-// summary flow: resolve the trading day, fetch from the source, persist, return.
+// BrokerStockSummaryUseCase orchestrates the per-stock broker summary flow: the
+// database answers first, and only a genuine cover miss spends one unit to fetch
+// a whole window and cache it.
 type BrokerStockSummaryUseCase struct {
 	DB             *sqlx.DB
 	Log            *logrus.Logger
@@ -95,7 +99,9 @@ func NewBrokerStockSummaryUseCase(
 	return uc
 }
 
-// BrokerSummaryRow is one broker's buy or sell activity in the response.
+// BrokerSummaryRow is one broker's buy or sell activity in the response. On a
+// window it is the window's aggregate for that broker; avg_price is a window
+// VWAP, not any single day's price.
 type BrokerSummaryRow struct {
 	BrokerCode string `json:"broker_code"`
 	Lot        int64  `json:"lot"`
@@ -108,42 +114,56 @@ type BrokerSummaryRow struct {
 // tools keep their historical top-ten-per-side shape.
 const brokerSummaryTopN = 10
 
-// BrokerSummaryCoverage declares how much of a ticker-day the stored broker set
-// actually observes. Complete is true only when both side sums reconcile to the
-// day's t_val — the invariant a full payload satisfies, and the flag that keeps a
-// legacy top-10 day from reading as the whole market. Brokers counts distinct
-// codes across both sides.
+// ServedFrom declares where an answer came from: the stored partition ("store",
+// zero quota) or a fresh upstream fetch ("upstream", one unit).
+const (
+	servedFromStore    = "store"
+	servedFromUpstream = "upstream"
+)
+
+// Grain values. A window whose first day equals its end is a day entry; any
+// other span is a window entry; a table holding both reads "mixed".
+const (
+	grainDay    = "day"
+	grainWindow = "window"
+	grainMixed  = "mixed"
+	grainNone   = "none"
+)
+
+// BrokerSummaryCoverage declares what a stored window observes. In the foreign
+// lane Complete is structural — the vendor returns the full broker set for the
+// window, and there is no all-investor t_val anchor to reconcile against.
+// Reconciling a window requires a separate all-lane fetch, which no read does
+// implicitly.
 type BrokerSummaryCoverage struct {
-	Brokers          int   `json:"brokers"`
-	Buyers           int   `json:"buyers"`
-	Sellers          int   `json:"sellers"`
-	BuyValueCovered  int64 `json:"buy_value_covered"`
-	SellValueCovered int64 `json:"sell_value_covered"`
-	Complete         bool  `json:"complete"`
+	Lane             string `json:"lane"` // "foreign" | "all"
+	Brokers          int    `json:"brokers"`
+	Buyers           int    `json:"buyers"`
+	Sellers          int    `json:"sellers"`
+	BuyValueCovered  int64  `json:"buy_value_covered"`
+	SellValueCovered int64  `json:"sell_value_covered"`
+	Complete         bool   `json:"complete"`
 }
 
-// BrokerSummaryTotals is the summary line in the response. FNVal is null when
-// the foreign net is unobserved — never a fabricated zero. The all lane never
-// carries it; the f lane derives it from its rows (ticket 10a). This response
-// shape stays on the all lane until 10b flips the read path.
+// BrokerSummaryTotals is the summary line in the response. In the foreign lane
+// t_val/t_lot/avg are null — an f payload has no all-investor totals — and
+// f_nval is the foreign net over the window. Null always means unobserved,
+// never zero.
 type BrokerSummaryTotals struct {
-	TVal  int64  `json:"t_val"`
+	TVal  *int64 `json:"t_val"`
 	FNVal *int64 `json:"f_nval"`
-	TLot  int64  `json:"t_lot"`
-	Avg   int64  `json:"avg"`
+	TLot  *int64 `json:"t_lot"`
+	Avg   *int64 `json:"avg"`
 }
 
-// BrokerStockSummaryResponse is the structured MCP tool result.
-// AsOf + Cause are set only when the requested date returned empty and the
-// publish-lag fallback served a prior day's data (or explained the empty).
-// TotalBuyValue/TotalSellValue = t_val (every share has a buyer and a seller);
-// Buyers/Sellers are the top ten per side from the full stored set, and
-// Coverage declares whether that set reconciles to t_val.
-type BrokerStockSummaryResponse struct {
-	Ticker         string                `json:"ticker"`
-	TradingDay     string                `json:"trading_day"`
-	AsOf           string                `json:"as_of,omitempty"`
-	Cause          string                `json:"cause,omitempty"`
+// BrokerStockSummaryWindow is one stored window in a response. From/To are its
+// range (To is the trading_day column, the window end) and Grain says whether it
+// is a day or an aggregated window. TotalBuyValue/TotalSellValue are the gross
+// rows over the full stored set — foreign gross in the f lane.
+type BrokerStockSummaryWindow struct {
+	From           string                `json:"from"`
+	To             string                `json:"to"`
+	Grain          string                `json:"grain"`
 	TotalBuyValue  int64                 `json:"total_buy_value"`
 	TotalSellValue int64                 `json:"total_sell_value"`
 	Coverage       BrokerSummaryCoverage `json:"coverage"`
@@ -152,10 +172,19 @@ type BrokerStockSummaryResponse struct {
 	Sellers        []BrokerSummaryRow    `json:"sellers"`
 }
 
-// BrokerStockSummaryDay is one trading day's stored top-N + totals in a
-// history response.
-type BrokerStockSummaryDay struct {
+// BrokerStockSummaryResponse is the structured MCP tool result for one window.
+// AsOf + Cause are set only when the requested day returned empty and a prior
+// stored day answered instead (or explained the empty). ServedFrom says whether
+// the call cost quota.
+type BrokerStockSummaryResponse struct {
+	Ticker         string                `json:"ticker"`
+	From           string                `json:"from"`
+	To             string                `json:"to"`
+	Grain          string                `json:"grain"`
 	TradingDay     string                `json:"trading_day"`
+	AsOf           string                `json:"as_of,omitempty"`
+	Cause          string                `json:"cause,omitempty"`
+	ServedFrom     string                `json:"served_from"`
 	TotalBuyValue  int64                 `json:"total_buy_value"`
 	TotalSellValue int64                 `json:"total_sell_value"`
 	Coverage       BrokerSummaryCoverage `json:"coverage"`
@@ -165,33 +194,38 @@ type BrokerStockSummaryDay struct {
 }
 
 // BrokerStockSummaryHistoryResponse is the structured result of a stored
-// history read over a date range.
+// history read. Windows lists every stored window that intersects the range,
+// each with its own from/to/grain; Grain is "mixed" when both day rows and
+// aggregated windows are present, so a table is never presented as a daily
+// series.
 type BrokerStockSummaryHistoryResponse struct {
-	Ticker string                  `json:"ticker"`
-	From   string                  `json:"from"`
-	To     string                  `json:"to"`
-	Days   []BrokerStockSummaryDay `json:"days"`
+	Ticker  string                     `json:"ticker"`
+	From    string                     `json:"from"`
+	To      string                     `json:"to"`
+	Grain   string                     `json:"grain"`
+	Windows []BrokerStockSummaryWindow `json:"windows"`
 }
 
-// BrokerStockSummaryRangeResponse is the result of a range/backfill run:
-// per-day results plus success/failure/empty counts. Failed days (upstream
-// error) and empty days (not yet published / no activity) are logged and
-// excluded from Days, never aborting the range — the caller sees Fetched <
-// expected and can re-run later for the missing days.
+// BrokerStockSummaryRangeResponse is the result of a range/backfill run. A
+// covered range is served from the partition with no quota; a miss fetches the
+// whole requested range in one call and stores it as an answer cache.
 type BrokerStockSummaryRangeResponse struct {
-	Ticker  string                  `json:"ticker"`
-	Start   string                  `json:"start"`
-	End     string                  `json:"end"`
-	Fetched int                     `json:"fetched"`
-	Failed  int                     `json:"failed"`
-	Empty   int                     `json:"empty"`
-	Days    []BrokerStockSummaryDay `json:"days"`
+	Ticker     string                     `json:"ticker"`
+	Start      string                     `json:"start"`
+	End        string                     `json:"end"`
+	Grain      string                     `json:"grain"`
+	ServedFrom string                     `json:"served_from"`
+	Fetched    int                        `json:"fetched"`
+	Failed     int                        `json:"failed"`
+	Empty      int                        `json:"empty"`
+	Windows    []BrokerStockSummaryWindow `json:"windows"`
 }
 
-// GetStockBrokerSummary fetches the per-stock broker summary for a ticker on a
-// trading day (defaulting to the ticker's latest stored trading day), persists
-// it, and returns the structured top-N. An empty source result (non-trading day,
-// or not yet published) returns an empty response and writes nothing.
+// GetStockBrokerSummary answers one ticker+day. An exact stored one-day window
+// costs zero quota; a miss spends exactly one unit on that day's foreign lane
+// and caches it. Empty results fall back over stored prior days only — never an
+// upstream probe, which would spend up to five units to rediscover what the
+// store already answers.
 func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummary(ctx context.Context, ticker string, date *time.Time) (*BrokerStockSummaryResponse, error) {
 	ticker = strings.ToUpper(strings.TrimSpace(ticker))
 	if !tickerPattern.MatchString(ticker) {
@@ -212,93 +246,80 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummary(ctx context.Context, 
 		day = *latest
 	}
 
-	d, err := uc.fetchAndPersistDay(ctx, ticker, day, entity.BrokerSourceLive)
+	// Zero-unit path: the exact one-day window is stored.
+	totals, rows, err := uc.Repo.FindStoredWindow(uc.DB, ticker, brokerReadLane, day, day)
+	if err == nil {
+		win := windowFromStored(day, day, rows, totals)
+		return responseFromWindow(ticker, win, servedFromStore, "", ""), nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("read stored broker window: %w", err)
+	}
+
+	// One-unit path: fetch the day, persist it as the f lane's live day window.
+	res, err := uc.fetchRange(ctx, ticker, day, day)
 	if err != nil {
-		if errors.Is(err, ErrPersist) {
-			return nil, err
-		}
 		return nil, fmt.Errorf("broker summary fetch: %w", err)
 	}
-
-	// Empty result (non-trading day, or the source not yet published) →
-	// publish-lag fallback: probe backward for the most recent day the source has
-	// data for.
-	if len(d.Buyers) == 0 && len(d.Sellers) == 0 {
-		return uc.fallbackEmpty(ctx, ticker, day)
+	if len(res.Buyers) == 0 && len(res.Sellers) == 0 {
+		return uc.fallbackStored(ticker, day)
 	}
-
-	return &BrokerStockSummaryResponse{
-		Ticker:         ticker,
-		TradingDay:     d.TradingDay,
-		TotalBuyValue:  d.TotalBuyValue,
-		TotalSellValue: d.TotalSellValue,
-		Coverage:       d.Coverage,
-		Totals:         d.Totals,
-		Buyers:         d.Buyers,
-		Sellers:        d.Sellers,
-	}, nil
+	if err := persistBrokerWindow(uc.DB, uc.Repo, ticker, day, day, res, brokerReadLane, entity.BrokerSourceLive); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrPersist, err)
+	}
+	win := windowFromResult(day, day, res, brokerReadLane)
+	return responseFromWindow(ticker, win, servedFromUpstream, "", ""), nil
 }
 
-// brokerSummaryFallbackProbeDays is how many prior trading days the publish-lag
-// fallback probes backward before giving up.
-const brokerSummaryFallbackProbeDays = 5
+// fetchRange is the one-unit upstream read, always on the foreign lane. A
+// single-day read is the degenerate window, not a separate request path.
+func (uc *BrokerStockSummaryUseCase) fetchRange(ctx context.Context, ticker string, from, to time.Time) (*broker.Result, error) {
+	if uc.Fetcher == nil {
+		return nil, fmt.Errorf("%w: no broker summary fetcher configured", ErrInvalidArgument)
+	}
+	return uc.Fetcher.FetchRange(ctx, ticker, from, to, brokerReadLane)
+}
 
-// brokerSummaryFallbackMaxCalendarDays bounds the backward walk so a sparse
-// ticker (long gaps between trading days) can't loop forever.
+// brokerSummaryFallbackMaxCalendarDays bounds the stored-day fallback so a
+// sparse ticker cannot return a months-old window as if it were "prior".
 const brokerSummaryFallbackMaxCalendarDays = 30
 
-// fallbackEmpty handles an empty source result for the requested date. It probes
-// backward up to brokerSummaryFallbackProbeDays trading days and returns the
-// first non-empty day tagged with as_of + cause, so the caller is never handed
-// a bare empty indistinguishable from a real zero. Nothing is written for the
-// empty requested date; a found prior day is persisted normally.
-func (uc *BrokerStockSummaryUseCase) fallbackEmpty(ctx context.Context, ticker string, requested time.Time) (*BrokerStockSummaryResponse, error) {
+// fallbackStored explains an empty upstream answer from the store: if the
+// requested day has no data but a recent stored window exists, return it tagged
+// as_of + cause. Nothing is fetched for the probe.
+func (uc *BrokerStockSummaryUseCase) fallbackStored(ticker string, requested time.Time) (*BrokerStockSummaryResponse, error) {
 	cause := "not_yet_published"
 	if !uc.isTradingDay(ticker, requested) {
 		cause = "non_trading_day"
 	}
 
-	// Walk backward day by day, fetching only trading days, until the probe
-	// budget (5 trading days) is spent or a non-empty day is found.
-	probed := 0
-	deadline := requested.AddDate(0, 0, -brokerSummaryFallbackMaxCalendarDays)
-	for day := requested.AddDate(0, 0, -1); probed < brokerSummaryFallbackProbeDays && day.After(deadline); day = day.AddDate(0, 0, -1) {
-		if !uc.isTradingDay(ticker, day) {
-			continue
+	latest, err := uc.Repo.FindLatestWindowBefore(uc.DB, ticker, brokerReadLane, requested)
+	if err == nil && !latest.TradingDay.Before(requested.AddDate(0, 0, -brokerSummaryFallbackMaxCalendarDays)) {
+		totals, rows, err := uc.Repo.FindStoredWindow(uc.DB, ticker, brokerReadLane, latest.WinFrom, latest.TradingDay)
+		if err == nil {
+			win := windowFromStored(latest.WinFrom, latest.TradingDay, rows, totals)
+			return responseFromWindow(ticker, win, servedFromStore, win.To, cause), nil
 		}
-		probed++
-		d, err := uc.fetchAndPersistDay(ctx, ticker, day, entity.BrokerSourceLive)
-		if err != nil {
-			uc.Log.Warnf("broker_stock_summary fallback: probe day %s failed: %v", day.Format("2006-01-02"), err)
-			continue
-		}
-		if len(d.Buyers) > 0 || len(d.Sellers) > 0 {
-			return &BrokerStockSummaryResponse{
-				Ticker:         ticker,
-				TradingDay:     d.TradingDay,
-				AsOf:           d.TradingDay,
-				Cause:          cause,
-				TotalBuyValue:  d.TotalBuyValue,
-				TotalSellValue: d.TotalSellValue,
-				Coverage:       d.Coverage,
-				Totals:         d.Totals,
-				Buyers:         d.Buyers,
-				Sellers:        d.Sellers,
-			}, nil
-		}
+		uc.Log.Warnf("broker_stock_summary fallback: read stored window %s..%s failed: %v",
+			latest.WinFrom.Format("2006-01-02"), latest.TradingDay.Format("2006-01-02"), err)
 	}
 
-	// Trading day but nothing anywhere in the probe window → no activity.
+	// Trading day but nothing stored across the fallback window → no activity.
 	if cause == "not_yet_published" {
 		cause = "no_activity"
 	}
 	return &BrokerStockSummaryResponse{
 		Ticker:     ticker,
+		From:       requested.Format("2006-01-02"),
+		To:         requested.Format("2006-01-02"),
+		Grain:      grainDay,
 		TradingDay: requested.Format("2006-01-02"),
 		Cause:      cause,
+		ServedFrom: servedFromUpstream,
 		Totals:     BrokerSummaryTotals{},
 		Buyers:     []BrokerSummaryRow{},
 		Sellers:    []BrokerSummaryRow{},
+		Coverage:   BrokerSummaryCoverage{Lane: laneName(brokerReadLane)},
 	}, nil
 }
 
@@ -309,73 +330,9 @@ func (uc *BrokerStockSummaryUseCase) isTradingDay(ticker string, day time.Time) 
 	return err == nil
 }
 
-// GetStockBrokerSummaryRange fetches and persists the per-stock broker summary
-// for a ticker over a date range, iterating trading days only (data presence
-// in daily_prices is the trading-day signal — weekends/holidays have no row).
-// Each day reuses the shared fetch+parse+persist core and its 1h cache. A
-// partial failure (one day 5xx/parse-drift) does not abort the range: the
-// failed day is logged and counted, successful days are kept.
-func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryRange(ctx context.Context, ticker string, start, end time.Time) (*BrokerStockSummaryRangeResponse, error) {
-	ticker = strings.ToUpper(strings.TrimSpace(ticker))
-	if !tickerPattern.MatchString(ticker) {
-		return nil, ErrInvalidTicker
-	}
-	if start.After(end) {
-		return nil, ErrInvalidRange
-	}
-
-	days, err := uc.DailyPriceRepo.TradingDaysInRange(uc.DB, ticker, start, end)
-	if err != nil {
-		return nil, fmt.Errorf("resolve trading days: %w", err)
-	}
-
-	resp := &BrokerStockSummaryRangeResponse{
-		Ticker: ticker,
-		Start:  start.Format("2006-01-02"),
-		End:    end.Format("2006-01-02"),
-		Days:   []BrokerStockSummaryDay{},
-	}
-	for _, day := range days {
-		d, err := uc.fetchAndPersistDay(ctx, ticker, day, entity.BrokerSourceBackfill)
-		if err != nil {
-			uc.Log.Warnf("broker_stock_summary range: day %s failed: %v", day.Format("2006-01-02"), err)
-			resp.Failed++
-			continue
-		}
-		if len(d.Buyers) == 0 && len(d.Sellers) == 0 {
-			// Not yet published (or no activity) — not a successful store.
-			uc.Log.Warnf("broker_stock_summary range: day %s empty (not yet published or no activity)", day.Format("2006-01-02"))
-			resp.Empty++
-			continue
-		}
-		resp.Days = append(resp.Days, *d)
-		resp.Fetched++
-	}
-	return resp, nil
-}
-
-// fetchAndPersistDay fetches one ticker+day from the source, persists it under
-// the given provenance, and returns the day-level result. An empty source result
-// (non-trading day or not yet published) returns an empty day — nothing
-// persisted, no error.
-func (uc *BrokerStockSummaryUseCase) fetchAndPersistDay(ctx context.Context, ticker string, day time.Time, source string) (*BrokerStockSummaryDay, error) {
-	res, err := uc.Fetcher.Fetch(ctx, ticker, day)
-	if err != nil {
-		return nil, err
-	}
-	if len(res.Buyers) == 0 && len(res.Sellers) == 0 {
-		return &BrokerStockSummaryDay{TradingDay: day.Format("2006-01-02")}, nil
-	}
-	if err := uc.persist(ticker, day, res, source); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrPersist, err)
-	}
-	return dayFromResult(ticker, day, res), nil
-}
-
-// GetStockBrokerSummaryHistory reads the persisted broker summary rows for a
-// ticker over a date range and returns them grouped by trading day with
-// per-day totals. Pure DB read — never touches the fetcher. An empty
-// range returns an empty Days list, no error.
+// GetStockBrokerSummaryHistory reads every stored window intersecting [from, to]
+// and returns each with its own range and grain. Pure DB read — the history tool
+// never spends quota; a gap is a gap. Legacy top-10 rows are invisible.
 func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryHistory(ctx context.Context, ticker string, from, to time.Time) (*BrokerStockSummaryHistoryResponse, error) {
 	ticker = strings.ToUpper(strings.TrimSpace(ticker))
 	if !tickerPattern.MatchString(ticker) {
@@ -385,121 +342,289 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryHistory(ctx context.Co
 		return nil, ErrInvalidRange
 	}
 
-	rows, err := uc.Repo.FindByTickerAndDateRange(uc.DB, ticker, from, to)
+	spans, err := uc.Repo.FindWindowSpans(uc.DB, []string{ticker}, brokerReadLane, from, to)
 	if err != nil {
-		return nil, fmt.Errorf("read broker summary history: %w", err)
+		return nil, fmt.Errorf("read broker summary windows: %w", err)
 	}
-	totals, err := uc.Repo.FindTotalsByTickerAndDateRange(uc.DB, ticker, from, to)
+	rows, err := uc.Repo.FindRowsInWindows(uc.DB, []string{ticker}, brokerReadLane, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("read broker summary rows: %w", err)
+	}
+	totals, err := uc.Repo.FindTotalsInWindows(uc.DB, []string{ticker}, brokerReadLane, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("read broker summary totals: %w", err)
 	}
 
 	resp := &BrokerStockSummaryHistoryResponse{
-		Ticker: ticker,
-		From:   from.Format("2006-01-02"),
-		To:     to.Format("2006-01-02"),
-		Days:   []BrokerStockSummaryDay{},
+		Ticker:  ticker,
+		From:    from.Format("2006-01-02"),
+		To:      to.Format("2006-01-02"),
+		Grain:   grainNone,
+		Windows: []BrokerStockSummaryWindow{},
 	}
 
-	// Group rows by trading day; totals keyed by day.
-	totalsByDay := make(map[string]BrokerSummaryTotals, len(totals))
-	for _, t := range totals {
-		key := t.TradingDay.Format("2006-01-02")
-		totalsByDay[key] = BrokerSummaryTotals{
-			TVal:  deref(t.TVal),
-			FNVal: t.FNVal,
-			TLot:  deref(t.TLot),
-			Avg:   deref(t.Avg),
-		}
+	totalsByWindow := make(map[string]*entity.BrokerStockSummaryTotals, len(totals))
+	for i := range totals {
+		totalsByWindow[windowKey(totals[i].WinFrom, totals[i].TradingDay)] = &totals[i]
 	}
-
-	dayIndex := make(map[string]int)
+	rowsByWindow := make(map[string][]entity.BrokerStockSummary)
 	for _, r := range rows {
-		key := r.TradingDay.Format("2006-01-02")
-		idx, ok := dayIndex[key]
-		if !ok {
-			idx = len(resp.Days)
-			dayIndex[key] = idx
-			t := totalsByDay[key]
-			resp.Days = append(resp.Days, BrokerStockSummaryDay{
-				TradingDay:     key,
-				TotalBuyValue:  t.TVal,
-				TotalSellValue: t.TVal,
-				Totals:         t,
-				Buyers:         []BrokerSummaryRow{},
-				Sellers:        []BrokerSummaryRow{},
-			})
-		}
-		row := BrokerSummaryRow{
-			BrokerCode: r.BrokerCode,
-			Lot:        deref(r.Lot),
-			Value:      deref(r.Value),
-			AvgPrice:   deref(r.AvgPrice),
-			Rank:       int(deref32(r.Rank)),
-		}
-		if r.Side == "buy" {
-			resp.Days[idx].Buyers = append(resp.Days[idx].Buyers, row)
-		} else {
-			resp.Days[idx].Sellers = append(resp.Days[idx].Sellers, row)
-		}
+		k := windowKey(r.WinFrom, r.TradingDay)
+		rowsByWindow[k] = append(rowsByWindow[k], r)
 	}
 
-	// Coverage is measured over the full stored set, then the response is
-	// projected to the tools' top-ten-per-side shape. A legacy top-10 day has
-	// side sums below t_val, so it reports incomplete rather than pretending the
-	// stored rows are the whole market.
-	for i := range resp.Days {
-		day := &resp.Days[i]
-		day.Coverage = coverageForRows(day.Buyers, day.Sellers, day.Totals.TVal)
-		day.Buyers = topN(day.Buyers)
-		day.Sellers = topN(day.Sellers)
+	sort.Slice(spans, func(i, j int) bool {
+		if !spans[i].TradingDay.Equal(spans[j].TradingDay) {
+			return spans[i].TradingDay.Before(spans[j].TradingDay)
+		}
+		return spans[i].WinFrom.Before(spans[j].WinFrom)
+	})
+	for _, s := range spans {
+		k := windowKey(s.WinFrom, s.TradingDay)
+		t := totalsByWindow[k]
+		if t == nil {
+			continue // a window without a footer cannot declare its totals
+		}
+		resp.Windows = append(resp.Windows, windowFromStored(s.WinFrom, s.TradingDay, rowsByWindow[k], t))
 	}
+	resp.Grain = responseGrain(resp.Windows)
 	return resp, nil
 }
 
-// persist writes the fetched rows and totals for one ticker+day atomically,
-// stamped with the writer's provenance.
+// GetStockBrokerSummaryRange answers a range. An exact cover of stored disjoint
+// windows costs zero units; anything else fetches the whole requested range in
+// one call and stores it as a window answer cache. Partial covers are never
+// built — a gap fill costs the same unit as the whole range.
+func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryRange(ctx context.Context, ticker string, start, end time.Time) (*BrokerStockSummaryRangeResponse, error) {
+	ticker = strings.ToUpper(strings.TrimSpace(ticker))
+	if !tickerPattern.MatchString(ticker) {
+		return nil, ErrInvalidTicker
+	}
+	if start.After(end) {
+		return nil, ErrInvalidRange
+	}
+
+	resp := &BrokerStockSummaryRangeResponse{
+		Ticker:  ticker,
+		Start:   start.Format("2006-01-02"),
+		End:     end.Format("2006-01-02"),
+		Grain:   grainNone,
+		Windows: []BrokerStockSummaryWindow{},
+	}
+
+	days, err := brokerMarketDays(uc.DB, uc.DailyPriceRepo, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("resolve trading days: %w", err)
+	}
+	spans, err := uc.Repo.FindWindowSpans(uc.DB, []string{ticker}, brokerReadLane, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("read stored windows: %w", err)
+	}
+	cover := buildWindowCover(spans, start, end, days, true)
+	if selected := cover.spans[ticker]; len(selected) > 0 {
+		// An exact union of disjoint stored windows answers for zero units. The
+		// sum runs in SQL; the response is one window for the requested range,
+		// never a list of pieces that a reader could mistake for days.
+		agg, err := uc.Repo.SumRowsInSpans(uc.DB, ticker, brokerReadLane, selected)
+		if err != nil {
+			return nil, fmt.Errorf("sum covered windows %s..%s: %w",
+				start.Format("2006-01-02"), end.Format("2006-01-02"), err)
+		}
+		resp.ServedFrom = servedFromStore
+		resp.Windows = append(resp.Windows, windowFromAggregated(start, end, agg))
+		resp.Grain = responseGrain(resp.Windows)
+		return resp, nil
+	}
+
+	// A miss fetches the whole requested range once, never day by day.
+	res, err := uc.fetchRange(ctx, ticker, start, end)
+	if err != nil {
+		uc.Log.Warnf("broker_stock_summary range: %s %s..%s failed: %v",
+			ticker, start.Format("2006-01-02"), end.Format("2006-01-02"), err)
+		resp.Failed++
+		return resp, nil
+	}
+	if len(res.Buyers) == 0 && len(res.Sellers) == 0 {
+		uc.Log.Warnf("broker_stock_summary range: %s %s..%s empty (not yet published or no activity)",
+			ticker, start.Format("2006-01-02"), end.Format("2006-01-02"))
+		resp.Empty++
+		return resp, nil
+	}
+	if err := persistBrokerWindow(uc.DB, uc.Repo, ticker, start, end, res, brokerReadLane, entity.BrokerSourceWindow); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrPersist, err)
+	}
+	resp.ServedFrom = servedFromUpstream
+	resp.Fetched++
+	resp.Windows = append(resp.Windows, windowFromResult(start, end, res, brokerReadLane))
+	resp.Grain = responseGrain(resp.Windows)
+	return resp, nil
+}
+
+// persist writes one fetched day for the sweep, honoring the result's lane. The
+// read paths call persistBrokerWindow directly with an explicit lane.
 func (uc *BrokerStockSummaryUseCase) persist(ticker string, day time.Time, res *broker.Result, source string) error {
 	investor := res.Investor
 	if investor == "" {
 		investor = broker.InvestorAll
 	}
-	rows := make([]entity.BrokerStockSummary, 0, len(res.Buyers)+len(res.Sellers))
-	for _, b := range res.Buyers {
-		rows = append(rows, toEntity(ticker, day, day, investor, "buy", b, source))
-	}
-	for _, s := range res.Sellers {
-		rows = append(rows, toEntity(ticker, day, day, investor, "sell", s, source))
-	}
-
-	// The f lane has no all-investor day totals: t_val, t_lot and avg stay
-	// unobserved (NULL), never a foreign gross masquerading as the day total.
-	var tval, tlot, avg *int64
-	if investor == broker.InvestorAll {
-		tval, tlot, avg = i64p(res.Totals.TVal), i64p(res.Totals.TLot), i64p(res.Totals.Avg)
-	}
-	totals := &entity.BrokerStockSummaryTotals{
-		Ticker:     ticker,
-		TradingDay: day,
-		WinFrom:    day,
-		Investor:   investor,
-		Market:     broker.MarketRegular,
-		TVal:       tval,
-		FNVal:      res.Totals.FNVal,
-		TLot:       tlot,
-		Avg:        avg,
-		Source:     source,
-	}
-	return uc.Repo.UpsertDay(uc.DB, rows, totals)
+	return persistBrokerWindow(uc.DB, uc.Repo, ticker, day, day, res, investor, source)
 }
 
-// coverageForRows declares how much of a ticker-day the given stored rows
-// observe. Complete requires both sides to reconcile to t_val: the source's own
-// invariant, which only a full broker set can satisfy. Brokers counts distinct
-// codes across both sides.
-func coverageForRows(buyers, sellers []BrokerSummaryRow, tVal int64) BrokerSummaryCoverage {
+// windowFromStored builds a response entry from stored rows and totals. Ranks
+// are recomputed over the full set because per-window ranks are not comparable
+// once windows are composed or read back at a different grain.
+func windowFromStored(from, to time.Time, rows []entity.BrokerStockSummary, totals *entity.BrokerStockSummaryTotals) BrokerStockSummaryWindow {
+	buyers := make([]BrokerSummaryRow, 0, len(rows))
+	sellers := make([]BrokerSummaryRow, 0, len(rows))
+	for _, r := range rows {
+		row := BrokerSummaryRow{
+			BrokerCode: r.BrokerCode,
+			Lot:        deref(r.Lot),
+			Value:      deref(r.Value),
+			AvgPrice:   deref(r.AvgPrice),
+		}
+		if r.Side == "buy" {
+			buyers = append(buyers, row)
+		} else {
+			sellers = append(sellers, row)
+		}
+	}
+	rankSummaryRows(buyers)
+	rankSummaryRows(sellers)
+
+	lane := broker.InvestorAll
+	var tval *int64
+	if totals != nil {
+		lane = totals.Investor
+		tval = totals.TVal
+	}
+	win := BrokerStockSummaryWindow{
+		From:           from.Format("2006-01-02"),
+		To:             to.Format("2006-01-02"),
+		Grain:          grainFor(from, to),
+		TotalBuyValue:  sumValues(buyers),
+		TotalSellValue: sumValues(sellers),
+		Coverage:       coverageForWindow(lane, buyers, sellers, tval),
+		Totals:         totalsFromEntity(totals),
+		Buyers:         topN(buyers),
+		Sellers:        topN(sellers),
+	}
+	return win
+}
+
+// windowFromAggregated builds one entry from per-broker sums over a disjoint
+// window selection. Average price is derived from the summed value and lot — a
+// window VWAP — because per-window averages are not summable.
+func windowFromAggregated(from, to time.Time, rows []repository.BrokerAggregatedRow) BrokerStockSummaryWindow {
+	buyers := make([]BrokerSummaryRow, 0, len(rows))
+	sellers := make([]BrokerSummaryRow, 0, len(rows))
+	for _, r := range rows {
+		var avg int64
+		if r.Lot > 0 {
+			avg = r.Value / (r.Lot * 100)
+		}
+		row := BrokerSummaryRow{BrokerCode: r.BrokerCode, Lot: r.Lot, Value: r.Value, AvgPrice: avg}
+		if r.Side == "sell" {
+			sellers = append(sellers, row)
+		} else {
+			buyers = append(buyers, row)
+		}
+	}
+	rankSummaryRows(buyers)
+	rankSummaryRows(sellers)
+
+	net := sumValues(buyers) - sumValues(sellers)
+	win := BrokerStockSummaryWindow{
+		From:           from.Format("2006-01-02"),
+		To:             to.Format("2006-01-02"),
+		Grain:          grainFor(from, to),
+		TotalBuyValue:  sumValues(buyers),
+		TotalSellValue: sumValues(sellers),
+		Coverage:       coverageForWindow(brokerReadLane, buyers, sellers, nil),
+		Totals:         BrokerSummaryTotals{FNVal: &net},
+		Buyers:         topN(buyers),
+		Sellers:        topN(sellers),
+	}
+	return win
+}
+
+// windowFromResult builds a response entry from a fresh source result.
+func windowFromResult(from, to time.Time, res *broker.Result, investor string) BrokerStockSummaryWindow {
+	buyers := make([]BrokerSummaryRow, 0, len(res.Buyers))
+	sellers := make([]BrokerSummaryRow, 0, len(res.Sellers))
+	for _, b := range res.Buyers {
+		buyers = append(buyers, BrokerSummaryRow{BrokerCode: b.BrokerCode, Lot: b.Lot, Value: b.Value, AvgPrice: b.AvgPrice})
+	}
+	for _, s := range res.Sellers {
+		sellers = append(sellers, BrokerSummaryRow{BrokerCode: s.BrokerCode, Lot: s.Lot, Value: s.Value, AvgPrice: s.AvgPrice})
+	}
+	rankSummaryRows(buyers)
+	rankSummaryRows(sellers)
+
+	tvals := totalsFromResult(res, investor)
+	win := BrokerStockSummaryWindow{
+		From:           from.Format("2006-01-02"),
+		To:             to.Format("2006-01-02"),
+		Grain:          grainFor(from, to),
+		TotalBuyValue:  sumValues(buyers),
+		TotalSellValue: sumValues(sellers),
+		Coverage:       coverageForWindow(investor, buyers, sellers, tvals.TVal),
+		Totals:         tvals,
+		Buyers:         topN(buyers),
+		Sellers:        topN(sellers),
+	}
+	return win
+}
+
+// responseFromWindow lifts a window entry into the single-window tool response.
+func responseFromWindow(ticker string, win BrokerStockSummaryWindow, servedFrom, asOf, cause string) *BrokerStockSummaryResponse {
+	return &BrokerStockSummaryResponse{
+		Ticker:         ticker,
+		From:           win.From,
+		To:             win.To,
+		Grain:          win.Grain,
+		TradingDay:     win.To,
+		AsOf:           asOf,
+		Cause:          cause,
+		ServedFrom:     servedFrom,
+		TotalBuyValue:  win.TotalBuyValue,
+		TotalSellValue: win.TotalSellValue,
+		Coverage:       win.Coverage,
+		Totals:         win.Totals,
+		Buyers:         win.Buyers,
+		Sellers:        win.Sellers,
+	}
+}
+
+// totalsFromEntity converts a stored footer to the response shape.
+func totalsFromEntity(t *entity.BrokerStockSummaryTotals) BrokerSummaryTotals {
+	if t == nil {
+		return BrokerSummaryTotals{}
+	}
+	return BrokerSummaryTotals{TVal: t.TVal, FNVal: t.FNVal, TLot: t.TLot, Avg: t.Avg}
+}
+
+// totalsFromResult converts a source result to the response shape. In the
+// foreign lane only f_nval is observable; the all-investor totals stay null.
+func totalsFromResult(res *broker.Result, investor string) BrokerSummaryTotals {
+	if investor == broker.InvestorForeign {
+		net := foreignNetFromRows(res.Buyers, res.Sellers)
+		return BrokerSummaryTotals{FNVal: &net}
+	}
+	return BrokerSummaryTotals{
+		TVal:  i64p(res.Totals.TVal),
+		FNVal: res.Totals.FNVal,
+		TLot:  i64p(res.Totals.TLot),
+		Avg:   i64p(res.Totals.Avg),
+	}
+}
+
+// coverageForWindow declares what a window's stored rows observe. The foreign
+// lane is structurally complete (the vendor returns the full set); the all lane
+// reconciles to t_val when one is present.
+func coverageForWindow(investor string, buyers, sellers []BrokerSummaryRow, tVal *int64) BrokerSummaryCoverage {
 	seen := make(map[string]struct{}, len(buyers)+len(sellers))
-	cov := BrokerSummaryCoverage{Buyers: len(buyers), Sellers: len(sellers)}
+	cov := BrokerSummaryCoverage{Lane: laneName(investor), Buyers: len(buyers), Sellers: len(sellers)}
 	for _, b := range buyers {
 		seen[b.BrokerCode] = struct{}{}
 		cov.BuyValueCovered += b.Value
@@ -509,8 +634,42 @@ func coverageForRows(buyers, sellers []BrokerSummaryRow, tVal int64) BrokerSumma
 		cov.SellValueCovered += s.Value
 	}
 	cov.Brokers = len(seen)
-	cov.Complete = tVal > 0 && cov.BuyValueCovered == tVal && cov.SellValueCovered == tVal
+	if investor == broker.InvestorForeign {
+		cov.Complete = true
+		return cov
+	}
+	cov.Complete = tVal != nil && *tVal > 0 && cov.BuyValueCovered == *tVal && cov.SellValueCovered == *tVal
 	return cov
+}
+
+// laneName renders an investor lane for the response.
+func laneName(investor string) string {
+	if investor == broker.InvestorForeign {
+		return "foreign"
+	}
+	return "all"
+}
+
+// rankSummaryRows assigns dense 1..N ranks by value desc over one side, so a
+// composed or recomputed set keeps the source's projection semantics.
+func rankSummaryRows(rows []BrokerSummaryRow) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].Value != rows[j].Value {
+			return rows[i].Value > rows[j].Value
+		}
+		return rows[i].BrokerCode < rows[j].BrokerCode
+	})
+	for i := range rows {
+		rows[i].Rank = i + 1
+	}
+}
+
+func sumValues(rows []BrokerSummaryRow) int64 {
+	var total int64
+	for _, r := range rows {
+		total += r.Value
+	}
+	return total
 }
 
 // topN projects a ranked side to the read-time top-N cap.
@@ -519,6 +678,42 @@ func topN(rows []BrokerSummaryRow) []BrokerSummaryRow {
 		return rows[:brokerSummaryTopN]
 	}
 	return rows
+}
+
+// grainFor classifies one stored window.
+func grainFor(from, to time.Time) string {
+	if from.Equal(to) {
+		return grainDay
+	}
+	return grainWindow
+}
+
+// responseGrain folds per-entry grains into the table's grain.
+func responseGrain(windows []BrokerStockSummaryWindow) string {
+	if len(windows) == 0 {
+		return grainNone
+	}
+	day, window := false, false
+	for _, w := range windows {
+		if w.Grain == grainWindow {
+			window = true
+		} else {
+			day = true
+		}
+	}
+	switch {
+	case day && window:
+		return grainMixed
+	case window:
+		return grainWindow
+	default:
+		return grainDay
+	}
+}
+
+// windowKey identifies one stored window (start + end).
+func windowKey(from, to time.Time) string {
+	return from.Format("2006-01-02") + "|" + to.Format("2006-01-02")
 }
 
 func toEntity(ticker string, winFrom, day time.Time, investor, side string, r broker.Row, source string) entity.BrokerStockSummary {
@@ -537,46 +732,6 @@ func toEntity(ticker string, winFrom, day time.Time, investor, side string, r br
 		Rank:       &rank,
 		Source:     source,
 	}
-}
-
-// dayFromResult builds a day-level result from a fetched source result: full
-// coverage over every broker, then the top-N projection.
-func dayFromResult(ticker string, day time.Time, res *broker.Result) *BrokerStockSummaryDay {
-	d := &BrokerStockSummaryDay{
-		TradingDay:     day.Format("2006-01-02"),
-		TotalBuyValue:  res.Totals.TVal,
-		TotalSellValue: res.Totals.TVal,
-		Totals: BrokerSummaryTotals{
-			TVal:  res.Totals.TVal,
-			FNVal: res.Totals.FNVal,
-			TLot:  res.Totals.TLot,
-			Avg:   res.Totals.Avg,
-		},
-		Buyers:  make([]BrokerSummaryRow, 0, len(res.Buyers)),
-		Sellers: make([]BrokerSummaryRow, 0, len(res.Sellers)),
-	}
-	for _, b := range res.Buyers {
-		d.Buyers = append(d.Buyers, BrokerSummaryRow{
-			BrokerCode: b.BrokerCode,
-			Lot:        b.Lot,
-			Value:      b.Value,
-			AvgPrice:   b.AvgPrice,
-			Rank:       b.Rank,
-		})
-	}
-	for _, s := range res.Sellers {
-		d.Sellers = append(d.Sellers, BrokerSummaryRow{
-			BrokerCode: s.BrokerCode,
-			Lot:        s.Lot,
-			Value:      s.Value,
-			AvgPrice:   s.AvgPrice,
-			Rank:       s.Rank,
-		})
-	}
-	d.Coverage = coverageForRows(d.Buyers, d.Sellers, res.Totals.TVal)
-	d.Buyers = topN(d.Buyers)
-	d.Sellers = topN(d.Sellers)
-	return d
 }
 
 func i64p(v int64) *int64 { return &v }

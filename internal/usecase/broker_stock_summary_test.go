@@ -18,17 +18,26 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
-// fakeFetcher returns a canned broker result without touching the network.
+// fakeFetcher returns a canned broker result without touching the network and
+// records the windows the read path asked for.
 type fakeFetcher struct {
 	res        *broker.Result
 	err        error
 	lastTicker string
-	lastDate   time.Time
+	lastFrom   time.Time
+	lastTo     time.Time
+	calls      int
 }
 
-func (f *fakeFetcher) Fetch(_ context.Context, ticker string, date time.Time) (*broker.Result, error) {
+func (f *fakeFetcher) Fetch(ctx context.Context, ticker string, date time.Time) (*broker.Result, error) {
+	return f.FetchRange(ctx, ticker, date, date, broker.InvestorForeign)
+}
+
+func (f *fakeFetcher) FetchRange(_ context.Context, ticker string, from, to time.Time, _ string) (*broker.Result, error) {
+	f.calls++
 	f.lastTicker = ticker
-	f.lastDate = date
+	f.lastFrom = from
+	f.lastTo = to
 	return f.res, f.err
 }
 
@@ -53,6 +62,31 @@ func seedTickerAndPrice(t *testing.T, db *sqlx.DB, ticker string, day time.Time)
 		ON CONFLICT (ticker, trading_day) DO NOTHING`, ticker, day)
 }
 
+func cleanTicker(t *testing.T, db *sqlx.DB, ticker string) {
+	t.Helper()
+	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+	db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	t.Cleanup(func() {
+		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	})
+}
+
+// foreignResult is an f-lane payload: no all-investor totals, gross foreign
+// buy/sell as the only figures.
+func foreignResult() *broker.Result {
+	return &broker.Result{
+		Investor: broker.InvestorForeign,
+		Buyers: []broker.Row{
+			{BrokerCode: "AK", Lot: 169544, Value: 15_000_000_000, AvgPrice: 883, Rank: 1},
+			{BrokerCode: "YP", Lot: 40722, Value: 3_600_000_000, AvgPrice: 878, Rank: 2},
+		},
+		Sellers: []broker.Row{
+			{BrokerCode: "XL", Lot: 139188, Value: 12_300_000_000, AvgPrice: 881, Rank: 1},
+		},
+	}
+}
+
 func TestGetStockBrokerSummary_FetchPersistReturn(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
@@ -63,85 +97,62 @@ func TestGetStockBrokerSummary_FetchPersistReturn(t *testing.T) {
 
 	ticker := "TESTA"
 	day := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
-	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
-	db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
-	t.Cleanup(func() {
-		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
-		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
-	})
-
-	f.res = &broker.Result{
-		Buyers: []broker.Row{
-			{BrokerCode: "AK", Lot: 169544, Value: 15_000_000_000, AvgPrice: 883, Rank: 1},
-			{BrokerCode: "YP", Lot: 40722, Value: 3_600_000_000, AvgPrice: 878, Rank: 6},
-		},
-		Sellers: []broker.Row{
-			{BrokerCode: "XL", Lot: 139188, Value: 12_300_000_000, AvgPrice: 881, Rank: 1},
-		},
-		Totals: broker.Totals{TVal: 71_200_000_000, FNVal: i64p(11_100_000_000), TLot: 808975, Avg: 880},
-	}
+	cleanTicker(t, db, ticker)
+	f.res = foreignResult()
 
 	res, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day)
 	if err != nil {
 		t.Fatalf("GetStockBrokerSummary: %v", err)
 	}
-
-	if res.Ticker != ticker {
-		t.Errorf("res.Ticker = %q, want %q", res.Ticker, ticker)
+	if res.Ticker != ticker || res.From != "2026-08-12" || res.To != "2026-08-12" || res.Grain != grainDay {
+		t.Errorf("response range = %+v, want TESTA 2026-08-12..2026-08-12 day", res)
 	}
-	if res.TradingDay != "2026-08-12" {
-		t.Errorf("res.TradingDay = %q, want 2026-08-12", res.TradingDay)
+	if res.ServedFrom != servedFromUpstream {
+		t.Errorf("ServedFrom = %q, want upstream (a miss spends one unit)", res.ServedFrom)
 	}
-	if len(res.Buyers) != 2 || len(res.Sellers) != 1 {
-		t.Errorf("expected 2 buyers 1 seller, got %d/%d", len(res.Buyers), len(res.Sellers))
+	if res.Coverage.Lane != "foreign" || !res.Coverage.Complete {
+		t.Errorf("coverage = %+v, want a structurally complete foreign window", res.Coverage)
 	}
-	if res.Buyers[0].BrokerCode != "AK" || res.Buyers[0].Value != 15_000_000_000 {
-		t.Errorf("buyers[0] = %+v, want AK/15000000000", res.Buyers[0])
+	// Foreign gross is the rows' own sum; t_val is unobserved in the f lane.
+	if res.TotalBuyValue != 18_600_000_000 || res.TotalSellValue != 12_300_000_000 {
+		t.Errorf("foreign gross = %d/%d, want 18.6B/12.3B", res.TotalBuyValue, res.TotalSellValue)
 	}
-	if res.Totals.TVal != 71_200_000_000 {
-		t.Errorf("Totals.TVal = %d, want 71200000000", res.Totals.TVal)
+	if res.Totals.TVal != nil || res.Totals.TLot != nil || res.Totals.Avg != nil {
+		t.Errorf("f totals = %+v, want null day totals", res.Totals)
 	}
-
-	// Gross values are the day's t_val (every share has a buyer and a seller);
-	// the fixture is a partial broker set, so coverage is honest about it.
-	if res.TotalBuyValue != 71_200_000_000 {
-		t.Errorf("TotalBuyValue = %d, want 71200000000 (footer t_val)", res.TotalBuyValue)
-	}
-	if res.TotalSellValue != 71_200_000_000 {
-		t.Errorf("TotalSellValue = %d, want 71200000000 (footer t_val)", res.TotalSellValue)
-	}
-	if res.Coverage.Complete {
-		t.Errorf("Coverage.Complete = true, want false (rows cover 18.6B/12.3B of 71.2B)")
-	}
-	if res.Coverage.Buyers != 2 || res.Coverage.Sellers != 1 || res.Coverage.Brokers != 3 {
-		t.Errorf("coverage counts = %+v, want 2 buyers/1 seller/3 brokers", res.Coverage)
-	}
-	if res.Coverage.BuyValueCovered != 18_600_000_000 || res.Coverage.SellValueCovered != 12_300_000_000 {
-		t.Errorf("coverage values = %d/%d, want 18.6B/12.3B", res.Coverage.BuyValueCovered, res.Coverage.SellValueCovered)
+	if res.Totals.FNVal == nil || *res.Totals.FNVal != 6_300_000_000 {
+		t.Errorf("f_nval = %v, want 6.3B (buy − sell)", res.Totals.FNVal)
 	}
 
-	// Persisted: rows present in DB.
-	stored, err := uc.Repo.FindByTickerAndDay(db, ticker, day)
+	// The second lookup is the zero-unit path: no fetch, served from the store.
+	f.res = nil
+	again, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day)
 	if err != nil {
-		t.Fatalf("FindByTickerAndDay: %v", err)
+		t.Fatalf("GetStockBrokerSummary (cached): %v", err)
 	}
-	if len(stored) != 3 {
-		t.Errorf("expected 3 persisted rows, got %d", len(stored))
+	if f.calls != 1 {
+		t.Errorf("fetcher calls = %d, want 1 (the second lookup must cost zero units)", f.calls)
+	}
+	if again.ServedFrom != servedFromStore {
+		t.Errorf("ServedFrom = %q, want store", again.ServedFrom)
+	}
+	if again.Totals.FNVal == nil || *again.Totals.FNVal != 6_300_000_000 {
+		t.Errorf("stored f_nval = %v, want 6.3B", again.Totals.FNVal)
 	}
 
-	// Persisted: the day is stamped with the on-demand writer's provenance.
-	ptotals, err := uc.Repo.FindTotalsByTickerAndDay(db, ticker, day)
+	// Persisted as the foreign lane's one-day live window.
+	totals, rows, err := uc.Repo.FindStoredWindow(db, ticker, broker.InvestorForeign, day, day)
 	if err != nil {
-		t.Fatalf("FindTotalsByTickerAndDay: %v", err)
+		t.Fatalf("FindStoredWindow: %v", err)
 	}
-	if ptotals.Source != entity.BrokerSourceLive {
-		t.Errorf("persisted totals source = %q, want %q", ptotals.Source, entity.BrokerSourceLive)
+	if len(rows) != 3 {
+		t.Errorf("persisted rows = %d, want 3", len(rows))
+	}
+	if totals.Source != entity.BrokerSourceLive {
+		t.Errorf("persisted source = %q, want live", totals.Source)
 	}
 }
 
-// TestGetStockBrokerSummary_ProjectionCapsAtTen — every broker is stored, but
-// the tool's contract is at most ten buyers and ten sellers; coverage still
-// measures the full set.
 func TestGetStockBrokerSummary_ProjectionCapsAtTen(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
@@ -152,26 +163,16 @@ func TestGetStockBrokerSummary_ProjectionCapsAtTen(t *testing.T) {
 
 	ticker := "TESTP"
 	day := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
-	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
-	db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
-	t.Cleanup(func() {
-		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
-		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
-	})
+	cleanTicker(t, db, ticker)
 
-	// 15 buyers and 15 sellers, each side worth 15B (the source's Σbuy == Σsell).
 	buyers := make([]broker.Row, 15)
 	sellers := make([]broker.Row, 15)
 	for i := 0; i < 15; i++ {
 		code := fmt.Sprintf("%c%c", 'A'+i, 'A'+i)
 		buyers[i] = broker.Row{BrokerCode: code, Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: i + 1}
-		sellers[i] = broker.Row{BrokerCode: code, Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: i + 1}
+		sellers[i] = broker.Row{BrokerCode: code, Lot: 100, Value: 900_000_000, AvgPrice: 100, Rank: i + 1}
 	}
-	f.res = &broker.Result{
-		Buyers:  buyers,
-		Sellers: sellers,
-		Totals:  broker.Totals{TVal: 15_000_000_000, TLot: 3000, Avg: 100},
-	}
+	f.res = &broker.Result{Investor: broker.InvestorForeign, Buyers: buyers, Sellers: sellers}
 
 	res, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day)
 	if err != nil {
@@ -180,64 +181,22 @@ func TestGetStockBrokerSummary_ProjectionCapsAtTen(t *testing.T) {
 	if len(res.Buyers) != brokerSummaryTopN || len(res.Sellers) != brokerSummaryTopN {
 		t.Errorf("response = %d buyers/%d sellers, want top %d per side", len(res.Buyers), len(res.Sellers), brokerSummaryTopN)
 	}
-	if res.Buyers[0].Rank != 1 || res.Sellers[0].Rank != 1 {
-		t.Errorf("projection ranks = %d/%d, want dense 1..N", res.Buyers[0].Rank, res.Sellers[0].Rank)
+	if res.Buyers[0].Rank != 1 || res.Buyers[len(res.Buyers)-1].Rank != brokerSummaryTopN {
+		t.Errorf("ranks = %d..%d, want dense 1..%d", res.Buyers[0].Rank, res.Buyers[len(res.Buyers)-1].Rank, brokerSummaryTopN)
 	}
-	if !res.Coverage.Complete || res.Coverage.Brokers != 15 || res.Coverage.Buyers != 15 || res.Coverage.Sellers != 15 {
+	if !res.Coverage.Complete || res.Coverage.Brokers != 15 {
 		t.Errorf("coverage = %+v, want complete over all 15 stored brokers", res.Coverage)
 	}
 
-	stored, err := uc.Repo.FindByTickerAndDay(db, ticker, day)
+	totals, stored, err := uc.Repo.FindStoredWindow(db, ticker, broker.InvestorForeign, day, day)
 	if err != nil {
-		t.Fatalf("FindByTickerAndDay: %v", err)
+		t.Fatalf("FindStoredWindow: %v", err)
 	}
 	if len(stored) != 30 {
 		t.Errorf("persisted rows = %d, want 30 (full set, not top ten per side)", len(stored))
 	}
-}
-
-// TestGetStockBrokerSummary_CompleteSet — the listed set reconciles to t_val on
-// both sides, so coverage reports complete.
-func TestGetStockBrokerSummary_CompleteSet(t *testing.T) {
-	dsn := os.Getenv("IDX_MCP_DB_DSN")
-	if dsn == "" {
-		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
-	}
-	db := sqlx.MustConnect("pgx", dsn)
-	uc, f := newTestUC(t, db)
-
-	ticker := "TESTW"
-	day := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
-	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
-	db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
-	t.Cleanup(func() {
-		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
-		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
-	})
-
-	f.res = &broker.Result{
-		Buyers: []broker.Row{
-			{BrokerCode: "AK", Lot: 100000, Value: 10_000_000_000, AvgPrice: 100, Rank: 1},
-			{BrokerCode: "YP", Lot: 10000, Value: 1_000_000_000, AvgPrice: 100, Rank: 2},
-		},
-		Sellers: []broker.Row{
-			{BrokerCode: "XL", Lot: 80000, Value: 8_000_000_000, AvgPrice: 100, Rank: 1},
-			{BrokerCode: "MG", Lot: 30000, Value: 3_000_000_000, AvgPrice: 100, Rank: 2},
-		},
-		Totals: broker.Totals{TVal: 11_000_000_000, FNVal: i64p(2_000_000_000), TLot: 220000, Avg: 100},
-	}
-
-	res, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day)
-	if err != nil {
-		t.Fatalf("GetStockBrokerSummary: %v", err)
-	}
-
-	// Σ buyers = Σ sellers = t_val → the stored set is the whole market.
-	if !res.Coverage.Complete || res.Coverage.Brokers != 4 {
-		t.Errorf("coverage = %+v, want complete over all 4 brokers", res.Coverage)
-	}
-	if res.TotalBuyValue != 11_000_000_000 || res.TotalSellValue != 11_000_000_000 {
-		t.Errorf("totals = %d/%d, want 11000000000/11000000000", res.TotalBuyValue, res.TotalSellValue)
+	if totals.FNVal == nil || *totals.FNVal != 1_500_000_000 {
+		t.Errorf("f_nval = %v, want 1.5B", totals.FNVal)
 	}
 }
 
@@ -251,12 +210,7 @@ func TestGetStockBrokerSummary_EmptyResultWritesNothing(t *testing.T) {
 
 	ticker := "TESTB"
 	day := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
-	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
-	db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
-	t.Cleanup(func() {
-		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
-		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
-	})
+	cleanTicker(t, db, ticker)
 
 	f.res = &broker.Result{} // empty — non-trading day
 
@@ -293,7 +247,8 @@ func TestGetStockBrokerSummary_DateDefaultsToLatestTradingDay(t *testing.T) {
 		db.MustExec("DELETE FROM tickers WHERE code = $1", ticker)
 	})
 
-	f.res = &broker.Result{Buyers: []broker.Row{{BrokerCode: "AK", Lot: 1, Value: 100, AvgPrice: 100, Rank: 1}}}
+	f.res = &broker.Result{Investor: broker.InvestorForeign,
+		Buyers: []broker.Row{{BrokerCode: "AK", Lot: 1, Value: 100, AvgPrice: 100, Rank: 1}}}
 
 	if _, err := uc.GetStockBrokerSummary(context.Background(), ticker, nil); err != nil {
 		t.Fatalf("GetStockBrokerSummary: %v", err)
@@ -301,25 +256,33 @@ func TestGetStockBrokerSummary_DateDefaultsToLatestTradingDay(t *testing.T) {
 	if f.lastTicker != ticker {
 		t.Errorf("fetcher ticker = %q, want %q", f.lastTicker, ticker)
 	}
-	if f.lastDate.Format("2006-01-02") != "2026-08-11" {
-		t.Errorf("fetcher date = %s, want latest trading day 2026-08-11", f.lastDate.Format("2006-01-02"))
+	if f.lastTo.Format("2006-01-02") != "2026-08-11" {
+		t.Errorf("fetcher window end = %s, want latest trading day 2026-08-11", f.lastTo.Format("2006-01-02"))
 	}
 }
 
-// dateAwareFetcher returns a canned result for configured dates and empty for
-// everything else — simulating IPOT publish lag for a specific day.
+// dateAwareFetcher returns a canned result for configured window ends and empty
+// for everything else — simulating a publish lag for a specific day.
 type dateAwareFetcher struct {
 	withData map[string]*broker.Result
+	calls    []string
 }
 
-func (f *dateAwareFetcher) Fetch(_ context.Context, _ string, date time.Time) (*broker.Result, error) {
-	if res, ok := f.withData[date.Format("2006-01-02")]; ok {
+func (f *dateAwareFetcher) Fetch(ctx context.Context, ticker string, date time.Time) (*broker.Result, error) {
+	return f.FetchRange(ctx, ticker, date, date, broker.InvestorForeign)
+}
+
+func (f *dateAwareFetcher) FetchRange(_ context.Context, _ string, from, to time.Time, _ string) (*broker.Result, error) {
+	f.calls = append(f.calls, to.Format("2006-01-02"))
+	if res, ok := f.withData[to.Format("2006-01-02")]; ok {
 		return res, nil
 	}
 	return &broker.Result{}, nil
 }
 
-func TestGetStockBrokerSummary_FallbackProbesBackward(t *testing.T) {
+// TestGetStockBrokerSummary_FallbackReadsStoredPriorDay — an empty day falls
+// back over stored prior days only. The probe itself never spends quota.
+func TestGetStockBrokerSummary_FallbackReadsStoredPriorDay(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
 		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
@@ -340,12 +303,11 @@ func TestGetStockBrokerSummary_FallbackProbesBackward(t *testing.T) {
 		db.MustExec("DELETE FROM tickers WHERE code = $1", ticker)
 	})
 
-	// 8/12 not yet published (empty); 8/11 has data.
 	f := &dateAwareFetcher{withData: map[string]*broker.Result{
 		"2026-08-11": {
-			Buyers:  []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
-			Sellers: []broker.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
-			Totals:  broker.Totals{TVal: 1_500_000_000, FNVal: i64p(100_000_000), TLot: 150, Avg: 100},
+			Investor: broker.InvestorForeign,
+			Buyers:   []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
+			Sellers:  []broker.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
 		},
 	}}
 	uc := NewBrokerStockSummaryUseCase(
@@ -354,30 +316,30 @@ func TestGetStockBrokerSummary_FallbackProbesBackward(t *testing.T) {
 		repository.NewDailyPriceRepository(log),
 	)
 
+	// Today is empty; the prior window is already stored.
+	if _, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day11); err != nil {
+		t.Fatalf("seed day 11: %v", err)
+	}
+	callsBefore := len(f.calls)
+
 	res, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day12)
 	if err != nil {
 		t.Fatalf("GetStockBrokerSummary: %v", err)
 	}
-
+	if len(f.calls) != callsBefore+1 {
+		t.Errorf("fetcher calls = %d, want %d (only the requested day; no prior-day probe)", len(f.calls), callsBefore+1)
+	}
 	if res.AsOf != "2026-08-11" {
-		t.Errorf("res.AsOf = %q, want 2026-08-11 (fallback to prior published day)", res.AsOf)
+		t.Errorf("res.AsOf = %q, want 2026-08-11 (stored fallback)", res.AsOf)
 	}
 	if res.Cause != "not_yet_published" {
 		t.Errorf("res.Cause = %q, want not_yet_published", res.Cause)
 	}
+	if res.ServedFrom != servedFromStore {
+		t.Errorf("res.ServedFrom = %q, want store", res.ServedFrom)
+	}
 	if len(res.Buyers) != 1 || res.Buyers[0].BrokerCode != "AK" {
 		t.Errorf("expected fallback day's buyers, got %+v", res.Buyers)
-	}
-
-	// Fallback day persisted; empty requested day not written.
-	var count int
-	db.Get(&count, "SELECT COUNT(*) FROM broker_stock_summaries WHERE ticker = $1 AND trading_day = $2", ticker, day11)
-	if count != 2 {
-		t.Errorf("expected 2 rows for fallback day 8/11, got %d", count)
-	}
-	db.Get(&count, "SELECT COUNT(*) FROM broker_stock_summaries WHERE ticker = $1 AND trading_day = $2", ticker, day12)
-	if count != 0 {
-		t.Errorf("expected 0 rows for empty requested day 8/12, got %d", count)
 	}
 }
 
@@ -392,10 +354,7 @@ func TestGetStockBrokerSummary_FallbackNonTradingDay(t *testing.T) {
 
 	ticker := "TESTN"
 	day := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC) // Saturday, no daily_price
-	t.Cleanup(func() {
-		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
-		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
-	})
+	cleanTicker(t, db, ticker)
 
 	f := &dateAwareFetcher{} // empty everywhere
 	uc := NewBrokerStockSummaryUseCase(
@@ -442,15 +401,21 @@ func TestGetStockBrokerSummary_NoTradingDay(t *testing.T) {
 // fetcher error with context but must not erase the structured class the MCP
 // boundary maps to an error code.
 func TestGetStockBrokerSummary_FetchErrorKeepsItsClass(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
 	f := &fakeFetcher{err: fmt.Errorf("upstream: %w", broker.ErrQuotaExhausted)}
 	uc := NewBrokerStockSummaryUseCase(
-		nil, log, validator.New(), f,
+		db, log, validator.New(), f,
 		repository.NewBrokerStockSummaryRepository(log),
 		repository.NewDailyPriceRepository(log),
 	)
 	day := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	cleanTicker(t, db, "BBRI")
 
 	_, err := uc.GetStockBrokerSummary(context.Background(), "BBRI", &day)
 	if !errors.Is(err, broker.ErrQuotaExhausted) {
@@ -458,51 +423,9 @@ func TestGetStockBrokerSummary_FetchErrorKeepsItsClass(t *testing.T) {
 	}
 }
 
-// TestGetStockBrokerSummary_UnobservedForeignNetPersistsNull — a live fetch
-// cannot observe foreign net, so the totals row must store NULL, not zero.
-func TestGetStockBrokerSummary_UnobservedForeignNetPersistsNull(t *testing.T) {
-	dsn := os.Getenv("IDX_MCP_DB_DSN")
-	if dsn == "" {
-		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
-	}
-	db := sqlx.MustConnect("pgx", dsn)
-	uc, f := newTestUC(t, db)
-
-	ticker := "TESTN"
-	day := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
-	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
-	db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
-	t.Cleanup(func() {
-		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
-		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
-	})
-
-	f.res = &broker.Result{
-		Buyers:  []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
-		Sellers: []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
-		Totals:  broker.Totals{TVal: 1_000_000_000, FNVal: nil, TLot: 100, Avg: 100},
-	}
-
-	res, err := uc.GetStockBrokerSummary(context.Background(), ticker, &day)
-	if err != nil {
-		t.Fatalf("GetStockBrokerSummary: %v", err)
-	}
-	if res.Totals.FNVal != nil {
-		t.Errorf("response f_nval = %v, want null", *res.Totals.FNVal)
-	}
-	stored, err := uc.Repo.FindTotalsByTickerAndDay(db, ticker, day)
-	if err != nil {
-		t.Fatalf("FindTotalsByTickerAndDay: %v", err)
-	}
-	if stored.FNVal != nil {
-		t.Errorf("persisted f_nval = %v, want NULL (unobserved)", *stored.FNVal)
-	}
-}
-
-// TestPersist_ForeignLaneWritesNullDayTotals is ticket 10a's writer rule: an f
-// result stores its rows and f_nval, but t_val/t_lot/avg stay NULL because the
-// f payload has no all-investor totals. The writer must never persist the
-// foreign sell gross as the day's transaction value.
+// TestPersist_ForeignLaneWritesNullDayTotals is ticket 10a's writer rule, kept
+// by the shared window writer: an f result stores its rows and derives f_nval,
+// but t_val/t_lot/avg stay NULL.
 func TestPersist_ForeignLaneWritesNullDayTotals(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
@@ -511,37 +434,30 @@ func TestPersist_ForeignLaneWritesNullDayTotals(t *testing.T) {
 	db := sqlx.MustConnect("pgx", dsn)
 	uc, _ := newTestUC(t, db)
 
-	ticker := "TESTF"
+	ticker := "TESTX"
 	day := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
-	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
-	db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
-	t.Cleanup(func() {
-		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
-		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
-	})
+	cleanTicker(t, db, ticker)
 
 	res := &broker.Result{
 		Investor: broker.InvestorForeign,
 		Buyers:   []broker.Row{{BrokerCode: "HD", Lot: 100, Value: 1_000_000, AvgPrice: 100, Rank: 1}},
 		Sellers:  []broker.Row{{BrokerCode: "CC", Lot: 90, Value: 900_000, AvgPrice: 100, Rank: 1}},
-		Totals:   broker.Totals{FNVal: i64p(100_000)},
 	}
-	if err := uc.persist(ticker, day, res, entity.BrokerSourceLive); err != nil {
+	if err := persistBrokerWindow(db, uc.Repo, ticker, day, day, res, broker.InvestorForeign, entity.BrokerSourceLive); err != nil {
 		t.Fatalf("persist(f): %v", err)
 	}
 
-	var stored entity.BrokerStockSummaryTotals
-	if err := db.Get(&stored, `SELECT * FROM broker_stock_summary_totals
-		WHERE ticker = $1 AND trading_day = $2 AND win_from = $2 AND investor = 'f'`, ticker, day); err != nil {
-		t.Fatalf("read f totals: %v", err)
+	totals, _, err := uc.Repo.FindStoredWindow(db, ticker, broker.InvestorForeign, day, day)
+	if err != nil {
+		t.Fatalf("read f window: %v", err)
 	}
-	if stored.TVal != nil || stored.TLot != nil || stored.Avg != nil {
-		t.Errorf("f day totals = %v/%v/%v, want NULL", stored.TVal, stored.TLot, stored.Avg)
+	if totals.TVal != nil || totals.TLot != nil || totals.Avg != nil {
+		t.Errorf("f day totals = %v/%v/%v, want NULL", totals.TVal, totals.TLot, totals.Avg)
 	}
-	if stored.FNVal == nil || *stored.FNVal != 100_000 {
-		t.Errorf("f_nval = %v, want 100000", stored.FNVal)
+	if totals.FNVal == nil || *totals.FNVal != 100_000 {
+		t.Errorf("f_nval = %v, want 100000 (derived from rows)", totals.FNVal)
 	}
-	if stored.Investor != broker.InvestorForeign || stored.Market != broker.MarketRegular {
-		t.Errorf("lane/market = %q/%q, want f/RG", stored.Investor, stored.Market)
+	if totals.Investor != broker.InvestorForeign || totals.Market != broker.MarketRegular {
+		t.Errorf("lane/market = %q/%q, want f/RG", totals.Investor, totals.Market)
 	}
 }

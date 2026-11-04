@@ -214,7 +214,7 @@ func (r *DailyPriceRepository) TradingDaysInRange(db *sqlx.DB, ticker string, fr
 
 // TradingDaysInRangeAll returns the distinct trading days with any stored EOD
 // row between two dates (inclusive), ascending — the market-wide trading-day
-// calendar, used for coverage math in get_broker_net_flow.
+// calendar, used for coverage math and Source Status freshness.
 func (r *DailyPriceRepository) TradingDaysInRangeAll(db *sqlx.DB, from, to time.Time) ([]time.Time, error) {
 	var days []time.Time
 	err := db.Select(&days,
@@ -222,6 +222,18 @@ func (r *DailyPriceRepository) TradingDaysInRangeAll(db *sqlx.DB, from, to time.
 		from, to,
 	)
 	return days, err
+}
+
+// TradingDaysAfter counts the market-wide trading days strictly after `after`
+// and at or before `upto`. It is the broker source's staleness in trading days:
+// age 0 means the newest window ends on the latest session.
+func (r *DailyPriceRepository) TradingDaysAfter(db *sqlx.DB, after, upto time.Time) (int, error) {
+	var count int
+	err := db.Get(&count,
+		"SELECT COUNT(DISTINCT trading_day) FROM daily_prices WHERE trading_day > $1 AND trading_day <= $2",
+		after, upto,
+	)
+	return count, err
 }
 
 // FindByTickerAndDateRange returns the OHLCV rows for a ticker between two

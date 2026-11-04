@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
@@ -1100,5 +1102,135 @@ func TestScreenStocks_CustomFiltersReplaceTheDefaults(t *testing.T) {
 	}
 	if len(res.Filters) != 1 || res.Filters[0].Indicator != "rsi:14" || res.Filters[0].Op != filterOpGte {
 		t.Fatalf("filters echoed = %+v, want exactly the caller's filter", res.Filters)
+	}
+}
+
+// fakeFlowWindowFetcher records the trailing-window fetches the screener makes.
+type fakeFlowWindowFetcher struct {
+	calls int
+	res   *broker.Result
+	err   error
+}
+
+func (f *fakeFlowWindowFetcher) FetchRange(_ context.Context, _ string, _, _ time.Time, _ string) (*broker.Result, error) {
+	f.calls++
+	return f.res, f.err
+}
+
+type fakeFlowBudget struct{ available int }
+
+func (b fakeFlowBudget) Available() int { return b.available }
+
+// TestScreenStocks_FlowFetchBudgetGuard — with no budget left an uncovered
+// survivor is skipped, never fetched, and still renders a null column: the
+// shortfall is declared (flow_skipped), not hidden.
+func TestScreenStocks_FlowFetchBudgetGuard(t *testing.T) {
+	source := &fakeScreenerSource{
+		universe:   1,
+		candidates: []repository.ScreenCandidate{screenCandidate("BBRI", 812_000_000_000)},
+		prices:     map[string][]entity.DailyPrice{"BBRI": screenSeries("BBRI", 250)},
+	}
+	anchor := testAnchor()
+	source.latest = &anchor
+	flow := &fakeScreenerFlow{window: flowWindow(20)}
+	fetcher := &fakeFlowWindowFetcher{}
+	log := logrus.New()
+	uc := NewScreenStocksUseCase(nil, log, source, flow,
+		WithScreenFlowSource(fetcher, fakeFlowBudget{available: 0}, repository.NewBrokerStockSummaryRepository(log)))
+
+	res, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Filters: noFilters()})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fetcher.calls != 0 {
+		t.Errorf("fetches = %d, want 0 with no budget", fetcher.calls)
+	}
+	if res.FlowFetched != 0 || res.FlowSkipped != 1 {
+		t.Errorf("flow counters = fetched %d skipped %d, want 0/1", res.FlowFetched, res.FlowSkipped)
+	}
+	if len(res.Rows) != 1 || res.Rows[0].ForeignNet != nil {
+		t.Fatalf("row = %+v, want a null foreign_net", res.Rows)
+	}
+	if res.Rows[0].Coverage[coverageForeignNet].Observed {
+		t.Errorf("coverage = %+v, want unobserved", res.Rows[0].Coverage[coverageForeignNet])
+	}
+}
+
+// TestScreenStocks_FlowFetchPersistsAndFills — a cover miss with budget spends
+// the unit, caches the trailing window, and fills the column.
+func TestScreenStocks_FlowFetchPersistsAndFills(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+	repo := repository.NewBrokerStockSummaryRepository(log)
+	priceRepo := repository.NewDailyPriceRepository(log)
+
+	ticker := "TSTSF"
+	anchor := testAnchor()
+	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+	db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+	db.MustExec("DELETE FROM daily_prices WHERE ticker = $1", ticker)
+	db.MustExec("DELETE FROM tickers WHERE code = $1", ticker)
+	t.Cleanup(func() {
+		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+		db.MustExec("DELETE FROM daily_prices WHERE ticker = $1", ticker)
+		db.MustExec("DELETE FROM tickers WHERE code = $1", ticker)
+	})
+	db.MustExec("INSERT INTO tickers (code, name, active) VALUES ($1, $1, true)", ticker)
+	for i := 19; i >= 0; i-- {
+		day := anchor.AddDate(0, 0, -i)
+		if err := priceRepo.Upsert(db, &entity.DailyPrice{
+			Ticker: ticker, TradingDay: day,
+			Open: f64p(100), High: f64p(110), Low: f64p(90), Close: f64p(105),
+			Volume: i64p(1_000_000), Value: i64p(10_000_000_000), Frequency: i32p(1000),
+			Source: "idx",
+		}); err != nil {
+			t.Fatalf("seed price %s: %v", day.Format("2006-01-02"), err)
+		}
+	}
+
+	source := &fakeScreenerSource{
+		universe:   1,
+		candidates: []repository.ScreenCandidate{screenCandidate(ticker, 812_000_000_000)},
+		prices:     map[string][]entity.DailyPrice{ticker: screenSeries(ticker, 250)},
+		latest:     &anchor,
+	}
+	fetcher := &fakeFlowWindowFetcher{res: &broker.Result{
+		Investor: broker.InvestorForeign,
+		Buyers:   []broker.Row{{BrokerCode: "AK", Lot: 1_000, Value: 10_000_000_000, AvgPrice: 100, Rank: 1}},
+		Sellers:  []broker.Row{{BrokerCode: "XL", Lot: 500, Value: 5_000_000_000, AvgPrice: 100, Rank: 1}},
+	}}
+	uc := NewScreenStocksUseCase(db, log, source, repo,
+		WithScreenFlowSource(fetcher, fakeFlowBudget{available: 5}, repo))
+
+	res, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Filters: noFilters()})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fetcher.calls != 1 || res.FlowFetched != 1 || res.FlowSkipped != 0 {
+		t.Fatalf("flow = calls %d fetched %d skipped %d, want 1/1/0", fetcher.calls, res.FlowFetched, res.FlowSkipped)
+	}
+	if res.FlowDaysInWindow != 20 {
+		t.Fatalf("flow days = %d, want 20", res.FlowDaysInWindow)
+	}
+	if len(res.Rows) != 1 || res.Rows[0].ForeignNet == nil || *res.Rows[0].ForeignNet != 5_000_000_000 {
+		t.Fatalf("row = %+v, want foreign_net 5B", res.Rows)
+	}
+	if cov := res.Rows[0].Coverage[coverageForeignNet]; !cov.Observed || cov.Days != 20 {
+		t.Errorf("coverage = %+v, want observed over 20 days", cov)
+	}
+
+	// The fetched window is cached under the requested trailing range.
+	totals, rows, err := repo.FindStoredWindow(db, ticker, broker.InvestorForeign, anchor.AddDate(0, 0, -19), anchor)
+	if err != nil {
+		t.Fatalf("FindStoredWindow: %v", err)
+	}
+	if totals.Source != entity.BrokerSourceWindow || len(rows) != 2 {
+		t.Errorf("cached window = source %q rows %d, want window/2", totals.Source, len(rows))
 	}
 }

@@ -26,16 +26,17 @@ var allTools = []mcpgo.Tool{
 	toolGetTickerMetadata,
 	toolGetSectorFlow,
 	toolComputeIndicators,
-	toolScreenStocks,
 }
 
 // writeTools is the write-tool registry: tools that mutate state must declare
 // readOnlyHint=false so clients prompt for confirmation. get_stock_broker_summary
-// persists the fetched day; fetch_disclosure_pdf enqueues an extraction whose
-// worker writes raw_files + status; backfill_stock_broker_summary enqueues the
-// range backfill task (issue 12).
+// persists the fetched window; screen_stocks persists the trailing-window cache
+// when its broker-flow column has to fetch; fetch_disclosure_pdf enqueues an
+// extraction whose worker writes raw_files + status; backfill_stock_broker_summary
+// enqueues the range backfill task (issue 12).
 var writeTools = []mcpgo.Tool{
 	toolGetStockBrokerSummary,
+	toolScreenStocks,
 	toolFetchDisclosurePDF,
 	toolBackfillStockBrokerSummary,
 }

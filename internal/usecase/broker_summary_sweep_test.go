@@ -47,8 +47,16 @@ type sweepBatchFetcher struct {
 	calls     [][]string
 }
 
-func (f *sweepBatchFetcher) Fetch(_ context.Context, _ string, _ time.Time) (*broker.Result, error) {
+func (f *sweepBatchFetcher) Fetch(ctx context.Context, ticker string, date time.Time) (*broker.Result, error) {
 	return sweepBatchResult(), nil
+}
+
+func (f *sweepBatchFetcher) FetchRange(ctx context.Context, ticker string, date, _ time.Time, _ string) (*broker.Result, error) {
+	return f.Fetch(ctx, ticker, date)
+}
+
+func (f *sweepBatchFetcher) FetchBatchRange(ctx context.Context, tickers []string, from, _ time.Time, _ string) (*broker.Batch, error) {
+	return f.FetchBatch(ctx, tickers, from)
 }
 
 func (f *sweepBatchFetcher) FetchBatch(_ context.Context, tickers []string, _ time.Time) (*broker.Batch, error) {

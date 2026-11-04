@@ -46,8 +46,16 @@ type taskBatchFetcher struct {
 	calls     int
 }
 
-func (f *taskBatchFetcher) Fetch(_ context.Context, _ string, _ time.Time) (*broker.Result, error) {
+func (f *taskBatchFetcher) Fetch(ctx context.Context, ticker string, date time.Time) (*broker.Result, error) {
 	return taskBatchResult(), nil
+}
+
+func (f *taskBatchFetcher) FetchRange(ctx context.Context, ticker string, date, _ time.Time, _ string) (*broker.Result, error) {
+	return f.Fetch(ctx, ticker, date)
+}
+
+func (f *taskBatchFetcher) FetchBatchRange(ctx context.Context, tickers []string, from, _ time.Time, _ string) (*broker.Batch, error) {
+	return f.FetchBatch(ctx, tickers, from)
 }
 
 func (f *taskBatchFetcher) FetchBatch(_ context.Context, tickers []string, _ time.Time) (*broker.Batch, error) {

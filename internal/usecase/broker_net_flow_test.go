@@ -10,6 +10,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jmoiron/sqlx"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
@@ -26,19 +27,34 @@ const (
 	nfSell7 = int64(7_000_000_000)
 )
 
-// nfRow builds one stored broker row for net-flow seeding.
-func nfRow(ticker, broker, side string, day time.Time, val int64) entity.BrokerStockSummary {
+// nfRow builds one stored foreign-lane broker row for net-flow seeding.
+func nfRow(ticker, code, side string, day time.Time, val int64) entity.BrokerStockSummary {
 	return entity.BrokerStockSummary{
-		Ticker: ticker, BrokerCode: broker, Side: side, TradingDay: day,
+		Ticker: ticker, BrokerCode: code, Side: side, TradingDay: day, WinFrom: day,
+		Investor: broker.InvestorForeign, Market: broker.MarketRegular,
 		Lot: i64p(val), Value: i64p(val), AvgPrice: i64p(100), Rank: i32p(1),
+		Source: entity.BrokerSourceLive,
 	}
 }
 
-// seedNetFlowDay writes one ticker+day's stored rows (via the real repo path).
+// seedNetFlowDay writes one ticker+day's stored foreign window (via the real
+// repo path).
 func seedNetFlowDay(t *testing.T, db *sqlx.DB, repo *repository.BrokerStockSummaryRepository, ticker string, day time.Time, rows ...entity.BrokerStockSummary) {
 	t.Helper()
-	totals := &entity.BrokerStockSummaryTotals{Ticker: ticker, TradingDay: day, TVal: i64p(0)}
-	if err := repo.UpsertDay(db, rows, totals); err != nil {
+	var net int64
+	for _, r := range rows {
+		if r.Side == "sell" {
+			net -= deref(r.Value)
+		} else {
+			net += deref(r.Value)
+		}
+	}
+	totals := &entity.BrokerStockSummaryTotals{
+		Ticker: ticker, TradingDay: day, WinFrom: day,
+		Investor: broker.InvestorForeign, Market: broker.MarketRegular,
+		FNVal: i64p(net), Source: entity.BrokerSourceLive,
+	}
+	if err := repo.UpsertWindow(db, rows, totals); err != nil {
 		t.Fatalf("seedNetFlowDay %s %s: %v", ticker, day.Format("2006-01-02"), err)
 	}
 }
@@ -290,5 +306,80 @@ func TestGetBrokerNetFlow_WindowTooLong(t *testing.T) {
 	_, err := uc.GetBrokerNetFlow(context.Background(), &ticker, &from, &to)
 	if !errors.Is(err, ErrInvalidRange) {
 		t.Errorf("expected ErrInvalidRange (window > 180d), got %v", err)
+	}
+}
+
+// seedNetFlowWindow writes one multi-day foreign window.
+func seedNetFlowWindow(t *testing.T, db *sqlx.DB, repo *repository.BrokerStockSummaryRepository, ticker string, from, to time.Time, rows ...entity.BrokerStockSummary) {
+	t.Helper()
+	var net int64
+	for i := range rows {
+		rows[i].WinFrom = from
+		rows[i].TradingDay = to
+		rows[i].Investor = broker.InvestorForeign
+		rows[i].Market = broker.MarketRegular
+		if rows[i].Source == "" {
+			rows[i].Source = entity.BrokerSourceArchive
+		}
+		if rows[i].Side == "sell" {
+			net -= deref(rows[i].Value)
+		} else {
+			net += deref(rows[i].Value)
+		}
+	}
+	totals := &entity.BrokerStockSummaryTotals{
+		Ticker: ticker, TradingDay: to, WinFrom: from,
+		Investor: broker.InvestorForeign, Market: broker.MarketRegular,
+		FNVal: i64p(net), Source: entity.BrokerSourceArchive,
+	}
+	if err := repo.UpsertWindow(db, rows, totals); err != nil {
+		t.Fatalf("seedNetFlowWindow %s %s..%s: %v", ticker, from.Format("2006-01-02"), to.Format("2006-01-02"), err)
+	}
+}
+
+// TestGetBrokerNetFlow_WindowCompositionNoDoubleCount — a 3-day window and an
+// overlapping 2-day cache are both stored. The solver takes the longer window and
+// skips the overlapping one, so the answer is not their sum; the window's days
+// (not just its end date) feed days_shown and covered_days.
+func TestGetBrokerNetFlow_WindowCompositionNoDoubleCount(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
+	uc := newHistoryTestUC(t, db)
+
+	ticker := "TESTW"
+	d1 := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
+	d3 := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+	cleanupNetFlowTicker(t, db, ticker)
+	for _, d := range []time.Time{d1, d2, d3} {
+		seedTickerAndPrice(t, db, ticker, d)
+	}
+
+	threeDayBuy := nfRow(ticker, "AK", "buy", d3, nfBuy10)
+	threeDaySell := nfRow(ticker, "XL", "sell", d3, nfSell6)
+	seedNetFlowWindow(t, db, uc.Repo, ticker, d1, d3, threeDayBuy, threeDaySell)
+	// An overlapping answer cache with a wildly larger figure: summing both
+	// would report 110B and double-count days 1-2.
+	seedNetFlowWindow(t, db, uc.Repo, ticker, d1, d2, nfRow(ticker, "AK", "buy", d2, 100_000_000_000))
+
+	res, err := uc.GetBrokerNetFlow(context.Background(), &ticker, &d1, &d3)
+	if err != nil {
+		t.Fatalf("GetBrokerNetFlow: %v", err)
+	}
+	if res.Grain != "range" || res.Lane != "foreign" {
+		t.Errorf("grain/lane = %q/%q, want range/foreign", res.Grain, res.Lane)
+	}
+	ak := findNetFlowRow(t, res.Rows, "AK")
+	if ak.Buy != nfBuy10 || ak.Net != nfBuy10 {
+		t.Errorf("AK = buy %d net %d, want 10B/10B (overlapping cache skipped)", ak.Buy, ak.Net)
+	}
+	if ak.DaysShown != 3 {
+		t.Errorf("AK days_shown = %d, want 3 (the window's whole span)", ak.DaysShown)
+	}
+	if res.CoveredDays != 3 || res.TradeDaysInWindow != 3 {
+		t.Errorf("covered/trade days = %d/%d, want 3/3", res.CoveredDays, res.TradeDaysInWindow)
 	}
 }

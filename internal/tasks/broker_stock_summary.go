@@ -143,8 +143,8 @@ func NewBrokerStockSummaryRangeHandler(
 		}
 
 		var lastGood *time.Time
-		if len(resp.Days) > 0 {
-			d, _ := time.Parse("2006-01-02", resp.Days[len(resp.Days)-1].TradingDay)
+		if len(resp.Windows) > 0 {
+			d, _ := time.Parse("2006-01-02", resp.Windows[len(resp.Windows)-1].To)
 			lastGood = &d
 		}
 		recorder.Success(TypeBrokerStockSummary, BrokerStockSummaryMaxAgeSeconds, lastGood)

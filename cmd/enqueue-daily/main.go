@@ -267,7 +267,7 @@ func runBulkBrokerSummary(vip *viper.Viper, log *logrus.Logger, startStr, endStr
 		recorder := pipeline.NewSourceStatusRecorder(
 			pipeline.NewSQLSourceStatusStore(repository.NewSourceStatusRepository(log), db), nil, log,
 		)
-		last, _ := time.Parse("2006-01-02", resp.Days[len(resp.Days)-1].TradingDay)
+		last, _ := time.Parse("2006-01-02", resp.Windows[len(resp.Windows)-1].To)
 		recorder.Success(tasks.TypeBrokerStockSummary, tasks.BrokerStockSummaryMaxAgeSeconds, &last)
 	}
 

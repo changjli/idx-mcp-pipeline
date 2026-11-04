@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
 // Net flow window defaults.
@@ -25,7 +26,11 @@ const (
 	netFlowModeMarket = "market"
 )
 
-// BrokerNetFlowRow is one broker's cumulative flow over the window.
+// BrokerNetFlowRow is one broker's cumulative foreign flow over the window. Buy
+// and Sell are the broker's foreign-executed gross buy/sell; Net is the broker's
+// foreign net (buy − sell, positive = accumulation). It is the only attributable
+// signed figure: an all-investor aggregate is structurally zero over the full
+// broker set.
 type BrokerNetFlowRow struct {
 	BrokerCode string `json:"broker_code"`
 	Buy        int64  `json:"buy"`
@@ -53,28 +58,31 @@ type BrokerNetFlowTickerDetail struct {
 }
 
 // BrokerNetFlowResponse is the structured result of get_broker_net_flow.
-// Coverage is the honesty contract: the sweep is a budget-capped rotation and
-// on-demand fetches add days, so trade_days_in_window vs covered_days declares
-// how much of the window this answer actually observes (see CONTEXT.md
-// "Coverage"). There is no response-level net: over the full broker set
-// Σbuy == Σsell, so an aggregate would be structurally zero. Net is reported
-// only per broker, where it is attributable.
+// Coverage is the honesty contract: stored windows are sparse, day rows expire
+// and only a disjoint selection is ever summed, so trade_days_in_window vs
+// covered_days declares how much of the window this answer actually observes.
+// There is no response-level net: over the full broker set Σbuy == Σsell, so an
+// aggregate would be structurally zero. Net is reported only per broker, where
+// it is attributable.
 type BrokerNetFlowResponse struct {
 	Mode              string             `json:"mode"` // "ticker" | "market"
 	Ticker            string             `json:"ticker,omitempty"`
 	From              string             `json:"from"`
 	To                string             `json:"to"`
+	Grain             string             `json:"grain"` // "range"
+	Lane              string             `json:"lane"`  // "foreign"
 	TradeDaysInWindow int                `json:"trade_days_in_window"`
 	CoveredDays       int                `json:"covered_days"`
 	TickersCovered    int                `json:"tickers_covered,omitempty"` // market-wide mode
 	Rows              []BrokerNetFlowRow `json:"rows"`
 }
 
-// netFlowAccumulator accumulates one broker's totals over the window. days is
-// used in ticker mode; sessions + tickers + byTicker in market mode.
+// netFlowAccumulator accumulates one broker's totals over the window. Day sets
+// hold market-calendar indices, so a window row contributes every day it spans
+// rather than just its end date.
 type netFlowAccumulator struct {
 	buy, sell int64
-	days      map[string]struct{}
+	days      map[int]struct{}
 	sessions  map[string]struct{}
 	tickers   map[string]struct{}
 	byTicker  map[string]*netFlowAccumulator // market mode: per-ticker detail
@@ -82,21 +90,24 @@ type netFlowAccumulator struct {
 
 func newNetFlowAccumulator() *netFlowAccumulator {
 	return &netFlowAccumulator{
-		days:     make(map[string]struct{}),
+		days:     make(map[int]struct{}),
 		sessions: make(map[string]struct{}),
 		tickers:  make(map[string]struct{}),
 		byTicker: make(map[string]*netFlowAccumulator),
 	}
 }
 
-// GetBrokerNetFlow aggregates stored per-stock broker rows over a window into
-// per-broker cumulative net flow. Pure DB read — no upstream call, no
-// inference: every broker the source returned is stored, so a broker's days are
-// its actual activity, not a top-10 appearance. Two modes:
-//   - ticker mode (pass ticker): per-broker net over one ticker's window.
-//   - market mode (omit ticker): per-broker net across every ticker with
-//     stored rows in the window. The population is the budget-capped sweep
-//     rotation plus on-demand fetches; tickers_covered declares it.
+// GetBrokerNetFlow aggregates stored foreign broker rows over a window into
+// per-broker cumulative foreign net flow. Pure DB read — no upstream call, no
+// quota. Only foreign-lane windows are read (legacy top-10 rows are invisible),
+// and only a disjoint selection of them is summed: an overlapping answer cache
+// could otherwise double-count.
+//
+// Two modes:
+//   - ticker mode (pass ticker): per-broker foreign net over one ticker's window.
+//   - market mode (omit ticker): per-broker foreign net across every ticker with
+//     stored windows in the window. The population is the partition the writers
+//     have built so far; tickers_covered declares it.
 //
 // from/to default to brokerNetFlowDefaultWindowDays ending at the latest
 // trading day (per-ticker in ticker mode, market-wide in market mode).
@@ -119,10 +130,12 @@ func (uc *BrokerStockSummaryUseCase) GetBrokerNetFlow(ctx context.Context, ticke
 	}
 
 	resp := &BrokerNetFlowResponse{
-		Mode: mode,
-		From: fromT.Format("2006-01-02"),
-		To:   toT.Format("2006-01-02"),
-		Rows: []BrokerNetFlowRow{},
+		Mode:  mode,
+		From:  fromT.Format("2006-01-02"),
+		To:    toT.Format("2006-01-02"),
+		Grain: "range",
+		Lane:  laneName(brokerReadLane),
+		Rows:  []BrokerNetFlowRow{},
 	}
 
 	tradeDays, err := uc.netFlowTradeDays(mode == netFlowModeMarket, normalized, fromT, toT)
@@ -131,16 +144,20 @@ func (uc *BrokerStockSummaryUseCase) GetBrokerNetFlow(ctx context.Context, ticke
 	}
 	resp.TradeDaysInWindow = tradeDays
 
-	rows, err := uc.netFlowRows(mode == netFlowModeMarket, normalized, fromT, toT)
+	rows, cover, err := uc.netFlowRows(mode == netFlowModeMarket, normalized, fromT, toT)
 	if err != nil {
 		return nil, err
 	}
 
 	acc := make(map[string]*netFlowAccumulator)
-	covered := make(map[string]struct{})
+	covered := make(map[int]struct{})
 	tickersCovered := make(map[string]struct{})
 	market := mode == netFlowModeMarket
 	for _, r := range rows {
+		idxs := cover.dayIndices(r.Ticker, r.WinFrom, r.TradingDay)
+		if len(idxs) == 0 {
+			continue
+		}
 		a, ok := acc[r.BrokerCode]
 		if !ok {
 			a = newNetFlowAccumulator()
@@ -152,11 +169,8 @@ func (uc *BrokerStockSummaryUseCase) GetBrokerNetFlow(ctx context.Context, ticke
 		} else {
 			a.buy += val
 		}
-		day := r.TradingDay.Format("2006-01-02")
-		covered[day] = struct{}{}
 		tickersCovered[r.Ticker] = struct{}{}
 		if market {
-			a.sessions[r.Ticker+"|"+day] = struct{}{}
 			a.tickers[r.Ticker] = struct{}{}
 			sub, ok := a.byTicker[r.Ticker]
 			if !ok {
@@ -168,9 +182,16 @@ func (uc *BrokerStockSummaryUseCase) GetBrokerNetFlow(ctx context.Context, ticke
 			} else {
 				sub.buy += val
 			}
-			sub.days[day] = struct{}{}
+			for _, i := range idxs {
+				covered[i] = struct{}{}
+				a.sessions[fmt.Sprintf("%s|%d", r.Ticker, i)] = struct{}{}
+				sub.days[i] = struct{}{}
+			}
 		} else {
-			a.days[day] = struct{}{}
+			for _, i := range idxs {
+				covered[i] = struct{}{}
+				a.days[i] = struct{}{}
+			}
 		}
 	}
 
@@ -285,17 +306,34 @@ func (uc *BrokerStockSummaryUseCase) netFlowTradeDays(market bool, ticker string
 	return len(days), nil
 }
 
-// netFlowRows loads the stored broker rows feeding the window aggregation.
-func (uc *BrokerStockSummaryUseCase) netFlowRows(market bool, ticker string, from, to time.Time) ([]entity.BrokerStockSummary, error) {
+// netFlowRows loads the stored windows for the range, solves a disjoint cover,
+// and returns only the rows the cover selected — the no-double-count invariant
+// made concrete.
+func (uc *BrokerStockSummaryUseCase) netFlowRows(market bool, ticker string, from, to time.Time) ([]entity.BrokerStockSummary, *windowCover, error) {
+	days, err := brokerMarketDays(uc.DB, uc.DailyPriceRepo, from, to)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve trading days: %w", err)
+	}
+
+	var spans []repository.BrokerWindowSpan
 	var rows []entity.BrokerStockSummary
-	var err error
 	if market {
-		rows, err = uc.Repo.FindByDateRangeAll(uc.DB, from, to)
+		spans, err = uc.Repo.FindAllWindowSpans(uc.DB, brokerReadLane, from, to)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read broker summary windows for net flow: %w", err)
+		}
+		rows, err = uc.Repo.FindAllRowsInWindows(uc.DB, brokerReadLane, from, to)
 	} else {
-		rows, err = uc.Repo.FindByTickerAndDateRange(uc.DB, ticker, from, to)
+		spans, err = uc.Repo.FindWindowSpans(uc.DB, []string{ticker}, brokerReadLane, from, to)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read broker summary windows for net flow: %w", err)
+		}
+		rows, err = uc.Repo.FindRowsInWindows(uc.DB, []string{ticker}, brokerReadLane, from, to)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read broker summary rows for net flow: %w", err)
+		return nil, nil, fmt.Errorf("read broker summary rows for net flow: %w", err)
 	}
-	return rows, nil
+
+	cover := buildWindowCover(spans, from, to, days, false)
+	return filterRowsToCover(rows, cover), cover, nil
 }

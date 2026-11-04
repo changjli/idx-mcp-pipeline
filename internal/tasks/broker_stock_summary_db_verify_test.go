@@ -23,11 +23,15 @@ import (
 // taskFakeFetcher returns a canned IPOT result without touching the network.
 type taskFakeFetcher struct{}
 
-func (taskFakeFetcher) Fetch(_ context.Context, _ string, _ time.Time) (*broker.Result, error) {
+func (taskFakeFetcher) Fetch(ctx context.Context, ticker string, date time.Time) (*broker.Result, error) {
+	return taskFakeFetcher{}.FetchRange(ctx, ticker, date, date, broker.InvestorAll)
+}
+
+func (taskFakeFetcher) FetchRange(_ context.Context, _ string, _, _ time.Time, _ string) (*broker.Result, error) {
 	return &broker.Result{
-		Buyers:  []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
-		Sellers: []broker.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
-		Totals:  broker.Totals{TVal: 1_500_000_000, FNVal: i64ptr(100_000_000), TLot: 150, Avg: 100},
+		Investor: broker.InvestorForeign,
+		Buyers:   []broker.Row{{BrokerCode: "AK", Lot: 100, Value: 1_000_000_000, AvgPrice: 100, Rank: 1}},
+		Sellers:  []broker.Row{{BrokerCode: "XL", Lot: 50, Value: 500_000_000, AvgPrice: 99, Rank: 1}},
 	}, nil
 }
 

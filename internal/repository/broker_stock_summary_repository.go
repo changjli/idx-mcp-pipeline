@@ -1,7 +1,9 @@
 package repository
 
 import (
+	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -377,88 +379,303 @@ type ForeignNetWindow struct {
 	Rows      []TickerForeignNet
 }
 
+// BrokerWindowSpan is one stored window's key and range for a ticker, as the
+// interval-cover solver sees it. Source is the writer's provenance; FNVal is the
+// window's stored foreign net (nil when unobserved).
+type BrokerWindowSpan struct {
+	Ticker     string    `db:"ticker"`
+	WinFrom    time.Time `db:"win_from"`
+	TradingDay time.Time `db:"trading_day"`
+	Source     string    `db:"source"`
+	FNVal      *int64    `db:"f_nval"`
+}
+
+// Span is the window's range, as the pure cover solver consumes it.
+func (s BrokerWindowSpan) Span() broker.Span {
+	return broker.Span{From: s.WinFrom, To: s.TradingDay}
+}
+
+// BrokerAggregatedRow is one broker+side summed over a set of disjoint windows.
+// Rank is deliberately absent: it is recomputed by the read projection after
+// composition, because per-window ranks are not comparable.
+type BrokerAggregatedRow struct {
+	BrokerCode string `db:"broker_code"`
+	Side       string `db:"side"`
+	Lot        int64  `db:"lot"`
+	Value      int64  `db:"value"`
+}
+
+// FindWindowSpans returns the stored windows overlapping [from, to] for the
+// given tickers in one investor lane, excluding the legacy top-10 rows (which
+// are never read). The solver is what decides whether a span is usable; this is
+// the candidate set.
+func (r *BrokerStockSummaryRepository) FindWindowSpans(db *sqlx.DB, tickers []string, investor string, from, to time.Time) ([]BrokerWindowSpan, error) {
+	if len(tickers) == 0 {
+		return nil, nil
+	}
+	var spans []BrokerWindowSpan
+	err := db.Select(&spans, `
+		SELECT ticker, win_from, trading_day, source, f_nval
+		FROM broker_stock_summary_totals
+		WHERE ticker = ANY(string_to_array($1, ','))
+		  AND investor = $2
+		  AND source <> 'legacy_ipot'
+		  AND win_from <= $4::date
+		  AND trading_day >= $3::date
+		ORDER BY ticker, win_from, trading_day`,
+		strings.Join(tickers, ","), investor, from.Format("2006-01-02"), to.Format("2006-01-02"))
+	return spans, err
+}
+
+// FindAllWindowSpans is FindWindowSpans without a ticker filter — the
+// market-wide read behind get_broker_net_flow and get_sector_flow.
+func (r *BrokerStockSummaryRepository) FindAllWindowSpans(db *sqlx.DB, investor string, from, to time.Time) ([]BrokerWindowSpan, error) {
+	var spans []BrokerWindowSpan
+	err := db.Select(&spans, `
+		SELECT ticker, win_from, trading_day, source, f_nval
+		FROM broker_stock_summary_totals
+		WHERE investor = $1
+		  AND source <> 'legacy_ipot'
+		  AND win_from <= $3::date
+		  AND trading_day >= $2::date
+		ORDER BY ticker, win_from, trading_day`,
+		investor, from.Format("2006-01-02"), to.Format("2006-01-02"))
+	return spans, err
+}
+
+// FindRowsInWindows returns the stored per-broker rows overlapping [from, to]
+// for the given tickers and lane. Callers filter the result to the spans the
+// cover solver selected; one read serves both single-ticker and market-wide
+// aggregation without a per-window round trip.
+func (r *BrokerStockSummaryRepository) FindRowsInWindows(db *sqlx.DB, tickers []string, investor string, from, to time.Time) ([]entity.BrokerStockSummary, error) {
+	if len(tickers) == 0 {
+		return nil, nil
+	}
+	var rows []entity.BrokerStockSummary
+	err := db.Select(&rows, `
+		SELECT * FROM broker_stock_summaries
+		WHERE ticker = ANY(string_to_array($1, ','))
+		  AND investor = $2
+		  AND source <> 'legacy_ipot'
+		  AND win_from <= $4::date
+		  AND trading_day >= $3::date
+		ORDER BY ticker, win_from, trading_day, side, rank`,
+		strings.Join(tickers, ","), investor, from.Format("2006-01-02"), to.Format("2006-01-02"))
+	return rows, err
+}
+
+// FindAllRowsInWindows is FindRowsInWindows without a ticker filter.
+func (r *BrokerStockSummaryRepository) FindAllRowsInWindows(db *sqlx.DB, investor string, from, to time.Time) ([]entity.BrokerStockSummary, error) {
+	var rows []entity.BrokerStockSummary
+	err := db.Select(&rows, `
+		SELECT * FROM broker_stock_summaries
+		WHERE investor = $1
+		  AND source <> 'legacy_ipot'
+		  AND win_from <= $3::date
+		  AND trading_day >= $2::date
+		ORDER BY ticker, win_from, trading_day, side, rank`,
+		investor, from.Format("2006-01-02"), to.Format("2006-01-02"))
+	return rows, err
+}
+
+// FindTotalsInWindows returns the stored footer summaries overlapping [from, to]
+// for the given tickers and lane (legacy rows excluded).
+func (r *BrokerStockSummaryRepository) FindTotalsInWindows(db *sqlx.DB, tickers []string, investor string, from, to time.Time) ([]entity.BrokerStockSummaryTotals, error) {
+	if len(tickers) == 0 {
+		return nil, nil
+	}
+	var totals []entity.BrokerStockSummaryTotals
+	err := db.Select(&totals, `
+		SELECT * FROM broker_stock_summary_totals
+		WHERE ticker = ANY(string_to_array($1, ','))
+		  AND investor = $2
+		  AND source <> 'legacy_ipot'
+		  AND win_from <= $4::date
+		  AND trading_day >= $3::date
+		ORDER BY ticker, win_from, trading_day`,
+		strings.Join(tickers, ","), investor, from.Format("2006-01-02"), to.Format("2006-01-02"))
+	return totals, err
+}
+
+// FindAllTotalsInWindows is FindTotalsInWindows without a ticker filter.
+func (r *BrokerStockSummaryRepository) FindAllTotalsInWindows(db *sqlx.DB, investor string, from, to time.Time) ([]entity.BrokerStockSummaryTotals, error) {
+	var totals []entity.BrokerStockSummaryTotals
+	err := db.Select(&totals, `
+		SELECT * FROM broker_stock_summary_totals
+		WHERE investor = $1
+		  AND source <> 'legacy_ipot'
+		  AND win_from <= $3::date
+		  AND trading_day >= $2::date
+		ORDER BY ticker, win_from, trading_day`,
+		investor, from.Format("2006-01-02"), to.Format("2006-01-02"))
+	return totals, err
+}
+
+// FindLatestWindowBefore returns the most recent stored window ending before
+// `before` for one ticker and lane. It is the publish-lag fallback's stored-only
+// probe: an empty day falls back to what is already stored, never to an upstream
+// fetch that would spend quota rediscovering it.
+func (r *BrokerStockSummaryRepository) FindLatestWindowBefore(db *sqlx.DB, ticker, investor string, before time.Time) (*entity.BrokerStockSummaryTotals, error) {
+	var totals entity.BrokerStockSummaryTotals
+	err := db.Get(&totals, `
+		SELECT * FROM broker_stock_summary_totals
+		WHERE ticker = $1 AND investor = $2 AND source <> 'legacy_ipot'
+		  AND trading_day < $3::date
+		ORDER BY trading_day DESC, win_from DESC
+		LIMIT 1`,
+		ticker, investor, before.Format("2006-01-02"))
+	if err != nil {
+		return nil, err
+	}
+	return &totals, nil
+}
+
+// FindStoredWindow returns one exact stored window's footer summary plus rows.
+// It is the zero-unit path of get_stock_broker_summary: an exact one-day window
+// answers without touching the source.
+func (r *BrokerStockSummaryRepository) FindStoredWindow(db *sqlx.DB, ticker, investor string, winFrom, day time.Time) (*entity.BrokerStockSummaryTotals, []entity.BrokerStockSummary, error) {
+	var totals entity.BrokerStockSummaryTotals
+	err := db.Get(&totals, `
+		SELECT * FROM broker_stock_summary_totals
+		WHERE ticker = $1 AND investor = $2 AND win_from = $3::date AND trading_day = $4::date
+		  AND source <> 'legacy_ipot'`,
+		ticker, investor, winFrom.Format("2006-01-02"), day.Format("2006-01-02"))
+	if err != nil {
+		return nil, nil, err
+	}
+	var rows []entity.BrokerStockSummary
+	if err := db.Select(&rows, `
+		SELECT * FROM broker_stock_summaries
+		WHERE ticker = $1 AND investor = $2 AND win_from = $3::date AND trading_day = $4::date
+		ORDER BY side, rank`,
+		ticker, investor, winFrom.Format("2006-01-02"), day.Format("2006-01-02")); err != nil {
+		return nil, nil, err
+	}
+	return &totals, rows, nil
+}
+
+// SumRowsInSpans sums one ticker's per-broker value and lot over the given
+// disjoint windows in SQL. Composition never reads the same day twice: the
+// caller passes the solver's selection, which is overlap-free by construction.
+// Avg price is not returned — it is a window VWAP and must be derived from the
+// summed value and lot, never summed.
+func (r *BrokerStockSummaryRepository) SumRowsInSpans(db *sqlx.DB, ticker, investor string, spans []broker.Span) ([]BrokerAggregatedRow, error) {
+	if len(spans) == 0 {
+		return nil, nil
+	}
+	preds := make([]string, 0, len(spans))
+	args := []interface{}{ticker, investor}
+	for _, s := range spans {
+		base := len(args)
+		preds = append(preds, fmt.Sprintf("(win_from = $%d::date AND trading_day = $%d::date)", base+1, base+2))
+		args = append(args, s.From.Format("2006-01-02"), s.To.Format("2006-01-02"))
+	}
+	query := fmt.Sprintf(`
+		SELECT broker_code, side,
+			COALESCE(SUM(lot), 0)::bigint AS lot,
+			COALESCE(SUM(value), 0)::bigint AS value
+		FROM broker_stock_summaries
+		WHERE ticker = $1 AND investor = $2 AND (%s)
+		GROUP BY broker_code, side
+		ORDER BY side, value DESC, broker_code`, strings.Join(preds, " OR "))
+
+	var rows []BrokerAggregatedRow
+	err := db.Select(&rows, query, args...)
+	return rows, err
+}
+
+// MaxWindowEnd returns the newest stored window end in one lane, or sql.ErrNoRows
+// when nothing is stored. It is the live Source Status high-water read: the
+// newest window end, not the last HTTP success, is what "as fresh as" means.
+func (r *BrokerStockSummaryRepository) MaxWindowEnd(db *sqlx.DB, investor string) (*time.Time, error) {
+	var day sql.NullTime
+	err := db.Get(&day, `
+		SELECT MAX(trading_day) FROM broker_stock_summary_totals
+		WHERE investor = $1 AND source <> 'legacy_ipot'`,
+		investor)
+	if err != nil {
+		return nil, err
+	}
+	if !day.Valid {
+		return nil, sql.ErrNoRows
+	}
+	return &day.Time, nil
+}
+
 // SumForeignNetByTickers sums the stored foreign net (f_nval) of the footer
 // totals for each given ticker over the `tradingDays` most recent market-wide
 // trading days at or before `to`. It is the screener's broker-flow column and
-// Broker Confirmation's read: a pure DB read at the ticker-day grain, so it
-// covers foreign flow the per-broker rows cannot attribute.
+// Broker Confirmation's read.
 //
-// The window walks the same market-wide stored day axis the screener's other
-// windows use, so weekends and holidays never shorten it, and it is bound as a
-// calendar date (`::date`) for the reason FindByTickersUpTo documents: a
-// timestamptz parameter would let the session timezone pick the day.
-//
-// Ticket 10a keeps this read on the legacy all-investor day lane so every
-// pre-window consumer keeps its old meaning until 10b flips the read path to
-// the f lane. The f rows are written additively and are deliberately invisible
-// to this query.
-//
-// Broker coverage is a budget-capped rotation and therefore sparse by design: a
-// ticker with no stored rows in the window is simply absent from Rows, and a
-// stored footer whose f_nval is null contributes no day — so a ticker whose
-// every stored day had a null foreign net is absent too, rather than reported
-// as a zero net over no days. Nothing here infers a missing day.
+// A ticker is answered only when its stored windows *exactly cover* that
+// trading-day window (the interval-cover rule): windows outside the request are
+// unusable because aggregation cannot be decomposed, and overlapping windows
+// can never be summed. A partial cover is not partially composed — the ticker is
+// absent from Rows and renders unobserved. A stored footer whose f_nval is null
+// cannot witness a net either, so it does not participate.
 func (r *BrokerStockSummaryRepository) SumForeignNetByTickers(db *sqlx.DB, tickers []string, to time.Time, tradingDays int) (*ForeignNetWindow, error) {
 	window := &ForeignNetWindow{Rows: []TickerForeignNet{}}
 
-	// The floor and the span come from the market-wide daily_prices calendar, so
-	// the denominator counts trading days the market actually had, not days the
-	// sparsely covered broker table happens to have.
-	var bounds struct {
-		From      *time.Time `db:"from_day"`
-		TradeDays int        `db:"trade_days"`
-	}
-	err := db.Get(&bounds, `
-		WITH window_days AS (
-			SELECT MIN(trading_day) AS day FROM (
-				SELECT DISTINCT trading_day FROM daily_prices
-				WHERE trading_day <= $1::date
-				ORDER BY trading_day DESC
-				LIMIT $2
-			) recent
-		)
-		SELECT w.day AS from_day,
-			(SELECT COUNT(DISTINCT trading_day) FROM daily_prices
-			 WHERE trading_day BETWEEN w.day AND $1::date) AS trade_days
-		FROM window_days w`,
+	// The trading days come from the market-wide daily_prices calendar, so the
+	// denominator counts days the market actually had, not days the sparsely
+	// covered broker table happens to have.
+	var days []time.Time
+	err := db.Select(&days, `
+		SELECT trading_day FROM (
+			SELECT DISTINCT trading_day FROM daily_prices
+			WHERE trading_day <= $1::date
+			ORDER BY trading_day DESC
+			LIMIT $2
+		) recent
+		ORDER BY trading_day`,
 		to.Format("2006-01-02"), tradingDays)
 	if err != nil {
 		return nil, err
 	}
-	if bounds.From == nil {
+	if len(days) == 0 {
 		// No stored trading day at or before `to` — nothing to sum over, and the
 		// caller's rows are all unobserved. Not an error: an empty market is a
 		// legitimate (if empty) answer.
 		return window, nil
 	}
-	window.From = *bounds.From
-	window.TradeDays = bounds.TradeDays
+	window.From = days[0]
+	window.TradeDays = len(days)
 
 	if len(tickers) == 0 {
 		return window, nil
 	}
 
-	// The ticker list rides as a comma-joined string split in SQL: ticker codes
-	// are 2-6 uppercase letters, so the delimiter can never appear in one, and an
-	// array parameter would depend on how the active driver binds []string (the
-	// pgx stdlib driver the server connects with differs from lib/pq) — the same
-	// reason FindByTickersUpTo does it this way.
-	err = db.Select(&window.Rows, `
-		SELECT t.ticker,
-			COALESCE(SUM(t.f_nval), 0)::bigint AS foreign_net,
-			COUNT(t.f_nval)::int AS days
-		FROM broker_stock_summary_totals t
-		WHERE t.ticker = ANY(string_to_array($1, ','))
-			AND t.trading_day BETWEEN $2::date AND $3::date
-			AND t.win_from = t.trading_day
-			AND t.investor = 'all'
-		GROUP BY t.ticker
-		HAVING COUNT(t.f_nval) > 0
-		ORDER BY t.ticker`,
-		strings.Join(tickers, ","), window.From.Format("2006-01-02"), to.Format("2006-01-02"))
+	spans, err := r.FindWindowSpans(db, tickers, broker.InvestorForeign, window.From, to)
 	if err != nil {
 		return nil, err
 	}
+	byTicker := make(map[string][]BrokerWindowSpan, len(tickers))
+	for _, s := range spans {
+		if s.FNVal == nil {
+			continue // an unobserved net cannot witness one
+		}
+		byTicker[s.Ticker] = append(byTicker[s.Ticker], s)
+	}
+
+	for ticker, candidates := range byTicker {
+		spansOnly := make([]broker.Span, 0, len(candidates))
+		nets := make(map[string]int64, len(candidates))
+		for _, s := range candidates {
+			p := s.Span()
+			spansOnly = append(spansOnly, p)
+			nets[s.WinFrom.Format("2006-01-02")+"|"+s.TradingDay.Format("2006-01-02")] = *s.FNVal
+		}
+		selected, ok := broker.ExactCover(spansOnly, window.From, to, days)
+		if !ok {
+			continue
+		}
+		var net int64
+		for _, s := range selected {
+			net += nets[s.From.Format("2006-01-02")+"|"+s.To.Format("2006-01-02")]
+		}
+		window.Rows = append(window.Rows, TickerForeignNet{Ticker: ticker, ForeignNet: net, Days: len(days)})
+	}
+	sort.Slice(window.Rows, func(i, j int) bool { return window.Rows[i].Ticker < window.Rows[j].Ticker })
 	return window, nil
 }
 

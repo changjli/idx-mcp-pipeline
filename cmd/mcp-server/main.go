@@ -321,7 +321,7 @@ func main() {
 	brokerUC := usecase.NewBrokerUseCase(db, log, validate, brokerRepo, dailyPriceRepo)
 	dailyPriceUC := usecase.NewDailyPriceUseCase(db, log, validate, dailyPriceRepo)
 	newsUC := usecase.NewNewsUseCase(db, log, validate, newsRepo, newsTickerRepo)
-	pipelineUC := usecase.NewPipelineUseCase(db, log, validate, sourceStatusRepo, alertRepo)
+	pipelineUC := usecase.NewPipelineUseCase(db, log, validate, sourceStatusRepo, alertRepo, brokerStockSummaryRepo, dailyPriceRepo)
 	// get_financials (issue 07): temporary live-fetch route over the shared
 	// IPOT client — nothing persisted (persisted pipeline is issue 07b).
 	financialsUC := usecase.NewFinancialsUseCase(db, log, ipotClient)
@@ -353,7 +353,8 @@ func main() {
 	// the hard filters are SQL over daily_prices + suspensions, and indicators
 	// and the ticket-06 foreign-net column are read for the survivors only.
 	// Nothing persisted.
-	screenStocksUC := usecase.NewScreenStocksUseCase(db, log, dailyPriceRepo, brokerStockSummaryRepo)
+	screenStocksUC := usecase.NewScreenStocksUseCase(db, log, dailyPriceRepo, brokerStockSummaryRepo,
+		usecase.WithScreenFlowSource(indexAlphaPool, indexAlphaPool, brokerStockSummaryRepo))
 
 	// Measurement Harness (ticket 08, ADR-0017): the same facade cmd/measure
 	// builds, so the MCP measurement tools and the CLI grade identically. r2Store

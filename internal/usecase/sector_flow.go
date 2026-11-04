@@ -57,11 +57,12 @@ type SectorFlowReader interface {
 	GetSectorFlow(ctx context.Context, req SectorFlowRequest) (*SectorFlowResponse, error)
 }
 
-// SectorFlowUseCase aggregates stored per-stock broker rows to sector level by
+// SectorFlowUseCase aggregates stored foreign broker rows to sector level by
 // joining them to the seeded ticker taxonomy. Pure DB read — no upstream call,
-// no new ingestion: the population is the budget-capped sweep rotation plus
-// on-demand fetches, which the coverage fields declare. Gross buy/sell come from
-// the full stored broker set; foreign net comes from each ticker-day's totals.
+// no new ingestion: the population is the partition the writers have built,
+// which the coverage fields declare. Gross buy/sell are foreign gross over the
+// stored f rows; foreign net comes from each selected window's totals. Legacy
+// top-10 rows are never read, and overlapping windows are never summed.
 type SectorFlowUseCase struct {
 	DB             *sqlx.DB
 	Log            *logrus.Logger
@@ -124,8 +125,8 @@ type SectorFlowByTicker struct {
 }
 
 // SectorFlowTickerRow is one ticker's flow inside a sector (shape B). Buy and
-// Sell are gross values over every stored broker; ForeignNet is the stored
-// ticker-day figure and null when no day in the window observed it.
+// Sell are foreign gross values over every stored broker; ForeignNet is the
+// stored window figure and null when no selected window observed it.
 type SectorFlowTickerRow struct {
 	Ticker         string                `json:"ticker"`
 	Buy            int64                 `json:"buy"`
@@ -137,15 +138,15 @@ type SectorFlowTickerRow struct {
 	TopBrokers     []SectorFlowBrokerRow `json:"top_brokers"`
 }
 
-// SectorFlowRow is one sector's flow over the window. Buy/Sell are gross values
-// over every stored broker; with the full set Σbuy == Σsell per ticker-day, so
-// there is deliberately no aggregate Net (it would be structurally zero). Net
-// is attributable only per broker in TopBrokers. ForeignNet is Σ per-ticker
-// f_nval for the sector, null when no f_nval was observed in scope; ForeignNetDays
-// counts the ticker-days it rests on. Coverage declares how thin the population
-// is: TickersCovered counts distinct tickers with stored rows in the sector,
-// DaysCovered the distinct days they cover. TopTickers is populated only for
-// breakdown=ticker.
+// SectorFlowRow is one sector's foreign flow over the window. Buy/Sell are
+// foreign gross values over every stored broker; the f lane's full broker set
+// makes the sector-level sign structurally symmetric only per day, so there is
+// deliberately no aggregate Net — net is attributable only per broker in
+// TopBrokers. ForeignNet is Σ the selected windows' f_nval for the sector, null
+// when none was observed; ForeignNetDays counts the trading days it rests on.
+// Coverage declares how thin the population is: TickersCovered counts distinct
+// tickers with selected windows in the sector, DaysCovered the distinct days
+// they cover. TopTickers is populated only for breakdown=ticker.
 type SectorFlowRow struct {
 	Sector         string                `json:"sector"`
 	Buy            int64                 `json:"buy"`
@@ -162,10 +163,16 @@ type SectorFlowRow struct {
 // SectorFlowResponse is the structured MCP tool result. Response-level totals
 // and coverage describe the returned rows only — a sector filter narrows them
 // to that sector. Rows are ordered foreign_net desc (unobserved last), then
-// gross buy desc, then label asc.
+// foreign gross buy desc, then label asc.
+//
+// Every monetary figure is foreign-executed flow: the partition stores the
+// foreign lane, so buy/sell are foreign gross and per-broker net is the broker's
+// foreign net. Lane states this.
 type SectorFlowResponse struct {
 	From              string          `json:"from"`
 	To                string          `json:"to"`
+	Grain             string          `json:"grain"` // "range"
+	Lane              string          `json:"lane"`  // "foreign"
 	GroupBy           string          `json:"group_by"`
 	Breakdown         string          `json:"breakdown,omitempty"`
 	Sector            string          `json:"sector,omitempty"`
@@ -183,19 +190,22 @@ type SectorFlowResponse struct {
 // breakdown project without a second pass over the rows. Leaf nodes carry only
 // buy/sell + their day set; the foreign net and its observed-day count land on
 // sector and ticker nodes (the footer totals' grain).
+//
+// Day sets hold market-calendar indices: a stored window contributes every day
+// it spans, not just its end date.
 type flowNode struct {
 	buy, sell       int64
 	foreignNet      int64
 	foreignNetDays  int
 	foreignObserved bool
-	days            map[string]struct{}
+	days            map[int]struct{}
 	brokers         map[string]*flowNode
 	tickers         map[string]*flowNode
 }
 
 func newFlowNode() *flowNode {
 	return &flowNode{
-		days:    make(map[string]struct{}),
+		days:    make(map[int]struct{}),
 		brokers: make(map[string]*flowNode),
 		tickers: make(map[string]*flowNode),
 	}
@@ -211,14 +221,17 @@ func getOrCreate(m map[string]*flowNode, key string) *flowNode {
 	return n
 }
 
-// addFlow books one row's value into a node: side total + the day it traded.
-func (n *flowNode) addFlow(day string, val int64, sell bool) {
+// addFlow books one row's value into a node: side total + every trading day the
+// row's window spans.
+func (n *flowNode) addFlow(days []int, val int64, sell bool) {
 	if sell {
 		n.sell += val
 	} else {
 		n.buy += val
 	}
-	n.days[day] = struct{}{}
+	for _, d := range days {
+		n.days[d] = struct{}{}
+	}
 }
 
 // net is the node's attributable net flow: buy − sell. It is meaningful for a
@@ -258,11 +271,19 @@ func (uc *SectorFlowUseCase) GetSectorFlow(ctx context.Context, req SectorFlowRe
 		return nil, err
 	}
 
-	rows, err := uc.BrokerRepo.FindByDateRangeAll(uc.DB, from, to)
+	days, err := brokerMarketDays(uc.DB, uc.DailyPriceRepo, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("resolve trading days for sector flow: %w", err)
+	}
+	spans, err := uc.BrokerRepo.FindAllWindowSpans(uc.DB, brokerReadLane, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("read broker summary windows for sector flow: %w", err)
+	}
+	rows, err := uc.BrokerRepo.FindAllRowsInWindows(uc.DB, brokerReadLane, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("read broker summary rows for sector flow: %w", err)
 	}
-	totals, err := uc.BrokerRepo.FindTotalsByDateRangeAll(uc.DB, from, to)
+	totals, err := uc.BrokerRepo.FindAllTotalsInWindows(uc.DB, brokerReadLane, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("read broker summary totals for sector flow: %w", err)
 	}
@@ -271,38 +292,51 @@ func (uc *SectorFlowUseCase) GetSectorFlow(ctx context.Context, req SectorFlowRe
 		return nil, err
 	}
 
+	// Only a disjoint selection is summed: an overlapping answer cache would
+	// count the same day twice, so the solver's selection is the read's boundary.
+	cover := buildWindowCover(spans, from, to, days, false)
+	rows = filterRowsToCover(rows, cover)
+	totals = filterTotalsToCover(totals, cover)
+
 	acc := make(map[string]*flowNode)
 	for _, r := range rows {
+		idxs := cover.dayIndices(r.Ticker, r.WinFrom, r.TradingDay)
+		if len(idxs) == 0 {
+			continue
+		}
 		s := getOrCreate(acc, sectorLabelFor(labels, r.Ticker, groupBy))
-		day := r.TradingDay.Format("2006-01-02")
 		val := deref(r.Value)
 		sell := r.Side == "sell"
 
-		s.addFlow(day, val, sell)
+		s.addFlow(idxs, val, sell)
 		// Both directions of the same row: sector→broker→ticker feeds shape A,
 		// sector→ticker→broker feeds shape B. Neither breakdown pays for the
 		// other, and the default projection ignores both.
 		b := getOrCreate(s.brokers, r.BrokerCode)
 		tk := getOrCreate(s.tickers, r.Ticker)
-		b.addFlow(day, val, sell)
-		tk.addFlow(day, val, sell)
-		getOrCreate(b.tickers, r.Ticker).addFlow(day, val, sell)
-		getOrCreate(tk.brokers, r.BrokerCode).addFlow(day, val, sell)
+		b.addFlow(idxs, val, sell)
+		tk.addFlow(idxs, val, sell)
+		getOrCreate(b.tickers, r.Ticker).addFlow(idxs, val, sell)
+		getOrCreate(tk.brokers, r.BrokerCode).addFlow(idxs, val, sell)
 	}
-	// The footer totals carry the foreign net — a ticker-day fact with no broker
+	// The footer totals carry the foreign net — a window fact with no broker
 	// grain — so it lands on the sector and ticker nodes only. A nil f_nval is
 	// unobserved, not zero: it contributes no amount and no observed day.
 	for _, t := range totals {
+		idxs := cover.dayIndices(t.Ticker, t.WinFrom, t.TradingDay)
+		if len(idxs) == 0 {
+			continue
+		}
 		s := getOrCreate(acc, sectorLabelFor(labels, t.Ticker, groupBy))
 		tk := getOrCreate(s.tickers, t.Ticker)
 		if t.FNVal == nil {
 			continue
 		}
 		s.foreignNet += *t.FNVal
-		s.foreignNetDays++
+		s.foreignNetDays += len(idxs)
 		s.foreignObserved = true
 		tk.foreignNet += *t.FNVal
-		tk.foreignNetDays++
+		tk.foreignNetDays += len(idxs)
 		tk.foreignObserved = true
 	}
 
@@ -314,13 +348,15 @@ func (uc *SectorFlowUseCase) GetSectorFlow(ctx context.Context, req SectorFlowRe
 	resp := &SectorFlowResponse{
 		From:              from.Format("2006-01-02"),
 		To:                to.Format("2006-01-02"),
+		Grain:             "range",
+		Lane:              laneName(brokerReadLane),
 		GroupBy:           groupBy,
 		Breakdown:         breakdown,
 		Sector:            filter,
 		TradeDaysInWindow: tradeDays,
 		Rows:              []SectorFlowRow{},
 	}
-	covered := make(map[string]struct{})
+	covered := make(map[int]struct{})
 	tickersCovered := make(map[string]struct{})
 	var foreignNet int64
 	var foreignNetDays int
