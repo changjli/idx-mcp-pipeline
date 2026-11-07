@@ -174,7 +174,7 @@ var Graph = NewRegistry(
 			stage := pipeline.NewIngestStage(TypeStockSummary, nil, enq, 3)
 			return stage.EnqueueWithOpts(TaskKey(TypeStockSummary, dateKey), StockSummaryPayload{Date: dateKey}, opts...)
 		},
-		Chain:    []string{TypeDetectAnomalies, TypeBrokerStockSummarySweep},
+		Chain:    []string{TypeDetectAnomalies, TypeBrokerSummaryArchive},
 		SelfHeal: true,
 	},
 	&Node{
@@ -279,7 +279,7 @@ var Graph = NewRegistry(
 			stage := pipeline.NewIngestStage(TypeDetectAnomalies, nil, enq, 3)
 			return stage.Enqueue(TaskKey(TypeDetectAnomalies, dateKey), DetectAnomaliesPayload{Date: dateKey})
 		},
-		Chain: []string{TypeFilterDisclosures},
+		Chain: []string{TypeFilterDisclosures, TypeBrokerSummaryRefresh},
 	},
 	&Node{
 		Name: "filter",
@@ -336,19 +336,33 @@ var Graph = NewRegistry(
 		},
 	},
 	&Node{
-		Name: "broker-summary-sweep",
-		Type: TypeBrokerStockSummarySweep,
-		Key:  dateKey(TypeBrokerStockSummarySweep),
-		Day:  dateDay(TypeBrokerStockSummarySweep),
+		Name: "broker-summary-refresh",
+		Type: TypeBrokerSummaryRefresh,
+		Key:  dateKey(TypeBrokerSummaryRefresh),
+		Day:  dateDay(TypeBrokerSummaryRefresh),
 		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
 			dateKey := day.Format("2006-01-02")
-			stage := pipeline.NewIngestStage(TypeBrokerStockSummarySweep, nil, enq, 3)
-			return stage.EnqueueWithOpts(TaskKey(TypeBrokerStockSummarySweep, dateKey), BrokerSummarySweepPayload{Date: dateKey}, opts...)
+			stage := pipeline.NewIngestStage(TypeBrokerSummaryRefresh, nil, enq, 3)
+			return stage.EnqueueWithOpts(TaskKey(TypeBrokerSummaryRefresh, dateKey), BrokerSummaryRefreshPayload{Date: dateKey}, opts...)
 		},
-		// Chained after stock-summary (an edge, not a wave member) so the anchor
-		// day's daily_prices rows exist before the ADTV universe is resolved.
-		// Date-keyed and self-heal eligible: an archived sweep is recovered by
-		// the same registry-driven loop as every other ingestion node.
+		// Chained after detect:anomalies, not stock-summary: the refresher reads
+		// the day's anomaly rows, so it must run after they exist. Date-keyed and
+		// self-heal eligible like every other ingestion node.
+		SelfHeal: true,
+	},
+	&Node{
+		Name: "broker-summary-archive",
+		Type: TypeBrokerSummaryArchive,
+		Key:  dateKey(TypeBrokerSummaryArchive),
+		Day:  dateDay(TypeBrokerSummaryArchive),
+		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+			dateKey := day.Format("2006-01-02")
+			stage := pipeline.NewIngestStage(TypeBrokerSummaryArchive, nil, enq, 3)
+			return stage.EnqueueWithOpts(TaskKey(TypeBrokerSummaryArchive, dateKey), BrokerSummaryArchivePayload{Date: dateKey}, opts...)
+		},
+		// Chained after stock-summary (an edge, not a wave member) so the prices
+		// that define a closed month's trading days exist. Runs daily and no-ops
+		// when the newest closed months already have chunks; catch-up is bounded.
 		SelfHeal: true,
 	},
 	&Node{

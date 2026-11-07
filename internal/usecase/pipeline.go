@@ -18,10 +18,28 @@ import (
 // imports usecase; the value must stay in sync with tasks.TypeBrokerStockSummary.
 const BrokerStockSummarySource = "idx:broker_stock_summary"
 
-// maxFreshTradingDays is how many trading days behind the latest market session
-// the broker source may be before it is stale. Age 0 is today's window; age 1 is
-// yesterday's, which is normal before the day's writer runs.
-const maxFreshTradingDays = 1
+// brokerFreshnessBar returns the last stored trading day of the previous
+// calendar month (WIB). The monthly archiver legitimately writes only month
+// grain, so "fresh" means the newest stored window reaches this bar; stale
+// means a closed month is missing.
+func brokerFreshnessBar(db *sqlx.DB, dailyPriceRepo *repository.DailyPriceRepository, now time.Time) time.Time {
+	loc, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		loc = time.UTC
+	}
+	local := now.In(loc)
+	firstOfMonth := time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, loc)
+	prevMonthStart := firstOfMonth.AddDate(0, -1, 0)
+	calendarEnd := firstOfMonth.AddDate(0, 0, -1)
+	if dailyPriceRepo == nil {
+		return calendarEnd
+	}
+	days, err := dailyPriceRepo.TradingDaysInRangeAll(db, prevMonthStart, calendarEnd)
+	if err != nil || len(days) == 0 {
+		return calendarEnd
+	}
+	return days[len(days)-1]
+}
 
 type PipelineUseCase struct {
 	DB               *sqlx.DB
@@ -103,6 +121,8 @@ func (uc *PipelineUseCase) GetPipelineStatus(ctx context.Context) (*PipelineStat
 			latest, latestOK = *l, true
 		}
 	}
+	now := time.Now()
+	brokerBar := brokerFreshnessBar(uc.DB, uc.DailyPriceRepo, now)
 	for _, s := range statuses {
 		var last *string
 		if s.LastSuccessAt != nil {
@@ -136,9 +156,9 @@ func (uc *PipelineUseCase) GetPipelineStatus(ctx context.Context) (*PipelineStat
 			staleDays = &n
 		}
 
-		stale := s.IsStale(time.Now())
-		if s.Source == BrokerStockSummarySource && staleDays != nil {
-			stale = *staleDays > maxFreshTradingDays
+		stale := s.IsStale(now)
+		if s.Source == BrokerStockSummarySource {
+			stale = hwm == nil || hwm.Before(brokerBar)
 		}
 		resp.Sources = append(resp.Sources, SourceHealth{
 			Source:           s.Source,

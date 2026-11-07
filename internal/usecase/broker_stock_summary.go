@@ -37,7 +37,7 @@ type BrokerSummaryBatchFetcher interface {
 	FetchBatchRange(ctx context.Context, tickers []string, from, to time.Time, investor string) (*broker.Batch, error)
 }
 
-// BrokerSweepBudget is the quota view the anchor-day sweep plans against:
+// BrokerSweepBudget is the quota view the daily writers plan against:
 // available monthly units (reserve already deducted), the largest batch a
 // single usable key can afford right now, the next rolling reset, and a free
 // re-seed for keys that have never been measured.
@@ -60,19 +60,38 @@ type BrokerStockSummaryUseCase struct {
 	Budget         BrokerSweepBudget
 	Repo           *repository.BrokerStockSummaryRepository
 	DailyPriceRepo *repository.DailyPriceRepository
+	AnomalyRepo    *repository.AnomalyRepository
+	Usage          FetchUsageCounter
+	// Now is the clock the daily budget keys on. Tests inject a fixed clock;
+	// production uses time.Now.
+	Now func() time.Time
 }
 
 // BrokerStockSummaryOption configures optional dependencies. The on-demand
-// paths need only Fetcher; the daily sweep also needs a batch fetcher and a
-// quota budget.
+// paths need only Fetcher; the writers also need a batch fetcher, a quota
+// budget, and the daily usage counter.
 type BrokerStockSummaryOption func(*BrokerStockSummaryUseCase)
 
 // WithBatchSource installs the batch fetcher and quota budget used by the
-// anchor-day sweep.
+// writers.
 func WithBatchSource(f BrokerSummaryBatchFetcher, b BrokerSweepBudget) BrokerStockSummaryOption {
 	return func(uc *BrokerStockSummaryUseCase) {
 		uc.BatchFetcher = f
 		uc.Budget = b
+	}
+}
+
+// WithAnomalySource installs the anomaly read behind the daily refresher.
+func WithAnomalySource(repo *repository.AnomalyRepository) BrokerStockSummaryOption {
+	return func(uc *BrokerStockSummaryUseCase) {
+		uc.AnomalyRepo = repo
+	}
+}
+
+// WithFetchUsage overrides the daily fetch-budget counter (tests).
+func WithFetchUsage(repo FetchUsageCounter) BrokerStockSummaryOption {
+	return func(uc *BrokerStockSummaryUseCase) {
+		uc.Usage = repo
 	}
 }
 
@@ -92,6 +111,8 @@ func NewBrokerStockSummaryUseCase(
 		Fetcher:        fetcher,
 		Repo:           repo,
 		DailyPriceRepo: dailyPriceRepo,
+		Usage:          repository.NewFetchUsageRepository(log),
+		Now:            time.Now,
 	}
 	for _, opt := range opts {
 		opt(uc)
@@ -460,8 +481,8 @@ func (uc *BrokerStockSummaryUseCase) GetStockBrokerSummaryRange(ctx context.Cont
 	return resp, nil
 }
 
-// persist writes one fetched day for the sweep, honoring the result's lane. The
-// read paths call persistBrokerWindow directly with an explicit lane.
+// persist writes one fetched day for the daily refresher, honoring the result's
+// lane. The read paths call persistBrokerWindow directly with an explicit lane.
 func (uc *BrokerStockSummaryUseCase) persist(ticker string, day time.Time, res *broker.Result, source string) error {
 	investor := res.Investor
 	if investor == "" {

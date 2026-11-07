@@ -26,8 +26,7 @@ type SectorIndexPayload struct {
 func NewSectorIndexHandler(log *logrus.Logger, uc *usecase.SectorIndexUseCase) asynq.HandlerFunc {
 	return func(ctx context.Context, t *asynq.Task) error {
 		// The 6-month scheduler fires this task with a nil payload; the run
-		// date defaults to today server-side, same convention as pipeline:daily
-		// and the weekly sweep.
+		// date defaults to today server-side, same convention as pipeline:daily.
 		runDate := time.Now()
 		if len(t.Payload()) > 0 {
 			p, err := pipeline.DecodeTask[SectorIndexPayload](t)

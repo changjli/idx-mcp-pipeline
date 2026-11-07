@@ -210,26 +210,11 @@ func buildMultiRowUpsert(rows []entity.BrokerStockSummary) (string, []interface{
 	return query, args, nil
 }
 
-// HasStoredDay reports whether any broker_stock_summaries rows exist for a
-// ticker+day. Cheap EXISTS check — the sweep's skip-if-stored guard.
-// Idempotency note: rows present means the day is already covered, so the
-// sweep skips the ticker entirely; a race between the sweep and an on-demand
-// refetch is harmless because UpsertDay replaces wholesale.
-func (r *BrokerStockSummaryRepository) HasStoredDay(db *sqlx.DB, ticker string, day time.Time) (bool, error) {
-	var exists bool
-	err := db.Get(&exists,
-		"SELECT EXISTS(SELECT 1 FROM broker_stock_summaries WHERE ticker = $1 AND trading_day = $2 AND win_from = $2 AND investor = $3)",
-		ticker, day, broker.InvestorAll,
-	)
-	return exists, err
-}
-
-// StoredTickersForDay reports which of the given tickers already have stored
-// rows for a trading day, in one query. It is the batch form of HasStoredDay:
-// the sweep resolves the whole candidate list's coverage before planning, so a
-// re-run of the same anchor day (manual, self-heal, or a second worker) never
-// pays for a ticker-day twice.
-func (r *BrokerStockSummaryRepository) StoredTickersForDay(db *sqlx.DB, day time.Time, tickers []string) (map[string]bool, error) {
+// StoredForeignDayTickers reports which of the given tickers already have a
+// stored one-day foreign window for a trading day, in one query. It is the
+// daily refresher's skip-if-stored guard: a re-run, or a screen/deep-dive that
+// already fetched the day, never pays for the same ticker-day twice.
+func (r *BrokerStockSummaryRepository) StoredForeignDayTickers(db *sqlx.DB, day time.Time, tickers []string) (map[string]bool, error) {
 	out := make(map[string]bool, len(tickers))
 	if len(tickers) == 0 {
 		return out, nil
@@ -242,44 +227,12 @@ func (r *BrokerStockSummaryRepository) StoredTickersForDay(db *sqlx.DB, day time
 		  AND win_from = $1::date
 		  AND investor = $3
 		  AND ticker = ANY(string_to_array($2, ','))`,
-		day.Format("2006-01-02"), strings.Join(tickers, ","), broker.InvestorAll)
+		day.Format("2006-01-02"), strings.Join(tickers, ","), broker.InvestorForeign)
 	if err != nil {
 		return nil, err
 	}
 	for _, t := range stored {
 		out[t] = true
-	}
-	return out, nil
-}
-
-// LastObservedByTicker returns, for each given ticker, the most recent trading
-// day with a stored tally at or before upTo. It is the sweep's rotation key:
-// tickers observed longest ago sort first, so a budget-limited sweep cycles
-// through the universe instead of re-fetching the same liquid names every day.
-// A ticker with no stored day is absent from the map (never observed).
-func (r *BrokerStockSummaryRepository) LastObservedByTicker(db *sqlx.DB, tickers []string, upTo time.Time) (map[string]time.Time, error) {
-	out := make(map[string]time.Time, len(tickers))
-	if len(tickers) == 0 {
-		return out, nil
-	}
-	var rows []struct {
-		Ticker string    `db:"ticker"`
-		Last   time.Time `db:"last_day"`
-	}
-	err := db.Select(&rows, `
-		SELECT ticker, MAX(trading_day) AS last_day
-		FROM broker_stock_summary_totals
-		WHERE trading_day <= $1::date
-		  AND win_from = trading_day
-		  AND investor = $3
-		  AND ticker = ANY(string_to_array($2, ','))
-		GROUP BY ticker`,
-		upTo.Format("2006-01-02"), strings.Join(tickers, ","), broker.InvestorAll)
-	if err != nil {
-		return nil, err
-	}
-	for _, r := range rows {
-		out[r.Ticker] = r.Last
 	}
 	return out, nil
 }
@@ -679,31 +632,80 @@ func (r *BrokerStockSummaryRepository) SumForeignNetByTickers(db *sqlx.DB, ticke
 	return window, nil
 }
 
-// DeleteOlderThan deletes broker_stock_summaries rows whose window end is
-// older than the retention window. Returns rows deleted. Ticket 10c replaces
-// this blanket delete with day-row expiry that exempts archive chunks and the
-// all lane; 10a only writes one-day rows, so the existing behaviour is safe
-// until then.
-func (r *BrokerStockSummaryRepository) DeleteOlderThan(db *sqlx.DB, days int) (int64, error) {
-	res, err := db.Exec(
-		"DELETE FROM broker_stock_summaries WHERE trading_day < NOW() - make_interval(days => $1)",
-		days,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
+// BrokerWindowKey identifies one stored window for retention decisions. The
+// totals row is the window's key; deleting a window removes both the rows and
+// the totals in one transaction.
+type BrokerWindowKey struct {
+	Ticker     string    `db:"ticker"`
+	WinFrom    time.Time `db:"win_from"`
+	TradingDay time.Time `db:"trading_day"`
+	Investor   string    `db:"investor"`
+	Source     string    `db:"source"`
 }
 
-// DeleteTotalsOlderThan deletes broker_stock_summary_totals rows whose
-// trading_day is older than the retention window. Returns rows deleted.
-func (r *BrokerStockSummaryRepository) DeleteTotalsOlderThan(db *sqlx.DB, days int) (int64, error) {
-	res, err := db.Exec(
-		"DELETE FROM broker_stock_summary_totals WHERE trading_day < NOW() - make_interval(days => $1)",
-		days,
-	)
+// FindExpiredWindowKeys returns every stored window whose end is before the
+// cutoff. Cleanup makes the per-window keep/delete decision in Go because the
+// Tier-2 retention guard needs the market calendar and the ADTV predicate; the
+// query only narrows the candidate set.
+func (r *BrokerStockSummaryRepository) FindExpiredWindowKeys(db *sqlx.DB, cutoff time.Time) ([]BrokerWindowKey, error) {
+	var keys []BrokerWindowKey
+	err := db.Select(&keys, `
+		SELECT ticker, win_from, trading_day, investor, source
+		FROM broker_stock_summary_totals
+		WHERE trading_day < $1::date
+		ORDER BY ticker, trading_day, win_from`,
+		cutoff.Format("2006-01-02"))
+	return keys, err
+}
+
+// DeleteWindow deletes one window's rows and totals in one transaction. The
+// exact key makes the delete idempotent: a second run finds nothing and
+// reports zero. Returns rows and totals deleted.
+func (r *BrokerStockSummaryRepository) DeleteWindow(db *sqlx.DB, key BrokerWindowKey) (rows int64, totals int64, err error) {
+	tx, err := db.Beginx()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return res.RowsAffected()
+	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+
+	res, err := tx.Exec(`
+		DELETE FROM broker_stock_summaries
+		WHERE ticker = $1 AND trading_day = $2 AND win_from = $3 AND investor = $4`,
+		key.Ticker, key.TradingDay, key.WinFrom, key.Investor)
+	if err != nil {
+		return 0, 0, err
+	}
+	rows, _ = res.RowsAffected()
+
+	res, err = tx.Exec(`
+		DELETE FROM broker_stock_summary_totals
+		WHERE ticker = $1 AND trading_day = $2 AND win_from = $3 AND investor = $4`,
+		key.Ticker, key.TradingDay, key.WinFrom, key.Investor)
+	if err != nil {
+		return 0, 0, err
+	}
+	totals, _ = res.RowsAffected()
+
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return rows, totals, nil
+}
+
+// HasPartitionChunk reports whether an archive or backfill chunk covers the
+// whole [monthFirst, monthLast] range. It is the cleanup ordering guard: a
+// Tier-2 month's day rows cannot be deleted before a chunk replaces them.
+func (r *BrokerStockSummaryRepository) HasPartitionChunk(db *sqlx.DB, ticker string, monthFirst, monthLast time.Time) (bool, error) {
+	var exists bool
+	err := db.Get(&exists, `
+		SELECT EXISTS(
+			SELECT 1 FROM broker_stock_summary_totals
+			WHERE ticker = $1
+			  AND investor = $4
+			  AND source IN ('archive', 'backfill')
+			  AND win_from <= $2::date
+			  AND trading_day >= $3::date
+		)`,
+		ticker, monthFirst.Format("2006-01-02"), monthLast.Format("2006-01-02"), broker.InvestorForeign)
+	return exists, err
 }

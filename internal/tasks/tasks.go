@@ -17,15 +17,18 @@ const (
 	// TypeBrokerStockSummaryRange is the on-demand range backfill task (issue
 	// 12): one ticker over a date range, enqueued by the MCP backfill tool.
 	TypeBrokerStockSummaryRange = "idx:broker_stock_summary_range"
-	// TypeBrokerStockSummarySweep is the daily anchor-day sweep: it selects the
-	// ADTV-eligible universe from stored Daily Price rows, skips ticker-days
-	// already stored, and fetches a budget-capped slice through Index Alpha in
-	// ≤50-ticker batches. It is chained after stock-summary and is the sole
-	// broker ingestion path.
-	TypeBrokerStockSummarySweep = "idx:broker_stock_summary_sweep"
-	TypeFilterDisclosures       = "filter:disclosures"
-	TypeExtractDisclosure       = "extract:disclosure"
-	TypeCleanup                 = "cleanup"
+	// TypeBrokerSummaryRefresh is the daily anomaly refresher: it fetches the
+	// anchor day's foreign window for the day's anomaly hits, capped at 30
+	// units/day. It is chained after detect:anomalies.
+	TypeBrokerSummaryRefresh = "idx:broker_stock_summary_refresh"
+	// TypeBrokerSummaryArchive is the monthly archiver: it writes calendar-month
+	// foreign chunks for the ADTV universe, deriving from complete day rows or
+	// fetching the month once. It is chained after stock-summary and no-ops when
+	// the newest closed months are already archived.
+	TypeBrokerSummaryArchive = "idx:broker_stock_summary_archive"
+	TypeFilterDisclosures    = "filter:disclosures"
+	TypeExtractDisclosure    = "extract:disclosure"
+	TypeCleanup              = "cleanup"
 	// TypeCorporateActions is the daily corporate-actions calendar fetch (issue
 	// 09): one request to GetIssuedHistory over a rolling window, persisted to
 	// corporate_actions. The MCP tool is a pure DB read over the stored rows.

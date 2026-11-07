@@ -11,8 +11,14 @@ is a one-day window.
 
 **Archive chunk** — a stored window that is month-aligned and kept indefinitely.
 
-**Partition** — the set of day rows and archive chunks, kept indefinitely and aligned to months. Its purpose is to
-make aligned queries cost nothing.
+**Partition** — the set of day rows and archive chunks, aligned to months. Day rows are short-lived observations;
+archive chunks are kept indefinitely. Its purpose is to make aligned queries cost nothing.
+
+**Daily refresh** — the unattended observation of a trading day's anomaly hits as day rows. It is capped per day and
+is distinct from a screen's own enrichment.
+
+**Screener enrichment** — the trailing-window fetch a screen performs for its top rows before ranking them. It is
+bounded per day and never covers the whole survivor set.
 
 **Answer cache** — a stored window kept so an exact repeat of the same query costs nothing. A cache is not excluded
 from a sum; what is excluded is any interval that overlaps another interval in the same sum.

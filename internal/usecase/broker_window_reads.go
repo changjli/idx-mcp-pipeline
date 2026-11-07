@@ -10,9 +10,9 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
-// brokerReadLane is the investor lane every tool reads. The all-investor lane is
-// written only by the sweep until ticket 10c moves it, and is never aggregated
-// with the foreign lane (the two are not summable).
+// brokerReadLane is the investor lane every tool reads. The daily refresher and
+// the monthly archiver write this lane; the all-investor lane is on-demand only
+// and is never aggregated with it (the two are not summable).
 const brokerReadLane = broker.InvestorForeign
 
 // brokerMarketDays returns the market-wide trading days in [from, to] from the

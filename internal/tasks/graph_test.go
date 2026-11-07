@@ -110,7 +110,7 @@ func TestGraphSelfHealSetExact(t *testing.T) {
 			got[node.Type] = true
 		}
 	}
-	want := map[string]bool{TypeStockSummary: true, TypeAnnouncements: true, TypeRSS: true, TypeCorporateActions: true, TypeSuspensions: true, TypeIndexSummary: true, TypeKSEIBalancepos: true, TypeBrokerStockSummarySweep: true}
+	want := map[string]bool{TypeStockSummary: true, TypeAnnouncements: true, TypeRSS: true, TypeCorporateActions: true, TypeSuspensions: true, TypeIndexSummary: true, TypeKSEIBalancepos: true, TypeBrokerSummaryRefresh: true, TypeBrokerSummaryArchive: true}
 	if len(got) != len(want) {
 		t.Fatalf("self-heal set = %v, want %v", got, want)
 	}
@@ -128,16 +128,16 @@ func TestGraphChainFiresSuccessors(t *testing.T) {
 	if err := Graph.Chain(context.Background(), enq, TypeStockSummary, day); err != nil {
 		t.Fatalf("Chain(stock_summary): %v", err)
 	}
-	if len(enq.enqueued) != 2 || enq.enqueued[0] != TypeDetectAnomalies || enq.enqueued[1] != TypeBrokerStockSummarySweep {
-		t.Errorf("Chain(stock_summary) fired %v, want [detect:anomalies broker sweep]", enq.enqueued)
+	if len(enq.enqueued) != 2 || enq.enqueued[0] != TypeDetectAnomalies || enq.enqueued[1] != TypeBrokerSummaryArchive {
+		t.Errorf("Chain(stock_summary) fired %v, want [detect:anomalies broker archive]", enq.enqueued)
 	}
 
 	enq = &graphEnqueuer{}
 	if err := Graph.Chain(context.Background(), enq, TypeDetectAnomalies, day); err != nil {
 		t.Fatalf("Chain(detect:anomalies): %v", err)
 	}
-	if len(enq.enqueued) != 1 || enq.enqueued[0] != TypeFilterDisclosures {
-		t.Errorf("Chain(detect:anomalies) fired %v, want [filter:disclosures]", enq.enqueued)
+	if len(enq.enqueued) != 2 || enq.enqueued[0] != TypeFilterDisclosures || enq.enqueued[1] != TypeBrokerSummaryRefresh {
+		t.Errorf("Chain(detect:anomalies) fired %v, want [filter:disclosures broker refresh]", enq.enqueued)
 	}
 }
 
@@ -169,5 +169,34 @@ func TestGraphNodeByName(t *testing.T) {
 	}
 	if _, err := Graph.NodeByName("nope"); err == nil {
 		t.Error("NodeByName(unknown) expected error, got nil")
+	}
+}
+
+// TestGraphBrokerWriterNodes — the two 10c writers are date-keyed, self-heal
+// eligible, and resolvable by their enqueue-daily names. The retired sweep name
+// must be gone so an operator cannot enqueue a task with no handler.
+func TestGraphBrokerWriterNodes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		typ  string
+	}{
+		{"broker-summary-refresh", TypeBrokerSummaryRefresh},
+		{"broker-summary-archive", TypeBrokerSummaryArchive},
+	} {
+		node, err := Graph.NodeByName(tc.name)
+		if err != nil {
+			t.Fatalf("NodeByName(%q): %v", tc.name, err)
+		}
+		if node.Type != tc.typ || !node.SelfHeal || node.Key == nil || node.Day == nil {
+			t.Errorf("%s node = %+v, want type %s, self-heal, date-keyed", tc.name, node, tc.typ)
+		}
+		key := node.Key("2026-11-05")
+		day, err := node.Day(key)
+		if err != nil || day.Format("2006-01-02") != "2026-11-05" {
+			t.Errorf("%s Day(%q) = %v, %v", tc.name, key, day, err)
+		}
+	}
+	if _, err := Graph.NodeByName("broker-summary-sweep"); err == nil {
+		t.Error("retired broker-summary-sweep still resolves")
 	}
 }

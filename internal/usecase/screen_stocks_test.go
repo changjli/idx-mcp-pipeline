@@ -1234,3 +1234,99 @@ func TestScreenStocks_FlowFetchPersistsAndFills(t *testing.T) {
 		t.Errorf("cached window = source %q rows %d, want window/2", totals.Source, len(rows))
 	}
 }
+
+// TestScreenStocks_EnrichesTopTenAndSharesDailyPool — the screener no longer
+// fetches the survivor set. It ranks without foreign_net, enriches the first ten
+// rows from one shared daily pool, and a second screen the same day is a pure
+// read. DB-backed because enrichment persists a window.
+func TestScreenStocks_EnrichesTopTenAndSharesDailyPool(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+	repo := repository.NewBrokerStockSummaryRepository(log)
+
+	anchor := testAnchor()
+	usageDate := usageDay(time.Now())
+	db.MustExec("DELETE FROM fetch_usage WHERE usage_day = $1::date AND feature = $2",
+		usageDate, repository.FetchFeatureScreenerFlow)
+	t.Cleanup(func() {
+		db.MustExec("DELETE FROM fetch_usage WHERE usage_day = $1::date AND feature = $2",
+			usageDate, repository.FetchFeatureScreenerFlow)
+	})
+
+	tickers := []string{"SA", "SB", "SC", "SD", "SE", "SF", "SG", "SH", "SI", "SJ",
+		"SK", "SL", "SM", "SN", "SO", "SP", "SQ", "SR", "SS", "ST"}
+	candidates := make([]repository.ScreenCandidate, 0, len(tickers))
+	prices := make(map[string][]entity.DailyPrice, len(tickers))
+	for i, ticker := range tickers {
+		// Descending value: SA is the top row, ST the last.
+		candidates = append(candidates, screenCandidate(ticker, int64(len(tickers)-i)*1_000_000_000))
+		prices[ticker] = screenSeries(ticker, 250)
+	}
+	t.Cleanup(func() {
+		for _, ticker := range tickers {
+			db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
+			db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
+			db.MustExec("DELETE FROM tickers WHERE code = $1", ticker)
+		}
+	})
+	for _, ticker := range tickers {
+		db.MustExec("INSERT INTO tickers (code, name, active) VALUES ($1, $1, true) ON CONFLICT (code) DO NOTHING", ticker)
+	}
+
+	source := &fakeScreenerSource{
+		universe:   len(tickers),
+		candidates: candidates,
+		prices:     prices,
+		latest:     &anchor,
+	}
+	flow := &fakeScreenerFlow{window: flowWindow(20)}
+	fetcher := &fakeFlowWindowFetcher{res: &broker.Result{
+		Investor: broker.InvestorForeign,
+		Buyers:   []broker.Row{{BrokerCode: "AK", Lot: 1_000, Value: 10_000_000_000, AvgPrice: 100, Rank: 1}},
+		Sellers:  []broker.Row{{BrokerCode: "XL", Lot: 500, Value: 5_000_000_000, AvgPrice: 100, Rank: 1}},
+	}}
+	uc := NewScreenStocksUseCase(db, log, source, flow,
+		WithScreenFlowSource(fetcher, fakeFlowBudget{available: 100}, repo))
+
+	res, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Filters: noFilters(), Limit: 20})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.FlowEnrichLimit != ScreenerEnrichLimit || res.FlowFetched != ScreenerEnrichLimit {
+		t.Fatalf("enrich = limit %d fetched %d, want %d/%d",
+			res.FlowEnrichLimit, res.FlowFetched, ScreenerEnrichLimit, ScreenerEnrichLimit)
+	}
+	if fetcher.calls != ScreenerEnrichLimit {
+		t.Fatalf("fetches = %d, want only the top %d", fetcher.calls, ScreenerEnrichLimit)
+	}
+	if res.FlowBudgetRemaining != 0 {
+		t.Errorf("daily pool remaining = %d, want 0 after 10 units", res.FlowBudgetRemaining)
+	}
+	for i, row := range res.Rows {
+		if i < ScreenerEnrichLimit && row.ForeignNet == nil {
+			t.Errorf("row %d (%s) not enriched", i, row.Ticker)
+		}
+		if i >= ScreenerEnrichLimit && row.ForeignNet != nil {
+			t.Errorf("row %d (%s) enriched outside the top %d", i, row.Ticker, ScreenerEnrichLimit)
+		}
+	}
+
+	// A second screen the same day spends nothing: the pool is shared per day.
+	again, err := uc.ScreenStocks(context.Background(), ScreenStocksRequest{Filters: noFilters(), Limit: 20})
+	if err != nil {
+		t.Fatalf("second screen: %v", err)
+	}
+	if again.FlowFetched != 0 || fetcher.calls != ScreenerEnrichLimit {
+		t.Errorf("second screen fetched %d (calls %d), want 0 and %d total",
+			again.FlowFetched, fetcher.calls, ScreenerEnrichLimit)
+	}
+	if again.FlowSkipped != ScreenerEnrichLimit || again.FlowBudgetRemaining != 0 {
+		t.Errorf("second screen skipped %d remaining %d, want %d/0",
+			again.FlowSkipped, again.FlowBudgetRemaining, ScreenerEnrichLimit)
+	}
+}

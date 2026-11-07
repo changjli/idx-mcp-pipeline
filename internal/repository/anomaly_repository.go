@@ -55,6 +55,39 @@ func (r *AnomalyRepository) FindByTickerAndDate(db *sqlx.DB, ticker string, trad
 	return anomalies, err
 }
 
+// AnomalyRefreshCandidate is one ticker that qualified for the daily broker
+// refresh: its strongest anomaly magnitude on the day and the day's transaction
+// value. Ordering is the refresher's selection rule, not a property of a
+// single anomaly row.
+type AnomalyRefreshCandidate struct {
+	Ticker    string  `db:"ticker"`
+	Magnitude float64 `db:"magnitude"`
+	Value     int64   `db:"value"`
+}
+
+// RefreshCandidates returns the anchor day's anomaly tickers, deduped, at or
+// above the ADTV floor, ordered exactly as the daily refresher selects them:
+// largest absolute magnitude first, then the day's transaction value
+// descending, then ticker. The detector already applies the ADTV gate; repeating
+// it here keeps the refresher honest when the config changed after detection or
+// a row was inserted out of band.
+func (r *AnomalyRepository) RefreshCandidates(db *sqlx.DB, day time.Time, minADTV int64) ([]AnomalyRefreshCandidate, error) {
+	var rows []AnomalyRefreshCandidate
+	err := db.Select(&rows, `
+		SELECT a.ticker,
+		       MAX(ABS(COALESCE(a.magnitude_pct, 0))) AS magnitude,
+		       COALESCE(p.value, 0)::bigint AS value
+		FROM anomalies a
+		JOIN daily_prices p
+		  ON p.ticker = a.ticker AND p.trading_day = a.trading_day
+		WHERE a.trading_day = $1::date
+		  AND (p.value IS NULL OR p.value >= $2)
+		GROUP BY a.ticker, p.value
+		ORDER BY magnitude DESC, value DESC, a.ticker`,
+		day.Format("2006-01-02"), minADTV)
+	return rows, err
+}
+
 func (r *AnomalyRepository) ExistsForDate(db *sqlx.DB, tradingDay string) (bool, error) {
 	var count int
 	err := db.Get(&count,

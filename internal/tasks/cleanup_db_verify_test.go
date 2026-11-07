@@ -10,6 +10,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
@@ -38,17 +39,19 @@ func TestCleanup_EndToEnd(t *testing.T) {
 		db.MustExec("DELETE FROM raw_files WHERE storage_key LIKE 'cleanup-test/%'")
 		db.MustExec("DELETE FROM disclosures WHERE pdf_url LIKE 'https://example.com/cleanup-%'")
 		db.MustExec("DELETE FROM anomalies WHERE ticker IN ('CLNPA','CLNPB')")
-		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker IN ('CLNPA','CLNPB')")
-		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker IN ('CLNPA','CLNPB')")
+		db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker LIKE 'CLNP%'")
+		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker LIKE 'CLNP%'")
 		db.MustExec("DELETE FROM broker_summaries WHERE broker_code IN ('CLNPA','CLNPB')")
-		db.MustExec("DELETE FROM daily_prices WHERE ticker IN ('CLNPA','CLNPB')")
-		db.MustExec("DELETE FROM tickers WHERE code IN ('CLNPA','CLNPB')")
+		db.MustExec("DELETE FROM daily_prices WHERE ticker LIKE 'CLNP%'")
+		db.MustExec("DELETE FROM tickers WHERE code LIKE 'CLNP%'")
 	}
 	cleanup()
 	t.Cleanup(cleanup)
 
 	// Tickers (FK parents).
-	db.MustExec("INSERT INTO tickers (code, name) VALUES ('CLNPA', 'Cleanup A'), ('CLNPB', 'Cleanup B')")
+	for _, code := range []string{"CLNPA", "CLNPB", "CLNPC", "CLNPD", "CLNPE", "CLNPT"} {
+		db.MustExec("INSERT INTO tickers (code, name) VALUES ($1, $1)", code)
+	}
 
 	old := time.Now().AddDate(-3, 0, 0)     // past every retention window
 	old90 := time.Now().AddDate(0, 0, -100) // past the 90-day window
@@ -62,11 +65,40 @@ func TestCleanup_EndToEnd(t *testing.T) {
 	db.MustExec("INSERT INTO broker_summaries (broker_code, trading_day) VALUES ($1,$2)", "CLNPA", old90)
 	db.MustExec("INSERT INTO broker_summaries (broker_code, trading_day) VALUES ($1,$2)", "CLNPB", fresh)
 
-	// broker_stock_summaries + totals: CLNPA expired, CLNPB fresh.
-	db.MustExec("INSERT INTO broker_stock_summaries (ticker, broker_code, side, trading_day, win_from, investor, market) VALUES ($1,'AA','buy',$2,$2,'all','RG')", "CLNPA", old90)
-	db.MustExec("INSERT INTO broker_stock_summaries (ticker, broker_code, side, trading_day, win_from, investor, market) VALUES ($1,'AA','buy',$2,$2,'all','RG')", "CLNPB", fresh)
-	db.MustExec("INSERT INTO broker_stock_summary_totals (ticker, trading_day, win_from, investor, market) VALUES ($1,$2,$2,'all','RG')", "CLNPA", old90)
-	db.MustExec("INSERT INTO broker_stock_summary_totals (ticker, trading_day, win_from, investor, market) VALUES ($1,$2,$2,'all','RG')", "CLNPB", fresh)
+	// broker_stock_summaries + totals: five retention cases.
+	insertBroker := func(ticker, investor, source string, day, winFrom time.Time) {
+		db.MustExec(`INSERT INTO broker_stock_summaries
+			(ticker, broker_code, side, trading_day, win_from, investor, market, source)
+			VALUES ($1,'AA','buy',$2,$3,$4,'RG',$5)`,
+			ticker, day, winFrom, investor, source)
+		db.MustExec(`INSERT INTO broker_stock_summary_totals
+			(ticker, trading_day, win_from, investor, market, source)
+			VALUES ($1,$2,$3,$4,'RG',$5)`,
+			ticker, day, winFrom, investor, source)
+	}
+	// Expired foreign day row, non-Tier-2 month → deleted.
+	insertBroker("CLNPA", "f", "live", old90, old90)
+	// Fresh foreign day row → kept.
+	insertBroker("CLNPB", "f", "live", fresh, fresh)
+	// Expired archive chunk → kept (permanent partition member).
+	insertBroker("CLNPC", "f", "archive", old90, old90.AddDate(0, 0, -5))
+	// Expired new-lane all window → kept.
+	insertBroker("CLNPD", "all", "live", old90, old90.AddDate(0, 0, -5))
+	// Expired legacy row → deleted.
+	insertBroker("CLNPE", "all", "legacy_ipot", old90, old90)
+
+	// CLNPT is Tier 2 for its month but has no archive chunk: its expired day
+	// row must be retained until the archiver replaces it. Seed the ADTV window
+	// ending on that month's last day.
+	monthStart := time.Date(old90.Year(), old90.Month(), 1, 0, 0, 0, 0, time.UTC)
+	monthEnd := monthStart.AddDate(0, 1, -1)
+	for d := monthStart.AddDate(0, 0, -40); !d.After(monthEnd); d = d.AddDate(0, 0, 1) {
+		if d.Weekday() == time.Saturday || d.Weekday() == time.Sunday {
+			continue
+		}
+		db.MustExec("INSERT INTO daily_prices (ticker, trading_day, close, value, source) VALUES ($1,$2,100,10000000000,'idx')", "CLNPT", d)
+	}
+	insertBroker("CLNPT", "f", "live", old90, old90)
 
 	// anomalies: CLNPA expired, CLNPB fresh.
 	db.MustExec("INSERT INTO anomalies (ticker, trading_day, type, direction) VALUES ($1,$2,'volume','up')", "CLNPA", old90)
@@ -117,6 +149,7 @@ func TestCleanup_EndToEnd(t *testing.T) {
 		rawFileRepo:            repository.NewRawFileRepository(log),
 		disclosureRepo:         repository.NewDisclosureRepository(log),
 		r2Store:                store,
+		minADTV:                pipeline.DefaultADTVMinValue,
 	}
 	if err := r.run(context.Background(), "test"); err != nil {
 		t.Fatalf("cleanup run: %v", err)
@@ -147,18 +180,22 @@ func TestCleanup_EndToEnd(t *testing.T) {
 		t.Errorf("fresh broker_summaries row deleted (count=%d)", n)
 	}
 
-	// broker_stock_summaries + totals: expired gone, fresh kept.
-	if n := count("SELECT COUNT(*) FROM broker_stock_summaries WHERE ticker = 'CLNPA'"); n != 0 {
-		t.Errorf("expired broker_stock_summaries row not deleted (count=%d)", n)
+	// broker_stock_summaries + totals: the five retention cases.
+	for _, ticker := range []string{"CLNPA", "CLNPE"} {
+		if n := count("SELECT COUNT(*) FROM broker_stock_summaries WHERE ticker = $1", ticker); n != 0 {
+			t.Errorf("%s expired row not deleted (count=%d)", ticker, n)
+		}
+		if n := count("SELECT COUNT(*) FROM broker_stock_summary_totals WHERE ticker = $1", ticker); n != 0 {
+			t.Errorf("%s expired totals not deleted (count=%d)", ticker, n)
+		}
 	}
-	if n := count("SELECT COUNT(*) FROM broker_stock_summaries WHERE ticker = 'CLNPB'"); n != 1 {
-		t.Errorf("fresh broker_stock_summaries row deleted (count=%d)", n)
-	}
-	if n := count("SELECT COUNT(*) FROM broker_stock_summary_totals WHERE ticker = 'CLNPA'"); n != 0 {
-		t.Errorf("expired broker_stock_summary_totals row not deleted (count=%d)", n)
-	}
-	if n := count("SELECT COUNT(*) FROM broker_stock_summary_totals WHERE ticker = 'CLNPB'"); n != 1 {
-		t.Errorf("fresh broker_stock_summary_totals row deleted (count=%d)", n)
+	for _, ticker := range []string{"CLNPB", "CLNPC", "CLNPD", "CLNPT"} {
+		if n := count("SELECT COUNT(*) FROM broker_stock_summaries WHERE ticker = $1", ticker); n != 1 {
+			t.Errorf("%s row deleted (count=%d, want 1)", ticker, n)
+		}
+		if n := count("SELECT COUNT(*) FROM broker_stock_summary_totals WHERE ticker = $1", ticker); n != 1 {
+			t.Errorf("%s totals deleted (count=%d, want 1)", ticker, n)
+		}
 	}
 
 	// anomalies: expired gone, fresh kept.

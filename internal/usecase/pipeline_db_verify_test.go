@@ -15,11 +15,11 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
-// TestGetPipelineStatus_BrokerStalenessInTradingDays — the broker source's
-// freshness is the age of its newest stored window end, counted in market
-// trading days: age 0–1 is fresh (normal before the day's writer runs), 2+ is
-// stale. Wall-clock last_success_at does not decide it.
-func TestGetPipelineStatus_BrokerStalenessInTradingDays(t *testing.T) {
+// TestGetPipelineStatus_BrokerFreshnessBar — broker freshness is grain-aware:
+// the newest stored window end must reach the last stored trading day of the
+// previous calendar month. A month-grain archive is fresh; a missing closed
+// month is stale even when a window exists inside the older month.
+func TestGetPipelineStatus_BrokerFreshnessBar(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
 		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
@@ -33,14 +33,18 @@ func TestGetPipelineStatus_BrokerStalenessInTradingDays(t *testing.T) {
 
 	uc := NewPipelineUseCase(db, log, nil, statusRepo, repository.NewAlertRepository(log), brokerRepo, priceRepo)
 
-	// A far-future calendar keeps these days the market's newest regardless of
-	// the developer database's real history.
-	ticker := "TESTPZ"
-	days := []time.Time{
-		time.Date(2099, 1, 2, 0, 0, 0, 0, time.UTC),
-		time.Date(2099, 1, 3, 0, 0, 0, 0, time.UTC),
-		time.Date(2099, 1, 4, 0, 0, 0, 0, time.UTC),
+	// Seed the previous calendar month's weekdays; its last weekday is the
+	// freshness bar.
+	loc, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		loc = time.UTC
 	}
+	now := time.Now().In(loc)
+	firstOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	prevStart := firstOfMonth.AddDate(0, -1, 0)
+	prevEnd := firstOfMonth.AddDate(0, 0, -1)
+
+	ticker := "TESTPZ"
 	db.MustExec("DELETE FROM broker_stock_summary_totals WHERE ticker = $1", ticker)
 	db.MustExec("DELETE FROM daily_prices WHERE ticker = $1", ticker)
 	db.MustExec("DELETE FROM source_status WHERE source = $1", BrokerStockSummarySource)
@@ -51,20 +55,28 @@ func TestGetPipelineStatus_BrokerStalenessInTradingDays(t *testing.T) {
 		db.MustExec("DELETE FROM source_status WHERE source = $1", BrokerStockSummarySource)
 		db.MustExec("DELETE FROM tickers WHERE code = $1", ticker)
 	})
-	for _, day := range days {
+
+	var days []time.Time
+	for d := prevStart; !d.After(prevEnd); d = d.AddDate(0, 0, 1) {
+		if d.Weekday() == time.Saturday || d.Weekday() == time.Sunday {
+			continue
+		}
+		days = append(days, d)
 		if err := priceRepo.Upsert(db, &entity.DailyPrice{
-			Ticker: ticker, TradingDay: day,
+			Ticker: ticker, TradingDay: d,
 			Open: f64p(100), High: f64p(110), Low: f64p(90), Close: f64p(105),
 			Volume: i64p(1_000_000), Value: i64p(10_000_000_000), Frequency: i32p(1000),
 			Source: "idx",
 		}); err != nil {
-			t.Fatalf("seed price %s: %v", day.Format("2006-01-02"), err)
+			t.Fatalf("seed price %s: %v", d.Format("2006-01-02"), err)
 		}
 	}
+	if len(days) < 2 {
+		t.Fatalf("seeded %d previous-month days, need at least 2", len(days))
+	}
+	last, penultimate := days[len(days)-1], days[len(days)-2]
 
-	// The stored watermark is deliberately old; the live newest window end is
-	// what decides.
-	old := time.Date(2099, 1, 3, 0, 0, 0, 0, time.UTC)
+	old := penultimate
 	if err := statusRepo.Upsert(db, &entity.SourceStatus{
 		Source:        BrokerStockSummarySource,
 		LastSuccessAt: &old,
@@ -73,7 +85,6 @@ func TestGetPipelineStatus_BrokerStalenessInTradingDays(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed source status: %v", err)
 	}
-
 	seedForeignWindow := func(day time.Time) {
 		t.Helper()
 		if err := brokerRepo.UpsertWindow(db, nil, &entity.BrokerStockSummaryTotals{
@@ -85,29 +96,32 @@ func TestGetPipelineStatus_BrokerStalenessInTradingDays(t *testing.T) {
 		}
 	}
 
-	// Age 2: the newest window ends two trading days before the latest session.
-	seedForeignWindow(days[0])
+	// One trading day short of the closed month's last session → stale.
+	seedForeignWindow(penultimate)
 	status, err := uc.GetPipelineStatus(context.Background())
 	if err != nil {
 		t.Fatalf("GetPipelineStatus: %v", err)
 	}
 	health := brokerHealth(t, status)
-	if health.StaleTradingDays == nil || *health.StaleTradingDays != 2 || !health.Stale {
-		t.Errorf("health = %+v, want age 2 and stale", health)
+	if !health.Stale {
+		t.Errorf("health = %+v, want stale before the closed month is archived", health)
+	}
+	if health.StaleTradingDays == nil || *health.StaleTradingDays < 1 {
+		t.Errorf("stale_trading_days = %v, want at least 1", health.StaleTradingDays)
 	}
 
-	// Age 0: a window ending on the latest session makes it fresh.
-	seedForeignWindow(days[2])
+	// The closed month's last session → fresh.
+	seedForeignWindow(last)
 	status, err = uc.GetPipelineStatus(context.Background())
 	if err != nil {
 		t.Fatalf("GetPipelineStatus: %v", err)
 	}
 	health = brokerHealth(t, status)
-	if health.StaleTradingDays == nil || *health.StaleTradingDays != 0 || health.Stale {
-		t.Errorf("health = %+v, want age 0 and fresh", health)
+	if health.Stale {
+		t.Errorf("health = %+v, want fresh at the closed month end", health)
 	}
-	if health.HighWaterMark == nil || *health.HighWaterMark != "2099-01-04" {
-		t.Errorf("high_water_mark = %v, want 2099-01-04", health.HighWaterMark)
+	if health.HighWaterMark == nil || *health.HighWaterMark != last.Format("2006-01-02") {
+		t.Errorf("high_water_mark = %v, want %s", health.HighWaterMark, last.Format("2006-01-02"))
 	}
 }
 

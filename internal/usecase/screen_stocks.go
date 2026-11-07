@@ -45,7 +45,7 @@ const (
 	// defaultFlowWindowDays is how many trading days the broker-flow column
 	// reaches back — about a month, the span a stage-2 accumulation read is
 	// usually made over. maxFlowWindowDays is the ceiling: stored broker rows are
-	// retained 90 calendar days, so a longer ask can never be observed and is
+	// retained 60 calendar days, so a longer ask can never be observed and is
 	// rejected rather than returned structurally truncated.
 	defaultFlowWindowDays = 20
 	maxFlowWindowDays     = 60
@@ -222,18 +222,23 @@ type ScreenStocksResponse struct {
 	// over-long ask shows up as a short window rather than as a thin ticker.
 	FlowWindowDays   int `json:"flow_window_days"`
 	FlowDaysInWindow int `json:"flow_days_in_window"`
-	// FlowFetched counts tickers whose uncovered trailing window was fetched
-	// and cached on this call (one unit each). FlowSkipped counts uncovered
-	// tickers left unobserved because the budget ran out or the fetch failed —
-	// their column is null and flagged, never zero.
-	FlowFetched int                  `json:"flow_fetched"`
-	FlowSkipped int                  `json:"flow_skipped"`
-	Indicators  []string             `json:"indicators"`
-	Filters     []ScreenStocksFilter `json:"filters"`
-	Sort        string               `json:"sort"`
-	Order       string               `json:"order"`
-	Limit       int                  `json:"limit"`
-	Funnel      ScreenStocksFunnel   `json:"funnel"`
+	// FlowEnrichLimit is how many rows were eligible for enrichment: the first
+	// N of the pre-foreign_net ranking. FlowFetched counts those whose uncovered
+	// trailing window was fetched and cached on this call (one unit each).
+	// FlowSkipped counts the eligible rows left unobserved because the shared
+	// daily pool or the key pool ran out, or the fetch failed — their column is
+	// null and flagged, never zero. FlowBudgetRemaining is the shared 10-unit
+	// daily pool left after this call.
+	FlowEnrichLimit     int                  `json:"flow_enrich_limit"`
+	FlowBudgetRemaining int                  `json:"flow_budget_remaining"`
+	FlowFetched         int                  `json:"flow_fetched"`
+	FlowSkipped         int                  `json:"flow_skipped"`
+	Indicators          []string             `json:"indicators"`
+	Filters             []ScreenStocksFilter `json:"filters"`
+	Sort                string               `json:"sort"`
+	Order               string               `json:"order"`
+	Limit               int                  `json:"limit"`
+	Funnel              ScreenStocksFunnel   `json:"funnel"`
 	// TotalMatches is how many tickers passed every filter; Count is how many
 	// are returned after the row cap. TotalMatches > Count is the cut.
 	TotalMatches int               `json:"total_matches"`
@@ -259,10 +264,21 @@ type ScreenStocksUseCase struct {
 	FlowFetcher ScreenerWindowFetcher
 	FlowBudget  ScreenerBudget
 	BrokerRepo  *repository.BrokerStockSummaryRepository
+	// Usage enforces the shared per-day screen enrichment pool. Now keys that
+	// pool on the WIB calendar day; tests inject a fixed clock.
+	Usage FetchUsageCounter
+	Now   func() time.Time
 }
 
 func NewScreenStocksUseCase(db *sqlx.DB, log *logrus.Logger, source ScreenerSource, flow ScreenerFlowSource, opts ...ScreenStocksOption) *ScreenStocksUseCase {
-	uc := &ScreenStocksUseCase{DB: db, Log: log, Source: source, Flow: flow}
+	uc := &ScreenStocksUseCase{
+		DB:     db,
+		Log:    log,
+		Source: source,
+		Flow:   flow,
+		Usage:  repository.NewFetchUsageRepository(log),
+		Now:    time.Now,
+	}
 	for _, opt := range opts {
 		opt(uc)
 	}
@@ -376,14 +392,6 @@ func (uc *ScreenStocksUseCase) screen(ctx context.Context, req ScreenStocksReque
 		foreignNet[observed.Ticker] = observed
 	}
 
-	// Compose-else-fetch: an uncovered trailing window is fetched once and
-	// cached, while the budget allows. A ticker that is still uncovered stays
-	// null and flagged — never a fabricated zero.
-	fetched, skipped := 0, 0
-	if fetchFlow {
-		fetched, skipped = uc.fillUncoveredFlow(ctx, tickers, *anchor, flow.From, flow.TradeDays, foreignNet)
-	}
-
 	windows := groupPricesByTicker(prices)
 	required := bindingRequiredRows(requests)
 
@@ -432,10 +440,47 @@ func (uc *ScreenStocksUseCase) screen(ctx context.Context, req ScreenStocksReque
 	// Funnel stage 3: the structural filters, AND-combined, applied to the
 	// computed columns. Everything below counts survivors of this stage.
 	rows = applyStructuralFilters(rows, compiled)
-
-	rankRows(rows, sortKey, order == sortOrderDesc)
 	afterStructure := len(rows)
 	totalMatches := afterStructure
+
+	// Enrichment is bounded: rank on every attribute except foreign_net first,
+	// take the first N rows, fetch their trailing windows, then rank the
+	// returned set with the enriched values. An outsider cannot enter on fresh
+	// flow, and a screen can never spend the survivor set's units.
+	preSort, preOrder := sortKey, order
+	if preSort == coverageForeignNet {
+		preSort = screenerSortValue
+		preOrder = sortOrderDesc
+	}
+	rankRows(rows, preSort, preOrder == sortOrderDesc)
+
+	enrichEligible := len(rows)
+	if enrichEligible > ScreenerEnrichLimit {
+		enrichEligible = ScreenerEnrichLimit
+	}
+	if capRows && enrichEligible > limit {
+		enrichEligible = limit
+	}
+
+	fetched, skipped, budgetRemaining := 0, 0, ScreenerFlowDailyUnits
+	if fetchFlow && enrichEligible > 0 {
+		enrichTickers := make([]string, 0, enrichEligible)
+		for _, row := range rows[:enrichEligible] {
+			enrichTickers = append(enrichTickers, row.Ticker)
+		}
+		fetched, skipped, budgetRemaining = uc.enrichFlow(ctx, enrichTickers, *anchor, flow.From, flow.TradeDays, foreignNet)
+		for i := range rows {
+			observed, ok := foreignNet[rows[i].Ticker]
+			if !ok {
+				continue
+			}
+			net := observed.ForeignNet
+			rows[i].ForeignNet = &net
+			rows[i].Coverage[coverageForeignNet] = ScreenColumnCoverage{Observed: true, Days: observed.Days}
+		}
+	}
+
+	rankRows(rows, sortKey, order == sortOrderDesc)
 	if capRows && totalMatches > limit {
 		rows = rows[:limit]
 	}
@@ -452,6 +497,8 @@ func (uc *ScreenStocksUseCase) screen(ctx context.Context, req ScreenStocksReque
 		SuspensionWindowDays: suspensionDays,
 		FlowWindowDays:       flowDays,
 		FlowDaysInWindow:     flow.TradeDays,
+		FlowEnrichLimit:      enrichEligible,
+		FlowBudgetRemaining:  budgetRemaining,
 		FlowFetched:          fetched,
 		FlowSkipped:          skipped,
 		Indicators:           keys,
@@ -470,29 +517,70 @@ func (uc *ScreenStocksUseCase) screen(ctx context.Context, req ScreenStocksReque
 	}, nil
 }
 
-// fillUncoveredFlow fetches the trailing window for survivors the partition does
-// not cover, one unit per ticker, while the pool's available budget lasts. Each
-// fetched window is cached as a `window` answer cache (never composed with
-// another overlapping window). A ticker left uncovered — budget spent, empty
-// answer, or a failed call — is counted, so the response declares the shortfall;
-// its column stays null, never zero.
-func (uc *ScreenStocksUseCase) fillUncoveredFlow(ctx context.Context, tickers []string, anchor, windowFrom time.Time, tradeDays int, foreignNet map[string]repository.TickerForeignNet) (fetched, skipped int) {
+// enrichFlow fetches the trailing window for the top rows the partition does not
+// cover, one unit per ticker, from the shared daily screen pool. Each fetched
+// window is cached as a `window` answer cache (never composed with another
+// overlapping window). A row left uncovered — daily pool spent, key pool empty,
+// empty answer, or a failed call — is counted, so the response declares the
+// shortfall; its column stays null, never zero.
+func (uc *ScreenStocksUseCase) enrichFlow(ctx context.Context, tickers []string, anchor, windowFrom time.Time, tradeDays int, foreignNet map[string]repository.TickerForeignNet) (fetched, skipped, budgetRemaining int) {
 	if uc.FlowFetcher == nil || uc.BrokerRepo == nil || tradeDays == 0 || windowFrom.IsZero() {
-		return 0, 0
+		return 0, len(tickers), ScreenerFlowDailyUnits
 	}
-	pending := 0
+	if uc.Usage == nil {
+		return 0, len(tickers), 0
+	}
+
+	now := time.Now
+	if uc.Now != nil {
+		now = uc.Now
+	}
+	day := usageDay(now())
+	remainingNow := func() int {
+		used, err := uc.Usage.Units(uc.DB, day, repository.FetchFeatureScreenerFlow)
+		if err != nil {
+			return 0
+		}
+		left := ScreenerFlowDailyUnits - used
+		if left < 0 {
+			return 0
+		}
+		return left
+	}
+
+	pending := make([]string, 0, len(tickers))
 	for _, ticker := range tickers {
 		if _, ok := foreignNet[ticker]; !ok {
-			pending++
+			pending = append(pending, ticker)
 		}
 	}
-	for _, ticker := range tickers {
-		if _, ok := foreignNet[ticker]; ok {
-			continue
+	if len(pending) == 0 {
+		return 0, 0, remainingNow()
+	}
+
+	want := len(pending)
+	if want > ScreenerFlowDailyUnits {
+		want = ScreenerFlowDailyUnits
+	}
+	if uc.FlowBudget != nil {
+		if available := uc.FlowBudget.Available(); want > available {
+			want = available
 		}
-		if uc.FlowBudget != nil && uc.FlowBudget.Available() <= 0 {
-			break
-		}
+	}
+	if want <= 0 {
+		return 0, len(pending), remainingNow()
+	}
+
+	granted, remaining, err := uc.Usage.Reserve(uc.DB, day, repository.FetchFeatureScreenerFlow, want, ScreenerFlowDailyUnits)
+	if err != nil {
+		uc.Log.Warnf("screener flow: reserve daily budget failed: %v", err)
+		return 0, len(pending), remainingNow()
+	}
+	if granted <= 0 {
+		return 0, len(pending), remaining
+	}
+
+	for _, ticker := range pending[:granted] {
 		res, err := uc.FlowFetcher.FetchRange(ctx, ticker, windowFrom, anchor, brokerReadLane)
 		if err != nil {
 			uc.Log.Warnf("screener flow: fetch %s %s..%s failed: %v", ticker,
@@ -517,7 +605,7 @@ func (uc *ScreenStocksUseCase) fillUncoveredFlow(ctx context.Context, tickers []
 		foreignNet[ticker] = repository.TickerForeignNet{Ticker: ticker, ForeignNet: net, Days: tradeDays}
 		fetched++
 	}
-	return fetched, pending - fetched
+	return fetched, len(pending) - fetched, remaining
 }
 
 // rankRows orders the shortlist deterministically: by the sort key first, with

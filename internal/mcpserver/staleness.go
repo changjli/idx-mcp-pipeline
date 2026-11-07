@@ -28,7 +28,7 @@ func stalenessFor(db *sqlx.DB, repo *repository.SourceStatusRepository, source s
 	}
 
 	if source == usecase.BrokerStockSummarySource {
-		return brokerWindowStaleness(db, status.HighWaterMark)
+		return brokerWindowStaleness(db, status.HighWaterMark, now)
 	}
 
 	return mcp.StalenessMetadata{
@@ -41,7 +41,12 @@ func stalenessFor(db *sqlx.DB, repo *repository.SourceStatusRepository, source s
 // stored window end. The live MAX is preferred over the stored watermark: a
 // window written by the read path advances freshness even before the writers
 // update source_status.
-func brokerWindowStaleness(db *sqlx.DB, stored *time.Time) mcp.StalenessMetadata {
+//
+// Freshness is grain-aware because the monthly archiver is a legitimate writer:
+// a newest window end at the last trading day of the last closed month is as
+// fresh as month-grain storage can be. Stale means a closed month is missing,
+// not that the newest row is older than one session.
+func brokerWindowStaleness(db *sqlx.DB, stored *time.Time, now time.Time) mcp.StalenessMetadata {
 	meta := mcp.StalenessMetadata{DataStale: true}
 	var live sql.NullTime
 	if err := db.Get(&live, `SELECT MAX(trading_day) FROM broker_stock_summary_totals
@@ -57,12 +62,32 @@ func brokerWindowStaleness(db *sqlx.DB, stored *time.Time) mcp.StalenessMetadata
 	}
 	meta.LastGoodDate = hwm.Format("2006-01-02")
 
-	var age int
-	if err := db.Get(&age, `SELECT COUNT(DISTINCT trading_day) FROM daily_prices WHERE trading_day > $1::date`, hwm); err != nil {
-		return meta
-	}
-	meta.DataStale = age > 1
+	lastClosedMonthEnd := lastClosedMonthEnd(db, now)
+	meta.DataStale = hwm.Before(lastClosedMonthEnd)
 	return meta
+}
+
+// lastClosedMonthEnd returns the last stored trading day of the previous
+// calendar month (WIB). It is the freshness bar for an archiver-only period.
+// With no prices at all it falls back to the calendar month end, so an empty
+// store never reads as fresh.
+func lastClosedMonthEnd(db *sqlx.DB, now time.Time) time.Time {
+	loc, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		loc = time.UTC
+	}
+	local := now.In(loc)
+	firstOfMonth := time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, loc)
+	prevMonthStart := firstOfMonth.AddDate(0, -1, 0)
+	calendarEnd := firstOfMonth.AddDate(0, 0, -1)
+
+	var last sql.NullTime
+	if err := db.Get(&last, `SELECT MAX(trading_day) FROM daily_prices
+		WHERE trading_day >= $1::date AND trading_day <= $2::date`,
+		prevMonthStart, calendarEnd); err != nil || !last.Valid {
+		return calendarEnd
+	}
+	return time.Date(last.Time.Year(), last.Time.Month(), last.Time.Day(), 0, 0, 0, 0, loc)
 }
 
 // pipelineStaleness computes the overall staleness metadata for

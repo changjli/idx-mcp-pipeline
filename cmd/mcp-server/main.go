@@ -219,7 +219,7 @@ func main() {
 		log, db,
 		dailyPriceRepo, brokerRepo, brokerStockSummaryRepo,
 		newsRepo, newsTickerRepo, alertRepo, anomalyRepo,
-		rawFileRepo, disclosureRepo, r2Store,
+		rawFileRepo, disclosureRepo, r2Store, minADTV,
 	))
 
 	// Per-stock broker summary: on-demand fetch + persist, auto-triggered by
@@ -243,6 +243,7 @@ func main() {
 	brokerStockSummaryUC := usecase.NewBrokerStockSummaryUseCase(
 		db, log, validate, indexAlphaPool, brokerStockSummaryRepo, dailyPriceRepo,
 		usecase.WithBatchSource(indexAlphaPool, indexAlphaPool),
+		usecase.WithAnomalySource(anomalyRepo),
 	)
 	mux.Handle(tasks.TypeBrokerStockSummary, tasks.NewBrokerStockSummaryHandler(
 		log, brokerStockSummaryUC, recorder,
@@ -253,11 +254,15 @@ func main() {
 	mux.Handle(tasks.TypeBrokerStockSummaryRange, tasks.NewBrokerStockSummaryRangeHandler(
 		log, brokerStockSummaryUC, recorder,
 	))
-	// Daily anchor-day sweep (ADR-0018): chained from stock-summary so the
-	// anchor day's prices exist. It selects the ADTV-eligible universe from
-	// daily_prices, skips stored ticker-days, and spends the pool's remaining
-	// budget on the least-recently-observed names in ≤50-ticker batches.
-	mux.Handle(tasks.TypeBrokerStockSummarySweep, tasks.NewBrokerSummarySweepHandler(
+	// Daily anomaly refresher: chained after detect:anomalies, capped at 30
+	// units/day. It observes the day's anomaly hits as one-day foreign windows.
+	mux.Handle(tasks.TypeBrokerSummaryRefresh, tasks.NewBrokerSummaryRefreshHandler(
+		log, brokerStockSummaryUC, recorder, minADTV,
+	))
+	// Monthly archiver: chained after stock-summary, daily and idempotent. It
+	// writes calendar-month foreign chunks for the ADTV universe, newest closed
+	// month first, at most 3 months per run.
+	mux.Handle(tasks.TypeBrokerSummaryArchive, tasks.NewBrokerSummaryArchiveHandler(
 		log, brokerStockSummaryUC, recorder, minADTV,
 	))
 

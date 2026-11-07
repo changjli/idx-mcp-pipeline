@@ -48,9 +48,10 @@ func reenqueueDetectAnomalies(enq pipeline.Enqueuer, date string, attempt int) e
 // today's daily_prices rows exist), runs the detector, and chains the next
 // tasks. detector is built with its ADTV threshold already defaulted.
 //
-// Broker ingestion is deliberately not triggered here. It is liquidity-driven
-// (the daily anchor-day sweep), not anomaly-gated: a fan-out per flagged ticker
-// would spend Index Alpha quota outside the sweep's budget (ADR-0018).
+// Broker ingestion is not fanned out per anomaly here. The daily refresher is a
+// separate chained node that reads the day's anomaly rows and spends its own
+// capped budget; a fan-out would spend the same quota outside that cap
+// (ADR-0018).
 func NewDetectAnomaliesHandler(
 	log *logrus.Logger,
 	enq pipeline.Enqueuer,

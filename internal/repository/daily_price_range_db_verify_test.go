@@ -85,7 +85,7 @@ func TestDailyPriceRepository_DateRange(t *testing.T) {
 	}
 }
 
-// TestDailyPriceRepository_ADTVEligibleTickers verifies the sweep's universe
+// TestDailyPriceRepository_ADTVEligibleTickers verifies the archiver's universe
 // filter: tickers clearing the min-days + min-ADTV floor over a window, with
 // illiquid and sparse names excluded. Skipped unless IDX_MCP_DB_DSN is set.
 func TestDailyPriceRepository_ADTVEligibleTickers(t *testing.T) {

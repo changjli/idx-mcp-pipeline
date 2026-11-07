@@ -118,10 +118,10 @@ func TestBrokerStockSummaryRepository_EndToEnd(t *testing.T) {
 	}
 }
 
-// TestHasStoredDay verifies the sweep's skip-if-stored guard: true for a
-// ticker+day with rows, false for a day with no rows, and scoped per ticker.
-// Skipped unless IDX_MCP_DB_DSN is set.
-func TestHasStoredDay(t *testing.T) {
+// TestStoredForeignDayTickers verifies the refresher's skip-if-stored guard:
+// only a foreign-lane one-day window counts, and the batch is scoped per
+// ticker. An all-lane legacy day must not mask a missing foreign observation.
+func TestStoredForeignDayTickers(t *testing.T) {
 	dsn := os.Getenv("IDX_MCP_DB_DSN")
 	if dsn == "" {
 		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
@@ -141,38 +141,54 @@ func TestHasStoredDay(t *testing.T) {
 		db.MustExec("DELETE FROM broker_stock_summaries WHERE ticker = $1", ticker)
 	})
 
-	// Empty ticker → no rows.
-	ok, err := repo.HasStoredDay(db, ticker, day)
+	// Empty ticker → absent.
+	stored, err := repo.StoredForeignDayTickers(db, day, []string{ticker})
 	if err != nil {
-		t.Fatalf("HasStoredDay empty: %v", err)
+		t.Fatalf("StoredForeignDayTickers empty: %v", err)
 	}
-	if ok {
-		t.Error("HasStoredDay = true for empty ticker, want false")
+	if stored[ticker] {
+		t.Error("stored = true for empty ticker, want false")
 	}
 
-	// After upsert → rows present.
-	rows := []entity.BrokerStockSummary{
+	// An all-lane legacy day does not satisfy the foreign guard.
+	legacy := []entity.BrokerStockSummary{
 		{Ticker: ticker, BrokerCode: "AK", Side: "buy", TradingDay: day, Lot: i64(1), Value: i64(2), AvgPrice: i64(3), Rank: i32(1)},
 	}
-	if err := repo.UpsertDay(db, rows, nil); err != nil {
+	if err := repo.UpsertDay(db, legacy, nil); err != nil {
 		t.Fatalf("UpsertDay: %v", err)
 	}
-	ok, err = repo.HasStoredDay(db, ticker, day)
+	stored, err = repo.StoredForeignDayTickers(db, day, []string{ticker})
 	if err != nil {
-		t.Fatalf("HasStoredDay after upsert: %v", err)
+		t.Fatalf("StoredForeignDayTickers all lane: %v", err)
 	}
-	if !ok {
-		t.Error("HasStoredDay = false after upsert, want true")
+	if stored[ticker] {
+		t.Error("all-lane day counted as a stored foreign day")
 	}
 
-	// Different day → no rows.
-	other := day.AddDate(0, 0, 1)
-	ok, err = repo.HasStoredDay(db, ticker, other)
-	if err != nil {
-		t.Fatalf("HasStoredDay other day: %v", err)
+	// A foreign one-day window counts.
+	foreign := []entity.BrokerStockSummary{
+		{Ticker: ticker, BrokerCode: "AK", Side: "buy", TradingDay: day, WinFrom: day,
+			Investor: "f", Market: "RG", Lot: i64(1), Value: i64(2), AvgPrice: i64(3), Rank: i32(1),
+			Source: entity.BrokerSourceSweep},
 	}
-	if ok {
-		t.Error("HasStoredDay = true for a day with no rows, want false")
+	if err := repo.UpsertWindow(db, foreign, nil); err != nil {
+		t.Fatalf("UpsertWindow: %v", err)
+	}
+	stored, err = repo.StoredForeignDayTickers(db, day, []string{ticker})
+	if err != nil {
+		t.Fatalf("StoredForeignDayTickers foreign: %v", err)
+	}
+	if !stored[ticker] {
+		t.Error("foreign one-day window not reported as stored")
+	}
+
+	// A different day is still absent.
+	stored, err = repo.StoredForeignDayTickers(db, day.AddDate(0, 0, 1), []string{ticker})
+	if err != nil {
+		t.Fatalf("StoredForeignDayTickers other day: %v", err)
+	}
+	if stored[ticker] {
+		t.Error("stored = true for a different day")
 	}
 }
 

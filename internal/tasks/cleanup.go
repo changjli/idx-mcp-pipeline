@@ -10,6 +10,8 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/extract"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/pipeline"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
@@ -22,9 +24,12 @@ const (
 	// rebuild them on demand.
 	cleanupDailyPricesRetentionDays = 730
 	// cleanupShortRetentionDays is the retention for broker_summaries,
-	// broker_stock_summaries (+ totals), news_items/news_tickers, alerts, and
-	// anomalies (90 days).
+	// news_items/news_tickers, alerts, and anomalies (90 days).
 	cleanupShortRetentionDays = 90
+	// cleanupBrokerWindowRetentionDays is the retention for foreign-lane
+	// non-archive windows: day rows and multi-day answer caches alike. Archive
+	// and backfill chunks plus new-lane all-investor windows are exempt.
+	cleanupBrokerWindowRetentionDays = 60
 	// cleanupBatchSize bounds each eviction query so a large backlog (first run
 	// after years of accumulation) is processed incrementally instead of
 	// materializing the whole set into memory at once.
@@ -53,9 +58,11 @@ func EnqueueCleanup(enq pipeline.Enqueuer, date time.Time, opts ...asynq.Option)
 // evicts expired data per the tiered retention policy:
 //
 //   - daily_prices rows older than 2 years are deleted;
-//   - broker_summaries, broker_stock_summaries (+ totals), news_items
-//     (+ news_tickers), alerts, and anomalies rows older than 90 days are
-//     deleted;
+//   - broker_summaries, news_items (+ news_tickers), alerts, and anomalies
+//     rows older than 90 days are deleted;
+//   - foreign-lane non-archive broker windows older than 60 days are deleted,
+//     except a Tier-2 ticker-month whose archive chunk does not exist yet;
+//     archive/backfill chunks and new-lane all-investor windows are exempt;
 //   - R2 objects past their raw_files.retention_days are deleted and the
 //     raw_files row marked deleted_at (row kept for audit);
 //   - extracted disclosure text older than 90 days is deleted from R2 and the
@@ -82,7 +89,11 @@ func NewCleanupHandler(
 	rawFileRepo *repository.RawFileRepository,
 	disclosureRepo *repository.DisclosureRepository,
 	r2Store storage.ObjectStore,
+	minADTV int64,
 ) asynq.HandlerFunc {
+	if minADTV <= 0 {
+		minADTV = pipeline.DefaultADTVMinValue
+	}
 	return func(ctx context.Context, t *asynq.Task) error {
 		var p CleanupPayload
 		if err := json.Unmarshal(t.Payload(), &p); err != nil {
@@ -102,6 +113,7 @@ func NewCleanupHandler(
 			rawFileRepo:            rawFileRepo,
 			disclosureRepo:         disclosureRepo,
 			r2Store:                r2Store,
+			minADTV:                minADTV,
 		}
 		taskID, _ := asynq.GetTaskID(ctx)
 		return r.run(ctx, taskID)
@@ -123,20 +135,22 @@ type cleanupRunner struct {
 	rawFileRepo            *repository.RawFileRepository
 	disclosureRepo         *repository.DisclosureRepository
 	r2Store                storage.ObjectStore
+	minADTV                int64
 }
 
 // cleanupResult summarizes one cleanup run for the cleanup_evicted event.
 type cleanupResult struct {
-	DailyPrices       int64
-	Broker            int64
-	BrokerStock       int64
-	BrokerStockTotals int64
-	News              int64
-	NewsTickers       int64
-	Alerts            int64
-	Anomalies         int64
-	RawFiles          int
-	DisclosureText    int
+	DailyPrices         int64
+	Broker              int64
+	BrokerStock         int64
+	BrokerStockTotals   int64
+	BrokerStockRetained int64
+	News                int64
+	NewsTickers         int64
+	Alerts              int64
+	Anomalies           int64
+	RawFiles            int
+	DisclosureText      int
 }
 
 func (r *cleanupRunner) run(ctx context.Context, taskID string) error {
@@ -149,11 +163,8 @@ func (r *cleanupRunner) run(ctx context.Context, taskID string) error {
 	if res.Broker, err = r.brokerRepo.DeleteOlderThan(r.db, cleanupShortRetentionDays); err != nil {
 		return fmt.Errorf("cleanup broker_summaries: %w", err)
 	}
-	if res.BrokerStock, err = r.brokerStockSummaryRepo.DeleteOlderThan(r.db, cleanupShortRetentionDays); err != nil {
+	if res.BrokerStock, res.BrokerStockTotals, res.BrokerStockRetained, err = r.expireBrokerWindows(); err != nil {
 		return fmt.Errorf("cleanup broker_stock_summaries: %w", err)
-	}
-	if res.BrokerStockTotals, err = r.brokerStockSummaryRepo.DeleteTotalsOlderThan(r.db, cleanupShortRetentionDays); err != nil {
-		return fmt.Errorf("cleanup broker_stock_summary_totals: %w", err)
 	}
 	// news_tickers first — its news_id FK references news_items.
 	if res.NewsTickers, err = r.newsTickerRepo.DeleteOlderThan(r.db, cleanupShortRetentionDays); err != nil {
@@ -178,6 +189,7 @@ func (r *cleanupRunner) run(ctx context.Context, taskID string) error {
 
 	rows := res.DailyPrices + res.Broker + res.BrokerStock + res.BrokerStockTotals +
 		res.News + res.NewsTickers + res.Alerts + res.Anomalies
+
 	logEvent(r.log, logrus.InfoLevel, "cleanup_evicted",
 		fmt.Sprintf("evicted %d raw file(s) and %d disclosure text(s); deleted %d row(s)", res.RawFiles, res.DisclosureText, rows),
 		logrus.Fields{
@@ -189,6 +201,7 @@ func (r *cleanupRunner) run(ctx context.Context, taskID string) error {
 			"broker_summaries":       res.Broker,
 			"broker_stock_summaries": res.BrokerStock,
 			"broker_stock_totals":    res.BrokerStockTotals,
+			"broker_stock_retained":  res.BrokerStockRetained,
 			"news_items":             res.News,
 			"news_tickers":           res.NewsTickers,
 			"alerts":                 res.Alerts,
@@ -196,6 +209,122 @@ func (r *cleanupRunner) run(ctx context.Context, taskID string) error {
 			"disclosure_text":        res.DisclosureText,
 		})
 	return nil
+}
+
+// cleanupBrokerADTVMinDays mirrors the archiver's ADTV predicate: a ticker is
+// Tier 2 for a month when it traded at least this many of the 21 sessions
+// ending on the month's last day.
+const cleanupBrokerADTVMinDays = 8
+
+// cleanupMonth is the calendar context one expired day row's month needs: the
+// month's trading-day range and its Tier-2 membership.
+type cleanupMonth struct {
+	first time.Time
+	last  time.Time
+	tier2 map[string]bool
+}
+
+// expireBrokerWindows applies the broker retention rule window by window.
+//
+// The blanket delete is gone because the table now holds three different
+// things: short-lived foreign observations/caches, permanent archive chunks,
+// and the on-demand all-investor lane. It keeps archive/backfill chunks and
+// new-lane all windows; deletes legacy rows and foreign-lane non-archive
+// windows older than the cutoff; and, for a foreign day row in a Tier-2
+// ticker-month, refuses to delete until an archive chunk covers the month.
+// That last rule is the ordering guarantee, enforced here rather than trusted
+// to the scheduler.
+func (r *cleanupRunner) expireBrokerWindows() (rows, totals, retained int64, err error) {
+	cutoff := time.Now().AddDate(0, 0, -cleanupBrokerWindowRetentionDays)
+	keys, err := r.brokerStockSummaryRepo.FindExpiredWindowKeys(r.db, cutoff)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	months := make(map[string]*cleanupMonth)
+	for _, key := range keys {
+		// Permanent partition chunks.
+		if key.Source == entity.BrokerSourceArchive || key.Source == entity.BrokerSourceBackfill {
+			continue
+		}
+		// The on-demand all-investor lane is kept; legacy all rows are not.
+		if key.Investor == broker.InvestorAll && key.Source != entity.BrokerSourceLegacyIPOT {
+			continue
+		}
+
+		// Only one-day foreign rows have a compaction dependency. Multi-day
+		// caches are disposable answer caches.
+		if key.Investor == broker.InvestorForeign && key.Source != entity.BrokerSourceLegacyIPOT &&
+			key.WinFrom.Equal(key.TradingDay) {
+			monthKey := key.TradingDay.Format("2006-01")
+			month, ok := months[monthKey]
+			if !ok {
+				month, err = r.cleanupMonthContext(monthKey)
+				if err != nil {
+					return rows, totals, retained, err
+				}
+				months[monthKey] = month
+			}
+			if month != nil && month.tier2[key.Ticker] {
+				covered, err := r.brokerStockSummaryRepo.HasPartitionChunk(r.db, key.Ticker, month.first, month.last)
+				if err != nil {
+					return rows, totals, retained, err
+				}
+				if !covered {
+					retained++
+					continue
+				}
+			}
+		}
+
+		dRows, dTotals, err := r.brokerStockSummaryRepo.DeleteWindow(r.db, key)
+		if err != nil {
+			return rows, totals, retained, err
+		}
+		rows += dRows
+		totals += dTotals
+	}
+	return rows, totals, retained, nil
+}
+
+// cleanupMonthContext resolves a month's trading-day range and Tier-2 set.
+// An empty month (no stored prices) has no Tier 2, so its day rows are not
+// protected.
+func (r *cleanupRunner) cleanupMonthContext(monthKey string) (*cleanupMonth, error) {
+	monthStart, err := time.Parse("2006-01", monthKey)
+	if err != nil {
+		return nil, err
+	}
+	monthEnd := monthStart.AddDate(0, 1, -1)
+	days, err := r.dailyPriceRepo.TradingDaysInRangeAll(r.db, monthStart, monthEnd)
+	if err != nil {
+		return nil, err
+	}
+	if len(days) == 0 {
+		return nil, nil
+	}
+	month := &cleanupMonth{first: days[0], last: days[len(days)-1], tier2: map[string]bool{}}
+
+	lookback := month.last.AddDate(0, 0, -70)
+	trading, err := r.dailyPriceRepo.TradingDaysInRangeAll(r.db, lookback, month.last)
+	if err != nil {
+		return nil, err
+	}
+	if len(trading) > 21 {
+		trading = trading[len(trading)-21:]
+	}
+	if len(trading) == 0 {
+		return month, nil
+	}
+	eligible, err := r.dailyPriceRepo.ADTVEligibleTickers(
+		r.db, trading[0], month.last, cleanupBrokerADTVMinDays, r.minADTV)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range eligible {
+		month.tier2[t.Ticker] = true
+	}
+	return month, nil
 }
 
 // evictExpiredRawFiles deletes R2 objects past their raw_files.retention_days
