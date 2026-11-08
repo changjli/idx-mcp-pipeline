@@ -72,6 +72,14 @@ _Avoid_: quarter (a quarter is a 3M statement only)
 A monthly snapshot recorded but not allowed to derive statements because its rows no longer look like statement periods — measured by the share of period ends that are calendar quarter ends. Ingesting it would fabricate periods. The 2025-12 snapshot is the known case: it stamps filing dates instead of period ends.
 _Avoid_: corrupt data, bad month
 
+**Backfill Floor**:
+`2021-01`, the newest month from which the monthly ratio snapshot can be walked backwards with full-market coverage. 2018–2020 returns only 4–11 straggler rows and has an empty 2020-12, so "walk until the source returns nothing" would stop too early or too late; the floor is recorded explicitly instead. A backfill below it is refused, and the walk continues past empty months above it.
+_Avoid_: earliest date, API start
+
+**Snapshot Run Ledger**:
+`financial_snapshot_runs`, one row per snapshot month recording `ok | suspect | empty | failed` plus the row count, distinct periods and quarter-end share. It makes a backfill resumable: an `ok` or `suspect` month is skipped, an `empty` or `failed` month is retried, and `MIN(snapshot_month) WHERE status='ok'` is the observed backfill floor.
+_Avoid_: ingest log, run history
+
 **News Item**:
 A parsed RSS article matched to ≥1 ticker (by code or company name). Unmatched feed items are not stored; raw feed XML is claim-checked for 30 days as the re-parse safety net.
 _Avoid_: article, headline (use for the display row; News Item for the stored entity)

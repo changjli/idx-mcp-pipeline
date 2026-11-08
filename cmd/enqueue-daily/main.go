@@ -36,12 +36,34 @@ func main() {
 	dateStr := flag.String("date", "", "trading date in YYYY-MM-DD format (default: today)")
 	startDateStr := flag.String("start-date", "", "bulk backfill start date in YYYY-MM-DD format")
 	endDateStr := flag.String("end-date", "", "bulk backfill end date in YYYY-MM-DD format")
+	backfill := flag.Bool("backfill", false, "with --task financials, run the synchronous monthly history backfill instead of enqueuing the daily check")
+	fromMonthStr := flag.String("from", "", "financials backfill lower/upper month bound in YYYY-MM format (default: the newest available month)")
+	toMonthStr := flag.String("to", "", "financials backfill opposite month bound in YYYY-MM format (default: 2021-01, the floor)")
+	force := flag.Bool("force", false, "with financials backfill, reprocess months already recorded ok or suspect")
 	var args argList
 	flag.Var(&args, "arg", "per-task argument, repeatable: broker-summary requires ticker=<code>; extract requires id=<disclosure id>")
 	flag.Parse()
 
 	vip := config.NewViper()
 	log := config.NewLogger(vip)
+
+	// Financial history backfill (financials-v2 issue 02): a synchronous
+	// month-range walk, no asynq. --backfill alone walks the default range
+	// (the newest available month down to the 2021-01 floor); --from/--to
+	// override the bounds and --force re-processes settled months.
+	if *taskName == "financials" && (*backfill || *fromMonthStr != "" || *toMonthStr != "" || *force) {
+		if *startDateStr != "" || *endDateStr != "" || *dateStr != "" {
+			log.Fatalf("--backfill/--from/--to/--force are mutually exclusive with --date/--start-date/--end-date")
+		}
+		if *force && !*backfill && *fromMonthStr == "" && *toMonthStr == "" {
+			log.Fatalf("--force requires --backfill or --from/--to")
+		}
+		runFinancialsBackfill(vip, log, *fromMonthStr, *toMonthStr, *force)
+		return
+	}
+	if (*backfill || *fromMonthStr != "" || *toMonthStr != "" || *force) && *taskName != "financials" {
+		log.Fatalf("--backfill/--from/--to/--force are only valid with --task financials")
+	}
 
 	// Bulk backfill mode: --start-date and --end-date together. Only
 	// stock-summary (daily_prices backfill) and announcements (disclosure
@@ -287,6 +309,69 @@ func argValue(args argList, key string) string {
 		}
 	}
 	return ""
+}
+
+// runFinancialsBackfill walks the monthly ratio snapshot backwards from the
+// newest available month to the 2021-01 floor (or across the explicit --from /
+// --to bounds), skipping months the run ledger already settled and recording
+// empty/suspect/failed months. Synchronous direct DB+client loop, no asynq:
+// the same shape as the other bulk modes. The 01 ordered upsert makes the walk
+// safe in either direction and idempotent on re-run.
+func runFinancialsBackfill(vip *viper.Viper, log *logrus.Logger, fromStr, toStr string, force bool) {
+	from, err := parseMonthFlag("--from", fromStr)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	to, err := parseMonthFlag("--to", toStr)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	db := config.NewDatabase(vip, log)
+	defer db.Close()
+
+	idxClient, err := client.NewDefaultClient(vip, log)
+	if err != nil {
+		log.Fatalf("failed to init IDX client: %v", err)
+	}
+	defer idxClient.Close()
+
+	uc := usecase.NewFinancialsIngestUseCase(
+		db, log, idxClient, repository.NewFinancialsRepository(log),
+	)
+
+	res, err := uc.Backfill(context.Background(), usecase.FinancialsBackfillOptions{
+		From:    from,
+		To:      to,
+		RunDate: time.Now(),
+		Force:   force,
+	})
+	if err != nil {
+		log.Fatalf("financials backfill: %v", err)
+	}
+
+	log.Infof("financials backfill: %d/%d months done, %d skipped, %d failed (%d ok, %d suspect, %d empty), rows_written=%d rows_rejected=%d",
+		res.MonthsProcessed, res.MonthsTotal, res.MonthsSkipped, res.MonthsFailed,
+		res.MonthsOK, res.MonthsSuspect, res.MonthsEmpty, res.RowsWritten, res.RowsRejected)
+
+	// A run where every attempted month failed is indistinguishable from a
+	// no-op in automation — exit non-zero so callers can detect total failure.
+	if res.MonthsProcessed > 0 && res.MonthsFailed == res.MonthsProcessed {
+		os.Exit(1)
+	}
+}
+
+// parseMonthFlag parses a YYYY-MM month bound. An empty value is the zero time,
+// which makes the usecase apply its default.
+func parseMonthFlag(name, value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, nil
+	}
+	month, err := time.Parse("2006-01", strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid %s format: %s (use YYYY-MM)", name, value)
+	}
+	return month, nil
 }
 
 // runBulkTickerProfiles seeds the tickers table with company-profile data

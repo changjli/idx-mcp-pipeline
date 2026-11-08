@@ -40,6 +40,7 @@ func TestDispatchTable(t *testing.T) {
 		{"filter", tasks.TypeFilterDisclosures, nil, tasks.FilterDisclosuresPayload{Date: "2026-08-30"}},
 		{"extract", tasks.TypeExtractDisclosure, []string{"id=42"}, tasks.ExtractDisclosurePayload{DisclosureID: 42}},
 		{"broker-summary", tasks.TypeBrokerStockSummary, []string{"ticker=RAJA"}, tasks.BrokerStockSummaryPayload{Ticker: "RAJA", Date: "2026-08-30"}},
+		{"financials", tasks.TypeFinancials, nil, tasks.FinancialsPayload{Date: "2026-08-30"}},
 		{"pipeline", tasks.TypePipelineDaily, nil, nil},
 	}
 
@@ -69,5 +70,25 @@ func TestDispatchTable(t *testing.T) {
 func TestDispatchTableUnknownTask(t *testing.T) {
 	if _, err := tasks.Graph.NodeByName("nope"); err == nil {
 		t.Error("NodeByName(unknown) expected error, got nil")
+	}
+}
+
+// TestParseMonthFlag pins the financials backfill's YYYY-MM bounds: an empty
+// value is the zero time (the usecase applies its default), a valid month is
+// parsed, and anything else is rejected rather than silently defaulted.
+func TestParseMonthFlag(t *testing.T) {
+	got, err := parseMonthFlag("--from", "")
+	if err != nil || !got.IsZero() {
+		t.Fatalf("empty = %v, %v; want zero time, nil", got, err)
+	}
+	got, err = parseMonthFlag("--from", "2024-03")
+	if err != nil {
+		t.Fatalf("valid month: %v", err)
+	}
+	if want := time.Date(2024, time.March, 1, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("month = %s, want %s", got, want)
+	}
+	if _, err := parseMonthFlag("--from", "2024-3"); err == nil {
+		t.Error("expected an error for a non-YYYY-MM value")
 	}
 }
