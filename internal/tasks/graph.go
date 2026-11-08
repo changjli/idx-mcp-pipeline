@@ -256,6 +256,21 @@ var Graph = NewRegistry(
 		SelfHeal: true,
 	},
 	&Node{
+		Name: "financials",
+		Type: TypeFinancials,
+		Key:  dateKey(TypeFinancials),
+		Day:  dateDay(TypeFinancials),
+		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+			dateKey := day.Format("2006-01-02")
+			stage := pipeline.NewIngestStage(TypeFinancials, nil, enq, 3)
+			return stage.EnqueueWithOpts(TaskKey(TypeFinancials, dateKey), FinancialsPayload{Date: dateKey}, opts...)
+		},
+		// Monthly source behind a daily schedule: the handler tries the previous
+		// calendar month and no-ops once the ledger records it ok/suspect, so a
+		// daily wave slot costs one ledger read per day and one fetch per month.
+		SelfHeal: true,
+	},
+	&Node{
 		Name: "cleanup",
 		Type: TypeCleanup,
 		Key:  dateKey(TypeCleanup),
@@ -380,6 +395,6 @@ var Graph = NewRegistry(
 			base := []asynq.Option{asynq.TaskID(taskKey), asynq.Queue("default")}
 			return enq.Enqueue(task, append(base, opts...)...)
 		},
-		Wave: []string{TypeStockSummary, TypeAnnouncements, TypeRSS, TypeCorporateActions, TypeSuspensions, TypeIndexSummary, TypeKSEIBalancepos, TypeCleanup},
+		Wave: []string{TypeStockSummary, TypeAnnouncements, TypeRSS, TypeCorporateActions, TypeSuspensions, TypeIndexSummary, TypeKSEIBalancepos, TypeFinancials, TypeCleanup},
 	},
 )

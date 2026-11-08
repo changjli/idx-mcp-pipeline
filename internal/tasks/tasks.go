@@ -53,6 +53,11 @@ const (
 	// upserted to index_summaries keyed by (index_code, trading date). Fired in
 	// the pipeline:daily Wave; feeds Stage-0 sector-rotation + market regime.
 	TypeIndexSummary = "idx:index_summary"
+	// TypeFinancials is the monthly IDX ratio-snapshot ingestion (financials-v2
+	// issue 01): one GetApiDataPaginated call for the previous calendar month,
+	// persisted to financial_statements / versions / the snapshot run ledger.
+	// A daily task no-ops once the month is recorded ok or suspect.
+	TypeFinancials = "idx:financials"
 )
 
 // TaskKey returns a dedup key for a task type and date.

@@ -57,8 +57,20 @@ _Avoid_: completeness, freshness (owned by Stale)
 _Avoid_: market sentiment, all-investor flow
 
 **Financial Statement**:
-A ticker's normalized income-statement, balance-sheet and ratio line items for one reported period, in raw IDR. Fetched live on request from the IPOT fundamental source — not persisted, no pipeline stage (the persisted pipeline is a deferred fast-follow). IDX periods are cumulative year-to-date (3M, 6M, 9M, 12M columns) — statements are comparable only within the same duration. Analyst-forecast and interim columns ride along tagged (`is_forecast` / `is_interim`), not excluded; line items without a dedicated field land in `extra`.
-_Avoid_: fundamentals, financials (as stored entity — nothing is stored)
+A ticker's normalized income-statement, balance-sheet and ratio line items for one reported period, in rupiah. Persisted from IDX's monthly ratio snapshot and keyed by the statement period (ticker + period end), not by the snapshot month, so a statement repeated across snapshots stays one row. Absolutes are cumulative year-to-date (3M, 6M, 9M, 12M) and comparable only within the same duration; the stored ratios are IDX's TTM values, never recomputed from the YTD columns. Values are rupiah after IDX's undisclosed conversion of USD reporters — never the original currency. Line items the snapshot does not carry (cash, gross profit, operating profit, EBITDA) are unknown at this tier, not zero.
+_Avoid_: fundamentals, financials (as a live-fetch API)
+
+**Snapshot Month**:
+The month-end state a monthly market-wide snapshot describes: a snapshot for month M is the market at the close of M, immutable once published, so the newest available month is the previous calendar month. A company that has not filed appears with its previous statement's old period end — staleness is expressed by the period end, never by a missing row.
+_Avoid_: data month, report month
+
+**Statement Period**:
+The fiscal period a statement reports, identified by its period end and cumulative duration in months (3, 6, 9 or 12). Together with the ticker it is the store key, so re-running, repeating or backfilling a snapshot never duplicates a statement. At most four periods exist per fiscal year for a stable fiscal calendar.
+_Avoid_: quarter (a quarter is a 3M statement only)
+
+**Suspect Snapshot**:
+A monthly snapshot recorded but not allowed to derive statements because its rows no longer look like statement periods — measured by the share of period ends that are calendar quarter ends. Ingesting it would fabricate periods. The 2025-12 snapshot is the known case: it stamps filing dates instead of period ends.
+_Avoid_: corrupt data, bad month
 
 **News Item**:
 A parsed RSS article matched to ≥1 ticker (by code or company name). Unmatched feed items are not stored; raw feed XML is claim-checked for 30 days as the re-parse safety net.

@@ -57,6 +57,7 @@ func main() {
 	suspensionRepo := repository.NewSuspensionRepository(log)
 	shareholderCompositionRepo := repository.NewShareholderCompositionRepository(log)
 	indexSummaryRepo := repository.NewIndexSummaryRepository(log)
+	financialsRepo := repository.NewFinancialsRepository(log)
 
 	// source_status + alerts recorder: one shared instance every ingest stage
 	// reports its success/failure through (ADR-0006).
@@ -158,6 +159,15 @@ func main() {
 	// tool reads these rows yet.
 	mux.Handle(tasks.TypeIndexSummary, tasks.NewIndexSummaryHandler(
 		log, idxClient, db, indexSummaryRepo, recorder,
+	))
+	// idx:financials (financials-v2 issue 01): daily "ensure the previous
+	// calendar month's ratio snapshot is ingested" check. One request per month;
+	// the run ledger makes later daily fires no-ops. The stored rows are read by
+	// get_financials once issue 03 lands.
+	mux.Handle(tasks.TypeFinancials, tasks.NewFinancialsHandler(
+		log,
+		usecase.NewFinancialsIngestUseCase(db, log, idxClient, financialsRepo),
+		recorder,
 	))
 	minADTV := vip.GetInt64("anomaly.min_adtv_value") // <= 0 → DefaultADTVMinValue in the constructor
 	anomalyDetector := pipeline.NewAnomalyDetector(

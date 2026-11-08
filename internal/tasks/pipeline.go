@@ -69,9 +69,9 @@ func WaveTargetDays(now time.Time, hasStored func(day string) (bool, error)) ([]
 // It picks the wave's target day (WaveTargetDay) and fires the fixed wave-1
 // fan-out declared in the graph registry (ADR-0008): stock_summary,
 // announcements, rss, corporate_actions, suspensions, index_summary,
-// ksei_balancepos, and cleanup. Date-keyed TaskIDs dedup against a same-day
-// re-run. Announcement/rss/cleanup failures are logged but don't fail the
-// pipeline; a stock_summary failure fails the fan-out so asynq retries the
+// ksei_balancepos, financials, and cleanup. Date-keyed TaskIDs dedup against a
+// same-day re-run. Announcement/rss/cleanup failures are logged but don't fail
+// the pipeline; a stock_summary failure fails the fan-out so asynq retries the
 // whole pipeline:daily task.
 func NewPipelineDailyHandler(
 	log *logrus.Logger,
