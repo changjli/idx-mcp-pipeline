@@ -182,9 +182,9 @@ a public repo no longer risks exposing your verdicts.
 ## Cost & reliability notes
 
 - One run/day ≈ one screen + **a deep dive per survivor** (only the 3 strongest
-  are journaled). Token spend scales with the survivor count, and Deep-dive's
-  `get_financials` is a live upstream fetch; a slow/hung MCP call is the main
-  failure mode (the job has a 120-minute ceiling). On the Go plan, watch the
+  are journaled). Token spend scales with the survivor count; Deep-dive's `get_financials` is a
+  stored DB read, but a slow/hung MCP call (broker fetch or PDF extraction) is
+  still the main failure mode (the job has a 120-minute ceiling). On the Go plan, watch the
   chosen model's monthly allowance if survivor counts run high.
 - `--auto` auto-approves permissions that are not explicitly denied, so the run
   never blocks on an approval prompt. `--standalone` gives it a private server.

@@ -57,8 +57,12 @@ _Avoid_: completeness, freshness (owned by Stale)
 _Avoid_: market sentiment, all-investor flow
 
 **Financial Statement**:
-A ticker's normalized income-statement, balance-sheet and ratio line items for one reported period, in rupiah. Persisted from IDX's monthly ratio snapshot and keyed by the statement period (ticker + period end), not by the snapshot month, so a statement repeated across snapshots stays one row. Absolutes are cumulative year-to-date (3M, 6M, 9M, 12M) and comparable only within the same duration; the stored ratios are IDX's TTM values, never recomputed from the YTD columns. Values are rupiah after IDX's undisclosed conversion of USD reporters — never the original currency. Line items the snapshot does not carry (cash, gross profit, operating profit, EBITDA) are unknown at this tier, not zero.
+A ticker's normalized income-statement, balance-sheet and ratio line items for one reported period, in rupiah. Persisted from IDX's monthly ratio snapshot and keyed by the statement period (ticker + period end), not by the snapshot month, so a statement repeated across snapshots stays one row. Absolutes are cumulative year-to-date (3M, 6M, 9M, 12M) and comparable only within the same duration; the stored ratios are IDX's TTM values, never recomputed from the YTD columns. Values are rupiah after IDX's undisclosed conversion of USD reporters — never the original currency. Line items the snapshot does not carry (cash, gross profit, operating profit, EBITDA) are unknown at this tier, not zero. `per` / `pbv` are calculated at read time from the close on or before the period end, never stored on the statement.
 _Avoid_: fundamentals, financials (as a live-fetch API)
+
+**Statement Coverage**:
+The `get_financials` response's per-field declaration of what the returned statements actually hold: `observed` (every returned row has the value), `unknown` (not carried by Tier 1, or missing on at least one row), or `not_applicable` (the concept does not exist for the issuer — a Tier-2 distinction; Tier 1 reports `unknown` where it cannot tell). Each entry carries `observed_rows` / `returned_rows`, so a partially observed field reads as partial rather than fully observed or wholly absent. It is what makes a null unambiguous: cash, gross profit, operating profit, EBITDA, interest expense, total debt and `debt_to_equity` are unknown at Tier 1, never zero.
+_Avoid_: completeness, data quality, freshness
 
 **Snapshot Month**:
 The month-end state a monthly market-wide snapshot describes: a snapshot for month M is the market at the close of M, immutable once published, so the newest available month is the previous calendar month. A company that has not filed appears with its previous statement's old period end — staleness is expressed by the period end, never by a missing row.
@@ -93,7 +97,7 @@ Singleton-per-source state: last success, last attempt, consecutive failures, st
 _Avoid_: health, status (too generic)
 
 **Stale**:
-A source whose data is older than its freshness window (`now - last_success_at > max_age`, ~1 trading day). Every MCP tool response carries `data_stale` + `last_good_date` so the consumer never silently reasons over old data. Distinct from a *failed* fetch. The broker source is the exception: with a legitimate month-grain writer, stale means a closed month is missing, not that the newest window is more than one session old.
+A source whose data is older than its freshness window (`now - last_success_at > max_age`, ~1 trading day). Every MCP tool response carries `data_stale` + `last_good_date` so the consumer never silently reasons over old data. Distinct from a *failed* fetch. The broker source is the exception: with a legitimate month-grain writer, stale means a closed month is missing, not that the newest window is more than one session old. The financial-statements read also applies a **per-ticker** rule: `last_good_date` is the newest statement period end, and a ticker whose newest period is over a year old (or absent) is stale even when the monthly source ran on time.
 _Avoid_: outdated, expired
 
 **Pipeline**:

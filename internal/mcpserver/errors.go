@@ -8,7 +8,6 @@ import (
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/indexalpha"
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/usecase"
 	"github.com/nicholas-audric/idx-mcp-pipeline/pkg/mcp"
 )
@@ -43,8 +42,6 @@ func exceptionToEnvelope(err error) mcp.ErrorEnvelope {
 		return mcp.NewError(mcp.ErrorCodeUnauthorized, err.Error(), false)
 	case errors.Is(err, indexalpha.ErrMalformedPayload):
 		return mcp.NewError(mcp.ErrorCodeUpstreamMalformed, err.Error(), false)
-	case errors.Is(err, ipot.ErrUpstream429):
-		return mcp.NewError(mcp.ErrorCodeUpstream429, err.Error(), true)
 	case errors.Is(err, usecase.ErrPersist):
 		return mcp.NewError(mcp.ErrorCodeDBUnavailable, err.Error(), true)
 	case isDBError(err):

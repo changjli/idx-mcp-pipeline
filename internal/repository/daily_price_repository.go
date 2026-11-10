@@ -268,6 +268,45 @@ func (r *DailyPriceRepository) FindByTickerUpTo(db *sqlx.DB, ticker string, to t
 	return prices, err
 }
 
+// FindCloseOnOrBefore returns the most recent stored price row at or before day
+// — the close the financials read path uses to value a statement at its period
+// end. A non-trading period end (a weekend or holiday) resolves to the prior
+// trading day. Returns nil, nil when no stored row covers the date.
+func (r *DailyPriceRepository) FindCloseOnOrBefore(db *sqlx.DB, ticker string, day time.Time) (*entity.DailyPrice, error) {
+	var price entity.DailyPrice
+	err := db.Get(&price, `
+		SELECT * FROM daily_prices
+		WHERE ticker = $1 AND trading_day <= $2
+		ORDER BY trading_day DESC
+		LIMIT 1`, ticker, day)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &price, nil
+}
+
+// FindLatestClose returns a ticker's newest stored price row. It is the
+// response's last_price — deliberately not used for per/pbv, which are valued
+// at each statement's own period end.
+func (r *DailyPriceRepository) FindLatestClose(db *sqlx.DB, ticker string) (*entity.DailyPrice, error) {
+	var price entity.DailyPrice
+	err := db.Get(&price, `
+		SELECT * FROM daily_prices
+		WHERE ticker = $1
+		ORDER BY trading_day DESC
+		LIMIT 1`, ticker)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &price, nil
+}
+
 // ScreenCandidate is one ticker that cleared the screener's SQL hard filters:
 // its anchor-day transaction value and close, which the funnel reports and the
 // ranking sorts on.

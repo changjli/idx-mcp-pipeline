@@ -18,7 +18,6 @@ require (
 	github.com/mark3labs/mcp-go v0.58.0
 	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/viper v1.21.0
-	golang.org/x/net v0.54.0
 )
 
 require (

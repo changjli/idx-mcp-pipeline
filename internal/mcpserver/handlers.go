@@ -722,10 +722,11 @@ func argMinValue(args map[string]any) (*int64, bool) {
 	return &value, true
 }
 
-// financialsResponse wraps the live financial statements with the staleness
-// envelope. The fetch is live, so data_stale is always false (omitted, per
-// the shared metadata convention); last_good_date is the newest statement
-// period end, not a pipeline timestamp.
+// financialsResponse wraps the stored financial statements with the staleness
+// envelope. last_good_date is the newest statement period end (not a pipeline
+// timestamp), so a ticker whose latest statement is 2019 is visibly stale;
+// data_stale also carries the ticker-level signal from the usecase (no
+// statement at all, or a newest period over a year old).
 type financialsResponse struct {
 	*usecase.FinancialsResponse
 	mcp.StalenessMetadata
@@ -744,11 +745,12 @@ func (s *Server) handleGetFinancials(ctx context.Context, req mcpgo.CallToolRequ
 	if err != nil {
 		return envelopeResult(exceptionToEnvelope(err)), nil
 	}
+	meta := stalenessFor(s.db, s.sourceStatusRepo, usecase.FinancialsSource, time.Now())
+	meta.LastGoodDate = data.LatestPeriodEnd
+	meta.DataStale = meta.DataStale || data.PeriodStale
 	return textResult(financialsResponse{
 		FinancialsResponse: data,
-		StalenessMetadata: mcp.StalenessMetadata{
-			LastGoodDate: data.LatestPeriodEnd,
-		},
+		StalenessMetadata:  meta,
 	}), nil
 }
 

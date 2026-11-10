@@ -10,7 +10,6 @@ import (
 
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/broker"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/indexalpha"
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/usecase"
 	"github.com/nicholas-audric/idx-mcp-pipeline/pkg/mcp"
 )
@@ -26,7 +25,6 @@ func TestExceptionToEnvelope(t *testing.T) {
 		{"invalid argument", usecase.ErrInvalidArgument, mcp.ErrorCodeInvalidArgument, false},
 		{"invalid range", usecase.ErrInvalidRange, mcp.ErrorCodeInvalidArgument, false},
 		{"no trading day", usecase.ErrNoTradingDay, mcp.ErrorCodeNotFound, false},
-		{"upstream 429", ipot.ErrUpstream429, mcp.ErrorCodeUpstream429, true},
 		{"broker rate limited", broker.ErrRateLimited, mcp.ErrorCodeUpstream429, true},
 		{"quota exhausted", broker.ErrQuotaExhausted, mcp.ErrorCodeUpstreamQuota, false},
 		{"wrapped quota", fmt.Errorf("broker summary fetch: %w", broker.ErrQuotaExhausted), mcp.ErrorCodeUpstreamQuota, false},
@@ -35,7 +33,7 @@ func TestExceptionToEnvelope(t *testing.T) {
 		{"upstream unauthorized", indexalpha.ErrUnauthorized, mcp.ErrorCodeUnauthorized, false},
 		{"malformed payload", indexalpha.ErrMalformedPayload, mcp.ErrorCodeUpstreamMalformed, false},
 		{"persist failure", usecase.ErrPersist, mcp.ErrorCodeDBUnavailable, true},
-		{"wrapped sentinel", fmt.Errorf("ipot fetch: %w", ipot.ErrUpstream429), mcp.ErrorCodeUpstream429, true},
+		{"wrapped sentinel", fmt.Errorf("broker fetch: %w", broker.ErrRateLimited), mcp.ErrorCodeUpstream429, true},
 		{"pg error", &pgconn.PgError{Code: "57P01"}, mcp.ErrorCodeDBUnavailable, true},
 		{"conn done", sql.ErrConnDone, mcp.ErrorCodeDBUnavailable, true},
 		{"generic", errors.New("boom"), mcp.ErrorCodeInternal, false},

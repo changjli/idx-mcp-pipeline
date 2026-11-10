@@ -20,7 +20,6 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/config"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/extract"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/indexalpha"
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ksei"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/mcpserver"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/middleware"
@@ -249,7 +248,6 @@ func main() {
 		}
 		cancel()
 	}
-	ipotClient := ipot.NewClient(ipot.DefaultConfig(), log)
 	brokerStockSummaryUC := usecase.NewBrokerStockSummaryUseCase(
 		db, log, validate, indexAlphaPool, brokerStockSummaryRepo, dailyPriceRepo,
 		usecase.WithBatchSource(indexAlphaPool, indexAlphaPool),
@@ -337,9 +335,9 @@ func main() {
 	dailyPriceUC := usecase.NewDailyPriceUseCase(db, log, validate, dailyPriceRepo)
 	newsUC := usecase.NewNewsUseCase(db, log, validate, newsRepo, newsTickerRepo)
 	pipelineUC := usecase.NewPipelineUseCase(db, log, validate, sourceStatusRepo, alertRepo, brokerStockSummaryRepo, dailyPriceRepo)
-	// get_financials (issue 07): temporary live-fetch route over the shared
-	// IPOT client — nothing persisted (persisted pipeline is issue 07b).
-	financialsUC := usecase.NewFinancialsUseCase(db, log, ipotClient)
+	// get_financials (financials-v2 issue 03): pure DB read over the persisted
+	// statement store the monthly snapshot ingestion and history backfill fill.
+	financialsUC := usecase.NewFinancialsUseCase(db, log, financialsRepo, dailyPriceRepo)
 	// backfill_stock_broker_summary (issue 12): async enqueue seam over the
 	// in-process asynq server; the worker consumes the range task.
 	brokerSummaryBackfillUC := usecase.NewBrokerSummaryBackfillUseCase(

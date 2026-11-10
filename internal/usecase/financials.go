@@ -4,92 +4,426 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/sirupsen/logrus"
 
-	"github.com/nicholas-audric/idx-mcp-pipeline/internal/ipot"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/entity"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/financials"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/repository"
 )
 
-// FinancialViewParam values accepted by GetFinancials.
+// FinancialPeriod* are the period views accepted by GetFinancials.
 const (
-	FinancialPeriodRecent    = "recent"
+	// FinancialPeriodRecent — the latest ~2 years of statements, all durations.
+	FinancialPeriodRecent = "recent"
+	// FinancialPeriodQuarterly — every interim statement (3M / 6M / 9M) over
+	// the full stored history. The view is not "Q1 only": Tier 1 has 6M and 9M
+	// too, and every row carries duration_months so only same-duration columns
+	// are comparable.
 	FinancialPeriodQuarterly = "quarterly"
-	FinancialPeriodAnnual    = "annual"
+	// FinancialPeriodAnnual — every full-year statement (12M) over the full
+	// stored history.
+	FinancialPeriodAnnual = "annual"
 )
 
-// FinancialsFetcher fetches normalized financial statements from IPOT.
-// *ipot.Client satisfies this; tests use a fake.
-type FinancialsFetcher interface {
-	FetchFinancial(ctx context.Context, ticker string, view ipot.FinancialView) (*ipot.Financials, error)
+// Field coverage statuses. They describe what a response field holds for the
+// returned statements, so a null never has to be interpreted:
+//   - observed: every returned statement carries the value;
+//   - unknown: the value is unobserved (not carried by Tier 1, or missing on at
+//     least one returned row) — never read it as zero;
+//   - not_applicable: the concept does not exist for the issuer (a Tier-2
+//     distinction: a bank has no gross-profit line). Tier 1 emits unknown for
+//     every line it cannot supply, because the snapshot cannot distinguish an
+//     absent concept from an uncarried one.
+const (
+	FinancialCoverageObserved      = "observed"
+	FinancialCoverageUnknown       = "unknown"
+	FinancialCoverageNotApplicable = "not_applicable"
+)
+
+// financialsRecentYears is the lookback of the default `recent` view, anchored
+// on the newest stored statement (not wall-clock time), so a ticker that
+// stopped filing still returns its last two years of statements.
+const financialsRecentYears = 2
+
+// financialsStaleMonths is how old the newest stored statement may be before a
+// ticker reads as stale. An active issuer files at least quarterly (annual at
+// worst, three months after year-end) and the snapshot adds ~1 month of lag, so
+// a year is a safe ceiling. A ticker whose latest statement is 2019 is stale.
+const financialsStaleMonths = 12
+
+// FinancialStatementsReader is the statement seam the read path depends on.
+// *repository.FinancialsRepository satisfies it; tests use a fake.
+type FinancialStatementsReader interface {
+	FindByTicker(db *sqlx.DB, ticker string) ([]entity.FinancialStatement, error)
 }
 
-// FinancialsUseCase orchestrates the on-demand get_financials flow: validate,
-// fetch from IPOT, return. It is a temporary live-fetch route (issue 07) —
-// nothing is persisted; the persisted financial-statements pipeline is issue
-// 07b.
+// FinancialPriceReader is the price seam per/pbv and last_price read through.
+// *repository.DailyPriceRepository satisfies it.
+type FinancialPriceReader interface {
+	FindCloseOnOrBefore(db *sqlx.DB, ticker string, day time.Time) (*entity.DailyPrice, error)
+	FindLatestClose(db *sqlx.DB, ticker string) (*entity.DailyPrice, error)
+}
+
+// FinancialsUseCase answers get_financials from the persisted statement store.
+// It is a pure DB read: the MCP request path never touches IPOT or IDX (Heroku
+// H12 constraint, ADR-0009). The store is populated by the monthly snapshot
+// ingestion (financials-v2 issue 01) and its history backfill (issue 02).
 type FinancialsUseCase struct {
-	DB  *sqlx.DB
-	Log *logrus.Logger
-
-	Fetcher FinancialsFetcher
+	DB   *sqlx.DB
+	Log  *logrus.Logger
+	Repo FinancialStatementsReader
+	// Prices supplies the close on/before each statement's period end (per/pbv)
+	// and the ticker's latest stored close (last_price).
+	Prices FinancialPriceReader
+	// Now is the clock per-ticker staleness is judged against; nil means
+	// time.Now.
+	Now func() time.Time
 }
 
-func NewFinancialsUseCase(db *sqlx.DB, log *logrus.Logger, fetcher FinancialsFetcher) *FinancialsUseCase {
-	return &FinancialsUseCase{DB: db, Log: log, Fetcher: fetcher}
+func NewFinancialsUseCase(
+	db *sqlx.DB,
+	log *logrus.Logger,
+	repo FinancialStatementsReader,
+	prices FinancialPriceReader,
+) *FinancialsUseCase {
+	return &FinancialsUseCase{DB: db, Log: log, Repo: repo, Prices: prices}
 }
 
-// FinancialsResponse is the structured MCP tool result. DataStale is always
-// false (the data was fetched live) and LastGoodDate is the newest statement
-// period end, not a pipeline timestamp.
+// FinancialFieldCoverage is one field's coverage across the returned
+// statements. ObservedRows / ReturnedRows keep a partially observed field from
+// reading as either fully observed or wholly absent.
+type FinancialFieldCoverage struct {
+	Status       string `json:"status"`
+	ObservedRows int    `json:"observed_rows"`
+	ReturnedRows int    `json:"returned_rows"`
+}
+
+// FinancialStatementView is one stored statement projected into the tool's
+// response shape. Money is raw rupiah, ratios are IDX's TTM values, and every
+// field Tier 1 cannot supply is null — never zero. Per/pbv are calculated at
+// read time from the close on or before PeriodEnd; nil means not computable
+// (no covering close or a zero denominator), never zero.
+type FinancialStatementView struct {
+	PeriodLabel    string `json:"period_label"` // e.g. "3M 2026"
+	PeriodEnd      string `json:"period_end"`   // YYYY-MM-DD
+	DurationMonths int    `json:"duration_months"`
+	IsForecast     bool   `json:"is_forecast"` // always false: Tier 1 has no forecasts
+	IsInterim      bool   `json:"is_interim"`  // duration 3M / 6M / 9M
+	// PriceAsOf is the trading day whose close valued this row; empty when no
+	// stored close covers the period, in which case per/pbv are null.
+	PriceAsOf string `json:"price_as_of,omitempty"`
+
+	Revenue            *float64 `json:"revenue"`
+	GrossProfit        *float64 `json:"gross_profit"`
+	OperatingProfit    *float64 `json:"operating_profit"`
+	NetProfit          *float64 `json:"net_profit"` // attributable to owners
+	NetProfitInclNCI   *float64 `json:"net_profit_incl_nci"`
+	EBITDA             *float64 `json:"ebitda"`
+	InterestExpense    *float64 `json:"interest_expense"`
+	Cash               *float64 `json:"cash"`
+	TotalAssets        *float64 `json:"total_assets"`
+	ShortTermBorrowing *float64 `json:"short_term_borrowing"`
+	LongTermBorrowing  *float64 `json:"long_term_borrowing"`
+	TotalDebt          *float64 `json:"total_debt"`
+	TotalEquity        *float64 `json:"total_equity"`
+	GrossProfitMargin  *float64 `json:"gross_profit_margin"`
+
+	EPS       *float64 `json:"eps"`        // IDR per share, TTM
+	BookValue *float64 `json:"book_value"` // IDR per share
+	ROE       *float64 `json:"roe"`        // percent, TTM
+	ROA       *float64 `json:"roa"`        // percent, TTM
+	NPM       *float64 `json:"npm"`        // percent, TTM profit / YTD sales (IDX's mixed basis)
+	PER       *float64 `json:"per"`        // close at period end / eps
+	PBV       *float64 `json:"pbv"`        // close at period end / book_value
+	// DebtToEquity is deliberately always null: the snapshot's der is
+	// liabilities/equity, not total-debt/equity, and must not be mislabelled.
+	DebtToEquity *float64 `json:"debt_to_equity"`
+	// LiabilitiesToEquity is the stored der, under its real meaning.
+	LiabilitiesToEquity *float64 `json:"liabilities_to_equity"`
+
+	Extra map[string]float64 `json:"extra,omitempty"`
+}
+
+// FinancialsResponse is the structured MCP tool result. Statements are newest
+// period first. PeriodStale is the per-ticker freshness signal (the newest
+// statement is over a year old, or the ticker has no statement at all); the
+// handler ORs it into the standard envelope and exposes LatestPeriodEnd as
+// last_good_date.
 type FinancialsResponse struct {
-	Ticker          string                    `json:"ticker"`
-	Period          string                    `json:"period"`
-	Currency        string                    `json:"currency"`
-	LastPrice       *float64                  `json:"last_price,omitempty"`
-	LatestPeriodEnd string                    `json:"latest_period_end"`
-	Statements      []ipot.FinancialStatement `json:"statements"`
+	Ticker          string                            `json:"ticker"`
+	Period          string                            `json:"period"`
+	Currency        string                            `json:"currency"`
+	ValueBasis      string                            `json:"value_basis"`
+	LastPrice       *float64                          `json:"last_price,omitempty"`
+	LastPriceAsOf   string                            `json:"last_price_as_of,omitempty"`
+	LatestPeriodEnd string                            `json:"latest_period_end"`
+	Statements      []FinancialStatementView          `json:"statements"`
+	Coverage        map[string]FinancialFieldCoverage `json:"coverage"`
+
+	PeriodStale bool `json:"-"`
 }
 
-// GetFinancials returns the normalized financial statements for a ticker.
-// period defaults to "recent" (~2 years, all report types + forecast +
-// interim); "quarterly" selects uniform Q1 columns, "annual" audited
-// full-year columns.
+// GetFinancials returns a ticker's stored statements in the requested period
+// view. period defaults to "recent" (latest ~2 years, all durations);
+// "quarterly" selects every interim statement (3M/6M/9M) over full history;
+// "annual" selects every 12M statement. Periods are cumulative YTD and
+// comparable only within the same duration_months. This is a pure DB read.
 func (uc *FinancialsUseCase) GetFinancials(ctx context.Context, ticker, period string) (*FinancialsResponse, error) {
 	ticker = strings.ToUpper(strings.TrimSpace(ticker))
 	if !tickerPattern.MatchString(ticker) {
 		return nil, ErrInvalidTicker
 	}
-	if period == "" {
-		period = FinancialPeriodRecent
-	}
-	var view ipot.FinancialView
-	switch period {
-	case FinancialPeriodRecent:
-		view = ipot.ViewRecent
-	case FinancialPeriodQuarterly:
-		view = ipot.ViewQuarterly
-	case FinancialPeriodAnnual:
-		view = ipot.ViewAnnual
-	default:
-		return nil, fmt.Errorf("%w: period must be %q, %q or %q, got %q",
-			ErrInvalidArgument, FinancialPeriodRecent, FinancialPeriodQuarterly, FinancialPeriodAnnual, period)
+	view, err := normalizeFinancialPeriod(period)
+	if err != nil {
+		return nil, err
 	}
 
-	fin, err := uc.Fetcher.FetchFinancial(ctx, ticker, view)
+	rows, err := uc.Repo.FindByTicker(uc.DB, ticker)
 	if err != nil {
-		return nil, fmt.Errorf("ipot financials: %w", err)
+		return nil, fmt.Errorf("read financial statements: %w", err)
+	}
+	// The repository orders newest first; keep the invariant local too so the
+	// recent cutoff and latest_period_end never depend on that detail.
+	sortStatementsNewestFirst(rows)
+
+	latest := time.Time{}
+	valueBasis := financials.ValueBasisIDX
+	if len(rows) > 0 {
+		latest = rows[0].PeriodEnd
+		if rows[0].ValueBasis != "" {
+			valueBasis = rows[0].ValueBasis
+		}
+	}
+
+	selected := selectFinancialStatements(rows, view)
+	statements := make([]FinancialStatementView, 0, len(selected))
+	for _, st := range selected {
+		price, err := uc.Prices.FindCloseOnOrBefore(uc.DB, ticker, st.PeriodEnd)
+		if err != nil {
+			return nil, fmt.Errorf("read close for %s %s: %w", ticker, st.PeriodEnd.Format("2006-01-02"), err)
+		}
+		statements = append(statements, financialStatementView(st, price))
 	}
 
 	resp := &FinancialsResponse{
-		Ticker:     fin.Ticker,
-		Period:     period,
-		Currency:   fin.Currency,
-		LastPrice:  fin.LastPrice,
-		Statements: fin.Periods,
+		Ticker:     ticker,
+		Period:     view,
+		Currency:   "IDR",
+		ValueBasis: valueBasis,
+		Statements: statements,
+		Coverage:   financialCoverage(statements),
 	}
-	if len(fin.Periods) > 0 {
-		resp.LatestPeriodEnd = fin.Periods[0].PeriodEnd
+	if !latest.IsZero() {
+		resp.LatestPeriodEnd = latest.Format("2006-01-02")
 	}
+
+	lastPrice, err := uc.Prices.FindLatestClose(uc.DB, ticker)
+	if err != nil {
+		return nil, fmt.Errorf("read latest close for %s: %w", ticker, err)
+	}
+	if lastPrice != nil && lastPrice.Close != nil {
+		close := *lastPrice.Close
+		resp.LastPrice = &close
+		resp.LastPriceAsOf = lastPrice.TradingDay.Format("2006-01-02")
+	}
+
+	now := time.Now()
+	if uc.Now != nil {
+		now = uc.Now()
+	}
+	resp.PeriodStale = latest.IsZero() || latest.AddDate(0, financialsStaleMonths, 0).Before(now)
 	return resp, nil
 }
+
+// normalizeFinancialPeriod maps the caller's period string to a stored view.
+// Empty means the default `recent`; anything else unrecognised is an argument
+// error.
+func normalizeFinancialPeriod(period string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(period)) {
+	case "", FinancialPeriodRecent:
+		return FinancialPeriodRecent, nil
+	case FinancialPeriodQuarterly:
+		return FinancialPeriodQuarterly, nil
+	case FinancialPeriodAnnual:
+		return FinancialPeriodAnnual, nil
+	default:
+		return "", fmt.Errorf("%w: period must be %q, %q or %q, got %q",
+			ErrInvalidArgument, FinancialPeriodRecent, FinancialPeriodQuarterly, FinancialPeriodAnnual, period)
+	}
+}
+
+// selectFinancialStatements applies one period view to the newest-first rows.
+func selectFinancialStatements(rows []entity.FinancialStatement, view string) []entity.FinancialStatement {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]entity.FinancialStatement, 0, len(rows))
+	switch view {
+	case FinancialPeriodQuarterly:
+		for _, st := range rows {
+			if st.DurationMonths == 3 || st.DurationMonths == 6 || st.DurationMonths == 9 {
+				out = append(out, st)
+			}
+		}
+	case FinancialPeriodAnnual:
+		for _, st := range rows {
+			if st.DurationMonths == 12 {
+				out = append(out, st)
+			}
+		}
+	default: // recent
+		cutoff := rows[0].PeriodEnd.AddDate(-financialsRecentYears, 0, 0)
+		for _, st := range rows {
+			if !st.PeriodEnd.Before(cutoff) {
+				out = append(out, st)
+			}
+		}
+	}
+	return out
+}
+
+// financialStatementView maps one stored statement to the response shape. The
+// mapping is deliberately explicit: net_profit is the attributable figure
+// (profitAttrOwner), consistent with eps/roe, and the total including
+// non-controlling interests is exposed separately.
+func financialStatementView(st entity.FinancialStatement, price *entity.DailyPrice) FinancialStatementView {
+	view := FinancialStatementView{
+		PeriodLabel:         fmt.Sprintf("%dM %d", st.DurationMonths, st.PeriodEnd.Year()),
+		PeriodEnd:           st.PeriodEnd.Format("2006-01-02"),
+		DurationMonths:      st.DurationMonths,
+		IsForecast:          false,
+		IsInterim:           st.DurationMonths != 12,
+		Revenue:             rupiahFloat(st.Revenue),
+		NetProfit:           rupiahFloat(st.NetProfitParent),
+		NetProfitInclNCI:    rupiahFloat(st.NetProfit),
+		TotalAssets:         rupiahFloat(st.Assets),
+		TotalEquity:         rupiahFloat(st.Equity),
+		EPS:                 copyFloat(st.EPS),
+		BookValue:           copyFloat(st.BookValue),
+		ROE:                 copyFloat(st.ROE),
+		ROA:                 copyFloat(st.ROA),
+		NPM:                 copyFloat(st.NPM),
+		LiabilitiesToEquity: copyFloat(st.DER),
+	}
+	// Cash, gross profit, operating profit, EBITDA, interest expense, debt and
+	// gross margin are unknown at Tier 1 — nil, never zero. DebtToEquity stays
+	// nil because der measures a different thing.
+	if price == nil || price.Close == nil {
+		return view
+	}
+	view.PriceAsOf = price.TradingDay.Format("2006-01-02")
+	close := *price.Close
+	if st.EPS != nil && *st.EPS != 0 {
+		per := close / *st.EPS
+		view.PER = &per
+	}
+	if st.BookValue != nil && *st.BookValue != 0 {
+		pbv := close / *st.BookValue
+		view.PBV = &pbv
+	}
+	return view
+}
+
+// financialCoverage declares, per response field, what the returned statements
+// actually hold. Carried fields are observed only when every returned row has a
+// value; fields the snapshot does not carry are unknown by construction. The
+// returned rows also carry the value itself (or null), so a partially observed
+// field is both countable and visible.
+func financialCoverage(views []FinancialStatementView) map[string]FinancialFieldCoverage {
+	cov := make(map[string]FinancialFieldCoverage, 24)
+	add := func(field string, value func(FinancialStatementView) *float64) {
+		observed := 0
+		for _, v := range views {
+			if value(v) != nil {
+				observed++
+			}
+		}
+		status := FinancialCoverageUnknown
+		if len(views) > 0 && observed == len(views) {
+			status = FinancialCoverageObserved
+		}
+		cov[field] = FinancialFieldCoverage{
+			Status:       status,
+			ObservedRows: observed,
+			ReturnedRows: len(views),
+		}
+	}
+	add("revenue", func(v FinancialStatementView) *float64 { return v.Revenue })
+	add("net_profit", func(v FinancialStatementView) *float64 { return v.NetProfit })
+	add("net_profit_incl_nci", func(v FinancialStatementView) *float64 { return v.NetProfitInclNCI })
+	add("total_assets", func(v FinancialStatementView) *float64 { return v.TotalAssets })
+	add("total_equity", func(v FinancialStatementView) *float64 { return v.TotalEquity })
+	add("eps", func(v FinancialStatementView) *float64 { return v.EPS })
+	add("book_value", func(v FinancialStatementView) *float64 { return v.BookValue })
+	add("roe", func(v FinancialStatementView) *float64 { return v.ROE })
+	add("roa", func(v FinancialStatementView) *float64 { return v.ROA })
+	add("npm", func(v FinancialStatementView) *float64 { return v.NPM })
+	add("liabilities_to_equity", func(v FinancialStatementView) *float64 { return v.LiabilitiesToEquity })
+	add("per", func(v FinancialStatementView) *float64 { return v.PER })
+	add("pbv", func(v FinancialStatementView) *float64 { return v.PBV })
+
+	unknown := []string{
+		"gross_profit", "operating_profit", "ebitda", "interest_expense",
+		"cash", "short_term_borrowing", "long_term_borrowing", "total_debt",
+		"gross_profit_margin", "debt_to_equity",
+	}
+	for _, field := range unknown {
+		cov[field] = FinancialFieldCoverage{
+			Status:       FinancialCoverageUnknown,
+			ObservedRows: 0,
+			ReturnedRows: len(views),
+		}
+	}
+
+	priceAsOf := 0
+	for _, v := range views {
+		if v.PriceAsOf != "" {
+			priceAsOf++
+		}
+	}
+	status := FinancialCoverageUnknown
+	if len(views) > 0 && priceAsOf == len(views) {
+		status = FinancialCoverageObserved
+	}
+	cov["price_as_of"] = FinancialFieldCoverage{Status: status, ObservedRows: priceAsOf, ReturnedRows: len(views)}
+	return cov
+}
+
+// sortStatementsNewestFirst orders rows by period end descending in place.
+func sortStatementsNewestFirst(rows []entity.FinancialStatement) {
+	for i := 1; i < len(rows); i++ {
+		for j := i; j > 0 && rows[j].PeriodEnd.After(rows[j-1].PeriodEnd); j-- {
+			rows[j], rows[j-1] = rows[j-1], rows[j]
+		}
+	}
+}
+
+// rupiahFloat converts a raw-rupiah integer into the response's float64. The
+// magnitudes (up to ~1e15) stay exact well inside float64's 2^53 integer
+// range.
+func rupiahFloat(v *int64) *float64 {
+	if v == nil {
+		return nil
+	}
+	f := float64(*v)
+	return &f
+}
+
+// copyFloat copies a nullable ratio so the response never aliases a repository
+// row.
+func copyFloat(v *float64) *float64 {
+	if v == nil {
+		return nil
+	}
+	f := *v
+	return &f
+}
+
+// compile-time check: the concrete repository satisfies the read seams.
+var (
+	_ FinancialStatementsReader = (*repository.FinancialsRepository)(nil)
+	_ FinancialPriceReader      = (*repository.DailyPriceRepository)(nil)
+)
