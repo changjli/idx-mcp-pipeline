@@ -1,0 +1,3160 @@
+{
+  "timeseries": {
+    "result": [
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQQR7_3M"
+          ]
+        },
+        "timestamp": [
+          1751241600,
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQQR7_3M": [
+          {
+            "dataIdV2": "EQQR7",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -1623288000000.0,
+              "fmt": "-1.62T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQRD7_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQRD7_12M": [
+          {
+            "dataIdV2": "EQRD7",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 167837861000000.0,
+              "fmt": "167.84T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQL8B_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQL8B_3M": [
+          {
+            "dataIdV2": "EQL8B",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -176045000000.0,
+              "fmt": "-176.04B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQOD7_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQOD7_3M": [
+          {
+            "dataIdV2": "EQOD7",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 102.0,
+              "fmt": "102.00"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQBDY_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQBDY_12M": [
+          {
+            "dataIdV2": "EQBDY",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -46090581000000.0,
+              "fmt": "-46.09T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ65B_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ65B_12M": [
+          {
+            "dataIdV2": "EQ65B",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 14617023000000.0,
+              "fmt": "14.62T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQGH5_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQGH5_3M": [
+          {
+            "dataIdV2": "EQGH5",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 15548737000000.0,
+              "fmt": "15.55T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQAFC_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQAFC_3M": [
+          {
+            "dataIdV2": "EQAFC",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 150669679808.0,
+              "fmt": "150.67B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQA1D_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQA1D_12M": [
+          {
+            "dataIdV2": "EQA1D",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 1804429671000000.0,
+              "fmt": "1,804.43T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQRD7_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQRD7_TTM": [
+          {
+            "dataIdV2": "EQRD7",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 173326434000000.0,
+              "fmt": "173.33T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQBQ4_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQBQ4_3M": [
+          {
+            "dataIdV2": "EQBQ4",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 102.0,
+              "fmt": "102.00"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQBDY_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQBDY_TTM": [
+          {
+            "dataIdV2": "EQBDY",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -42294829000000.0,
+              "fmt": "-42.29T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQRG7_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQRG7_3M": [
+          {
+            "dataIdV2": "EQRG7",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 2023705711000000.0,
+              "fmt": "2,023.71T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ65B_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQ65B_TTM": [
+          {
+            "dataIdV2": "EQ65B",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 14075589000000.0,
+              "fmt": "14.08T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQK97_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQK97_12M": [
+          {
+            "dataIdV2": "EQK97",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -5869384000000.0,
+              "fmt": "-5.87T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQBM5_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQBM5_12M": [
+          {
+            "dataIdV2": "EQBM5",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 0.565967,
+              "fmt": "0.57"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQGH5_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQGH5_12M": [
+          {
+            "dataIdV2": "EQGH5",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 57132365000000.0,
+              "fmt": "57.13T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQVHZ_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQVHZ_3M": [
+          {
+            "dataIdV2": "EQVHZ",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 15548737000000.0,
+              "fmt": "15.55T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQYWG_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQYWG_3M": [
+          {
+            "dataIdV2": "EQYWG",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -16141897000000.0,
+              "fmt": "-16.14T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQAFC_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQAFC_TTM": [
+          {
+            "dataIdV2": "EQAFC",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 150598686872.0,
+              "fmt": "150.60B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQUVT_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQUVT_TTM": [
+          {
+            "dataIdV2": "EQUVT",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 61241085000000.0,
+              "fmt": "61.24T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQBM5_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQBM5_3M": [
+          {
+            "dataIdV2": "EQBM5",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 0.969278,
+              "fmt": "0.97"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ1HC_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ1HC_3M": [
+          {
+            "dataIdV2": "EQ1HC",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 321801156000000.0,
+              "fmt": "321.80T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQT07_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQT07_12M": [
+          {
+            "dataIdV2": "EQT07",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 186876558000000.0,
+              "fmt": "186.88T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQTFV_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQTFV_TTM": [
+          {
+            "dataIdV2": "EQTFV",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -6317827000000.0,
+              "fmt": "-6.32T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQTFV_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQTFV_3M": [
+          {
+            "dataIdV2": "EQTFV",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -1623288000000.0,
+              "fmt": "-1.62T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ7WE_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ7WE_3M": [
+          {
+            "dataIdV2": "EQ7WE",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 15372692000000.0,
+              "fmt": "15.37T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQRIO_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQRIO_12M": [
+          {
+            "dataIdV2": "EQRIO",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 1709675564000000.0,
+              "fmt": "1,709.68T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQGH5_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQGH5_TTM": [
+          {
+            "dataIdV2": "EQGH5",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 61781804000000.0,
+              "fmt": "61.78T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQUZ0_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQUZ0_12M": [
+          {
+            "dataIdV2": "EQUZ0",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 6344276000000.0,
+              "fmt": "6.34T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ72T_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ72T_12M": [
+          {
+            "dataIdV2": "EQ72T",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 376.0,
+              "fmt": "376.00"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ4P8_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ4P8_12M": [
+          {
+            "dataIdV2": "EQ4P8",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 376.0,
+              "fmt": "376.00"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQYDI_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQYDI_TTM": [
+          {
+            "dataIdV2": "EQYDI",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -16268028000000.0,
+              "fmt": "-16.27T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ6JP_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ6JP_3M": [
+          {
+            "dataIdV2": "EQ6JP",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 25558464000000.0,
+              "fmt": "25.56T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQRD7_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQRD7_3M": [
+          {
+            "dataIdV2": "EQRD7",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 44974035000000.0,
+              "fmt": "44.97T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQYDI_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQYDI_3M": [
+          {
+            "dataIdV2": "EQYDI",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -4466844000000.0,
+              "fmt": "-4.47T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQYDI_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQYDI_12M": [
+          {
+            "dataIdV2": "EQYDI",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -15660454000000.0,
+              "fmt": "-15.66T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ72T_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQ72T_TTM": [
+          {
+            "dataIdV2": "EQ72T",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 407.0,
+              "fmt": "407.00"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQWXW_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQWXW_12M": [
+          {
+            "dataIdV2": "EQWXW",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 122736347000000.0,
+              "fmt": "122.74T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQZNP_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQZNP_12M": [
+          {
+            "dataIdV2": "EQZNP",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -42620192000000.0,
+              "fmt": "-42.62T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQTCA_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQTCA_12M": [
+          {
+            "dataIdV2": "EQTCA",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 324033858000000.0,
+              "fmt": "324.03T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQUZ0_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQUZ0_TTM": [
+          {
+            "dataIdV2": "EQUZ0",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 3805628000000.0,
+              "fmt": "3.81T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQUVT_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQUVT_12M": [
+          {
+            "dataIdV2": "EQUVT",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 56652384000000.0,
+              "fmt": "56.65T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQFK8_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQFK8_12M": [
+          {
+            "dataIdV2": "EQFK8",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 136846314000000.0,
+              "fmt": "136.85T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ4RH_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ4RH_12M": [
+          {
+            "dataIdV2": "EQ4RH",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 330941434000000.0,
+              "fmt": "330.94T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ4LG_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQ4LG_TTM": [
+          {
+            "dataIdV2": "EQ4LG",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 0.0,
+              "fmt": "0.00"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQU9Z_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQU9Z_12M": [
+          {
+            "dataIdV2": "EQU9Z",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 131235715000000.0,
+              "fmt": "131.24T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQBQ4_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQBQ4_TTM": [
+          {
+            "dataIdV2": "EQBQ4",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 407.0,
+              "fmt": "407.00"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQBDY_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQBDY_3M": [
+          {
+            "dataIdV2": "EQBDY",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 314652000000.0,
+              "fmt": "314.65B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQDBM_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQDBM_TTM": [
+          {
+            "dataIdV2": "EQDBM",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 197665153000000.0,
+              "fmt": "197.67T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQK97_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQK97_TTM": [
+          {
+            "dataIdV2": "EQK97",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -6317827000000.0,
+              "fmt": "-6.32T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQZNP_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQZNP_3M": [
+          {
+            "dataIdV2": "EQZNP",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -16681352000000.0,
+              "fmt": "-16.68T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ7WE_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ7WE_12M": [
+          {
+            "dataIdV2": "EQ7WE",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 56652384000000.0,
+              "fmt": "56.65T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQV4N_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQV4N_3M": [
+          {
+            "dataIdV2": "EQV4N",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 1755570690000000.0,
+              "fmt": "1,755.57T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQL8B_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQL8B_12M": [
+          {
+            "dataIdV2": "EQL8B",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -479981000000.0,
+              "fmt": "-479.98B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQBM5_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQBM5_TTM": [
+          {
+            "dataIdV2": "EQBM5",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 0.729629,
+              "fmt": "0.73"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ7WE_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQ7WE_TTM": [
+          {
+            "dataIdV2": "EQ7WE",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 61241085000000.0,
+              "fmt": "61.24T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQPNK_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQPNK_3M": [
+          {
+            "dataIdV2": "EQPNK",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -16681352000000.0,
+              "fmt": "-16.68T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQPNK_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQPNK_TTM": [
+          {
+            "dataIdV2": "EQPNK",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -5500628000000.0,
+              "fmt": "-5.50T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQEZO_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQEZO_TTM": [
+          {
+            "dataIdV2": "EQEZO",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 150598686872.0,
+              "fmt": "150.60B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQDBM_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQDBM_3M": [
+          {
+            "dataIdV2": "EQDBM",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 51172605000000.0,
+              "fmt": "51.17T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQE13_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQE13_12M": [
+          {
+            "dataIdV2": "EQE13",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 330941434000000.0,
+              "fmt": "330.94T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ4P8_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ4P8_3M": [
+          {
+            "dataIdV2": "EQ4P8",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 102.0,
+              "fmt": "102.00"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQQR7_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQQR7_12M": [
+          {
+            "dataIdV2": "EQQR7",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -5869384000000.0,
+              "fmt": "-5.87T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQU9Z_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQU9Z_3M": [
+          {
+            "dataIdV2": "EQU9Z",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 197014323000000.0,
+              "fmt": "197.01T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ1HW_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ1HW_3M": [
+          {
+            "dataIdV2": "EQ1HW",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 314652000000.0,
+              "fmt": "314.65B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQT07_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQT07_3M": [
+          {
+            "dataIdV2": "EQT07",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 48719054000000.0,
+              "fmt": "48.72T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQEO0_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQEO0_12M": [
+          {
+            "dataIdV2": "EQEO0",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 56652384000000.0,
+              "fmt": "56.65T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQEO0_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQEO0_TTM": [
+          {
+            "dataIdV2": "EQEO0",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 61241085000000.0,
+              "fmt": "61.24T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQBQ4_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQBQ4_12M": [
+          {
+            "dataIdV2": "EQBQ4",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 376.0,
+              "fmt": "376.00"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQUVT_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQUVT_3M": [
+          {
+            "dataIdV2": "EQUVT",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 15372692000000.0,
+              "fmt": "15.37T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQTCA_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQTCA_3M": [
+          {
+            "dataIdV2": "EQTCA",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 321923187000000.0,
+              "fmt": "321.92T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQL8B_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQL8B_TTM": [
+          {
+            "dataIdV2": "EQL8B",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -540719000000.0,
+              "fmt": "-540.72B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ4LG_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ4LG_12M": [
+          {
+            "dataIdV2": "EQ4LG",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 0.0,
+              "fmt": "0.00"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQDBM_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQDBM_12M": [
+          {
+            "dataIdV2": "EQDBM",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 192859238000000.0,
+              "fmt": "192.86T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ1HW_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ1HW_12M": [
+          {
+            "dataIdV2": "EQ1HW",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -46090581000000.0,
+              "fmt": "-46.09T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ65B_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ65B_3M": [
+          {
+            "dataIdV2": "EQ65B",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 25549464000000.0,
+              "fmt": "25.55T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ4P8_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQ4P8_TTM": [
+          {
+            "dataIdV2": "EQ4P8",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 407.0,
+              "fmt": "407.00"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQUZ0_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQUZ0_3M": [
+          {
+            "dataIdV2": "EQUZ0",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 784921000000.0,
+              "fmt": "784.92B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQVHZ_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQVHZ_12M": [
+          {
+            "dataIdV2": "EQVHZ",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 57132365000000.0,
+              "fmt": "57.13T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ6JP_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ6JP_12M": [
+          {
+            "dataIdV2": "EQ6JP",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 14617023000000.0,
+              "fmt": "14.62T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQE13_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQE13_3M": [
+          {
+            "dataIdV2": "EQE13",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 328674878000000.0,
+              "fmt": "328.67T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQZNP_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQZNP_TTM": [
+          {
+            "dataIdV2": "EQZNP",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -5500628000000.0,
+              "fmt": "-5.50T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQEZO_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQEZO_3M": [
+          {
+            "dataIdV2": "EQEZO",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 150669679808.0,
+              "fmt": "150.67B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQHE5_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQHE5_TTM": [
+          {
+            "dataIdV2": "EQHE5",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 78049832000000.0,
+              "fmt": "78.05T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQYZU_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQYZU_3M": [
+          {
+            "dataIdV2": "EQYZU",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 2352380589000000.0,
+              "fmt": "2,352.38T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQHE5_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQHE5_3M": [
+          {
+            "dataIdV2": "EQHE5",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 20015581000000.0,
+              "fmt": "20.02T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ1HC_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ1HC_12M": [
+          {
+            "dataIdV2": "EQ1HC",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 323912050000000.0,
+              "fmt": "323.91T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQU9Z_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQU9Z_TTM": [
+          {
+            "dataIdV2": "EQU9Z",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 197014323000000.0,
+              "fmt": "197.01T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQFK8_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQFK8_TTM": [
+          {
+            "dataIdV2": "EQFK8",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 143641348000000.0,
+              "fmt": "143.64T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQEZO_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQEZO_12M": [
+          {
+            "dataIdV2": "EQEZO",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 150602160685.0,
+              "fmt": "150.60B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQT07_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQT07_TTM": [
+          {
+            "dataIdV2": "EQT07",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 195049276000000.0,
+              "fmt": "195.05T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQV4N_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQV4N_12M": [
+          {
+            "dataIdV2": "EQV4N",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 1586939217000000.0,
+              "fmt": "1,586.94T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQTFV_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQTFV_12M": [
+          {
+            "dataIdV2": "EQTFV",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -5869384000000.0,
+              "fmt": "-5.87T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQRG7_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQRG7_12M": [
+          {
+            "dataIdV2": "EQRG7",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 1804429671000000.0,
+              "fmt": "1,804.43T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQYWG_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQYWG_TTM": [
+          {
+            "dataIdV2": "EQYWG",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -70035542000000.0,
+              "fmt": "-70.04T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQWXW_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQWXW_3M": [
+          {
+            "dataIdV2": "EQWXW",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 185880840000000.0,
+              "fmt": "185.88T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQOD7_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQOD7_TTM": [
+          {
+            "dataIdV2": "EQOD7",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 407.0,
+              "fmt": "407.00"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ72T_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ72T_3M": [
+          {
+            "dataIdV2": "EQ72T",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 102.0,
+              "fmt": "102.00"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ6JP_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQ6JP_TTM": [
+          {
+            "dataIdV2": "EQ6JP",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 14075589000000.0,
+              "fmt": "14.08T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ1HW_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQ1HW_TTM": [
+          {
+            "dataIdV2": "EQ1HW",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -42294829000000.0,
+              "fmt": "-42.29T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQOBD_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQOBD_12M": [
+          {
+            "dataIdV2": "EQOBD",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 0.2151,
+              "fmt": "0.22"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQHE5_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQHE5_12M": [
+          {
+            "dataIdV2": "EQHE5",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 72792819000000.0,
+              "fmt": "72.79T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQVHZ_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQVHZ_TTM": [
+          {
+            "dataIdV2": "EQVHZ",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 61781804000000.0,
+              "fmt": "61.78T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQYZU_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQYZU_12M": [
+          {
+            "dataIdV2": "EQYZU",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 2135371105000000.0,
+              "fmt": "2,135.37T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQAFC_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQAFC_12M": [
+          {
+            "dataIdV2": "EQAFC",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 150602160685.0,
+              "fmt": "150.60B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQYWG_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQYWG_12M": [
+          {
+            "dataIdV2": "EQYWG",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -69577181000000.0,
+              "fmt": "-69.58T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQK97_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQK97_3M": [
+          {
+            "dataIdV2": "EQK97",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -1623288000000.0,
+              "fmt": "-1.62T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQA1D_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQA1D_3M": [
+          {
+            "dataIdV2": "EQA1D",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 2023705711000000.0,
+              "fmt": "2,023.71T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQPNK_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQPNK_12M": [
+          {
+            "dataIdV2": "EQPNK",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -42620192000000.0,
+              "fmt": "-42.62T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQQR7_TTM"
+          ]
+        },
+        "timestamp": [
+          1782777600
+        ],
+        "EQQR7_TTM": [
+          {
+            "dataIdV2": "EQQR7",
+            "asOfDate": "2026-06-30",
+            "periodType": "TTM",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": -6317827000000.0,
+              "fmt": "-6.32T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQ4RH_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQ4RH_3M": [
+          {
+            "dataIdV2": "EQ4RH",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 328674878000000.0,
+              "fmt": "328.67T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQEO0_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQEO0_3M": [
+          {
+            "dataIdV2": "EQEO0",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 15372692000000.0,
+              "fmt": "15.37T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQOD7_12M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQOD7_12M": [
+          {
+            "dataIdV2": "EQOD7",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 376.0,
+              "fmt": "376.00"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQRIO_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQRIO_3M": [
+          {
+            "dataIdV2": "EQRIO",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 1941451530000000.0,
+              "fmt": "1,941.45T"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "BBRI.JK"
+          ],
+          "type": [
+            "EQFK8_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600
+        ],
+        "EQFK8_3M": [
+          {
+            "dataIdV2": "EQFK8",
+            "asOfDate": "2026-06-30",
+            "periodType": "3M",
+            "currencyCode": "IDR",
+            "restatedValue": {
+              "raw": 36959775000000.0,
+              "fmt": "36.96T"
+            }
+          }
+        ]
+      }
+    ],
+    "error": null
+  }
+}

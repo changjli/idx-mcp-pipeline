@@ -1,0 +1,4105 @@
+{
+  "timeseries": {
+    "result": [
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQEO0_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQEO0_3M": [
+          {
+            "dataIdV2": "EQEO0",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 209573000.0,
+              "fmt": "209.57M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQK97_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQK97_TTM": [
+          {
+            "dataIdV2": "EQK97",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -1312000.0,
+              "fmt": "-1.31M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQYWG_3M"
+          ]
+        },
+        "timestamp": [
+          1759190400,
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQYWG_3M": [
+          {
+            "dataIdV2": "EQYWG",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -59662000.0,
+              "fmt": "-59.66M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQBDY_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQBDY_12M": [
+          {
+            "dataIdV2": "EQBDY",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -381046000.0,
+              "fmt": "-381.05M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQGH5_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQGH5_3M": [
+          {
+            "dataIdV2": "EQGH5",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 236202000.0,
+              "fmt": "236.20M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ46Q_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ46Q_3M": [
+          {
+            "dataIdV2": "EQ46Q",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 419334000.0,
+              "fmt": "419.33M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQBM5_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQBM5_TTM": [
+          {
+            "dataIdV2": "EQBM5",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.725474,
+              "fmt": "0.73"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQLTG_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQLTG_TTM": [
+          {
+            "dataIdV2": "EQLTG",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -8807000.0,
+              "fmt": "-8.81M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQA1D_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQA1D_12M": [
+          {
+            "dataIdV2": "EQA1D",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 2056648000.0,
+              "fmt": "2.06B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQA1D_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQA1D_3M": [
+          {
+            "dataIdV2": "EQA1D",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 2473219000.0,
+              "fmt": "2.47B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ46Q_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQ46Q_TTM": [
+          {
+            "dataIdV2": "EQ46Q",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1520470000.0,
+              "fmt": "1.52B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQTCA_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQTCA_12M": [
+          {
+            "dataIdV2": "EQTCA",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 3333550000.0,
+              "fmt": "3.33B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ46Q_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ46Q_12M": [
+          {
+            "dataIdV2": "EQ46Q",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1261695000.0,
+              "fmt": "1.26B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQLTG_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQLTG_12M": [
+          {
+            "dataIdV2": "EQLTG",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -4544000.0,
+              "fmt": "-4.54M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQSX8_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQSX8_3M": [
+          {
+            "dataIdV2": "EQSX8",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -641000.0,
+              "fmt": "-641.00k"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQTFV_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQTFV_TTM": [
+          {
+            "dataIdV2": "EQTFV",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -1312000.0,
+              "fmt": "-1.31M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQRG7_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQRG7_3M": [
+          {
+            "dataIdV2": "EQRG7",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 2473219000.0,
+              "fmt": "2.47B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQF4S_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQF4S_3M": [
+          {
+            "dataIdV2": "EQF4S",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -86679000.0,
+              "fmt": "-86.68M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQIEA_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQIEA_TTM": [
+          {
+            "dataIdV2": "EQIEA",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1263945000.0,
+              "fmt": "1.26B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ4P8_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ4P8_12M": [
+          {
+            "dataIdV2": "EQ4P8",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.09762,
+              "fmt": "0.10"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ1HC_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ1HC_3M": [
+          {
+            "dataIdV2": "EQ1HC",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 3796867000.0,
+              "fmt": "3.80B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQV4N_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQV4N_3M": [
+          {
+            "dataIdV2": "EQV4N",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -1221521000.0,
+              "fmt": "-1.22B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ8Y4_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ8Y4_12M": [
+          {
+            "dataIdV2": "EQ8Y4",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -3648568000.0,
+              "fmt": "-3.65B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ72T_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQ72T_TTM": [
+          {
+            "dataIdV2": "EQ72T",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.10995,
+              "fmt": "0.11"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ58O_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQ58O_TTM": [
+          {
+            "dataIdV2": "EQ58O",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 722052407.324,
+              "fmt": "722.05M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQR8M_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQR8M_12M": [
+          {
+            "dataIdV2": "EQR8M",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1181621000.0,
+              "fmt": "1.18B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQL8B_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQL8B_3M": [
+          {
+            "dataIdV2": "EQL8B",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -26629000.0,
+              "fmt": "-26.63M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQSX8_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQSX8_12M": [
+          {
+            "dataIdV2": "EQSX8",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 2218000.0,
+              "fmt": "2.22M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQAFC_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQAFC_12M": [
+          {
+            "dataIdV2": "EQAFC",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 7786892000.0,
+              "fmt": "7.79B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQBDY_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQBDY_TTM": [
+          {
+            "dataIdV2": "EQBDY",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 371869000.0,
+              "fmt": "371.87M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQYSV_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQYSV_3M": [
+          {
+            "dataIdV2": "EQYSV",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 10622000.0,
+              "fmt": "10.62M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQUVT_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQUVT_12M": [
+          {
+            "dataIdV2": "EQUVT",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 760180000.0,
+              "fmt": "760.18M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQT07_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQT07_12M": [
+          {
+            "dataIdV2": "EQT07",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 4910263000.0,
+              "fmt": "4.91B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQHE5_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQHE5_TTM": [
+          {
+            "dataIdV2": "EQHE5",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1303727000.0,
+              "fmt": "1.30B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQGH5_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQGH5_12M": [
+          {
+            "dataIdV2": "EQGH5",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 849184000.0,
+              "fmt": "849.18M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQWXW_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQWXW_12M": [
+          {
+            "dataIdV2": "EQWXW",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 925445000.0,
+              "fmt": "925.45M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ25Z_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ25Z_3M": [
+          {
+            "dataIdV2": "EQ25Z",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 9792000.0,
+              "fmt": "9.79M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQYDI_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQYDI_3M": [
+          {
+            "dataIdV2": "EQYDI",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -160072000.0,
+              "fmt": "-160.07M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQOD7_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQOD7_3M": [
+          {
+            "dataIdV2": "EQOD7",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.02691,
+              "fmt": "0.03"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ8Y4_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ8Y4_3M": [
+          {
+            "dataIdV2": "EQ8Y4",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -993262000.0,
+              "fmt": "-993.26M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ65B_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQ65B_TTM": [
+          {
+            "dataIdV2": "EQ65B",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 953839000.0,
+              "fmt": "953.84M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQZNP_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQZNP_3M": [
+          {
+            "dataIdV2": "EQZNP",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 79765000.0,
+              "fmt": "79.77M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQSX8_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQSX8_TTM": [
+          {
+            "dataIdV2": "EQSX8",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1172000.0,
+              "fmt": "1.17M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQEZO_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQEZO_3M": [
+          {
+            "dataIdV2": "EQEZO",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 7786892000.0,
+              "fmt": "7.79B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQZNP_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQZNP_12M": [
+          {
+            "dataIdV2": "EQZNP",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -1061010000.0,
+              "fmt": "-1.06B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQTFV_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQTFV_3M": [
+          {
+            "dataIdV2": "EQTFV",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -377000.0,
+              "fmt": "-377.00k"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQYWG_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQYWG_TTM": [
+          {
+            "dataIdV2": "EQYWG",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -255213000.0,
+              "fmt": "-255.21M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQV4N_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQV4N_12M": [
+          {
+            "dataIdV2": "EQV4N",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -132388000.0,
+              "fmt": "-132.39M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ65B_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ65B_12M": [
+          {
+            "dataIdV2": "EQ65B",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 859242000.0,
+              "fmt": "859.24M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQYDI_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQYDI_12M": [
+          {
+            "dataIdV2": "EQYDI",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -206162000.0,
+              "fmt": "-206.16M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQGH5_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQGH5_TTM": [
+          {
+            "dataIdV2": "EQGH5",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 954949000.0,
+              "fmt": "954.95M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ9HN_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ9HN_3M": [
+          {
+            "dataIdV2": "EQ9HN",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 400873000.0,
+              "fmt": "400.87M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ9HN_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ9HN_12M": [
+          {
+            "dataIdV2": "EQ9HN",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1042680000.0,
+              "fmt": "1.04B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ72T_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ72T_12M": [
+          {
+            "dataIdV2": "EQ72T",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.09762,
+              "fmt": "0.10"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQTFV_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQTFV_12M": [
+          {
+            "dataIdV2": "EQTFV",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -1666000.0,
+              "fmt": "-1.67M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQBQ4_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQBQ4_12M": [
+          {
+            "dataIdV2": "EQBQ4",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.09762,
+              "fmt": "0.10"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ58O_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ58O_12M": [
+          {
+            "dataIdV2": "EQ58O",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 576056405.25,
+              "fmt": "576.06M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQLYB_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQLYB_12M": [
+          {
+            "dataIdV2": "EQLYB",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 6565000.0,
+              "fmt": "6.57M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQRG7_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQRG7_12M": [
+          {
+            "dataIdV2": "EQRG7",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 2056648000.0,
+              "fmt": "2.06B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQUZ0_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQUZ0_12M": [
+          {
+            "dataIdV2": "EQUZ0",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 324613000.0,
+              "fmt": "324.61M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQIEA_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQIEA_12M": [
+          {
+            "dataIdV2": "EQIEA",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1014609000.0,
+              "fmt": "1.01B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQQWX_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQQWX_3M": [
+          {
+            "dataIdV2": "EQQWX",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 396915000.0,
+              "fmt": "396.92M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQVHZ_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQVHZ_3M": [
+          {
+            "dataIdV2": "EQVHZ",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 236202000.0,
+              "fmt": "236.20M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQR8M_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQR8M_TTM": [
+          {
+            "dataIdV2": "EQR8M",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1430796000.0,
+              "fmt": "1.43B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQK97_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQK97_12M": [
+          {
+            "dataIdV2": "EQK97",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -1666000.0,
+              "fmt": "-1.67M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQNIG_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQNIG_TTM": [
+          {
+            "dataIdV2": "EQNIG",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -256525000.0,
+              "fmt": "-256.52M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQUZ0_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQUZ0_3M": [
+          {
+            "dataIdV2": "EQUZ0",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 54080000.0,
+              "fmt": "54.08M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQBM5_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQBM5_12M": [
+          {
+            "dataIdV2": "EQBM5",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.62221,
+              "fmt": "0.62"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQAFC_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQAFC_TTM": [
+          {
+            "dataIdV2": "EQAFC",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 7786892000.0,
+              "fmt": "7.79B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQTCA_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQTCA_3M": [
+          {
+            "dataIdV2": "EQTCA",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 3796867000.0,
+              "fmt": "3.80B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQE13_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQE13_3M": [
+          {
+            "dataIdV2": "EQE13",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 4166787000.0,
+              "fmt": "4.17B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQOD7_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQOD7_TTM": [
+          {
+            "dataIdV2": "EQOD7",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.10995,
+              "fmt": "0.11"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQUVT_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQUVT_3M": [
+          {
+            "dataIdV2": "EQUVT",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 209573000.0,
+              "fmt": "209.57M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ65B_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ65B_3M": [
+          {
+            "dataIdV2": "EQ65B",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 329622000.0,
+              "fmt": "329.62M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ58O_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ58O_3M": [
+          {
+            "dataIdV2": "EQ58O",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 286894120.0,
+              "fmt": "286.89M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQOD7_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQOD7_12M": [
+          {
+            "dataIdV2": "EQOD7",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.09762,
+              "fmt": "0.10"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ25Z_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ25Z_12M": [
+          {
+            "dataIdV2": "EQ25Z",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 26071000.0,
+              "fmt": "26.07M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ4RH_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ4RH_12M": [
+          {
+            "dataIdV2": "EQ4RH",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 3649628000.0,
+              "fmt": "3.65B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQYZU_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQYZU_3M": [
+          {
+            "dataIdV2": "EQYZU",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 6640006000.0,
+              "fmt": "6.64B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQPNK_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQPNK_12M": [
+          {
+            "dataIdV2": "EQPNK",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -1061010000.0,
+              "fmt": "-1.06B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ25Z_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQ25Z_TTM": [
+          {
+            "dataIdV2": "EQ25Z",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 15988000.0,
+              "fmt": "15.99M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQPNK_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQPNK_TTM": [
+          {
+            "dataIdV2": "EQPNK",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -447566000.0,
+              "fmt": "-447.57M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ72T_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ72T_3M": [
+          {
+            "dataIdV2": "EQ72T",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.02691,
+              "fmt": "0.03"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQHE5_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQHE5_3M": [
+          {
+            "dataIdV2": "EQHE5",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 396274000.0,
+              "fmt": "396.27M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQE13_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQE13_12M": [
+          {
+            "dataIdV2": "EQE13",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 3649628000.0,
+              "fmt": "3.65B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQIEA_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQIEA_3M": [
+          {
+            "dataIdV2": "EQIEA",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 359295000.0,
+              "fmt": "359.30M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQBDY_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQBDY_3M": [
+          {
+            "dataIdV2": "EQBDY",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 678979000.0,
+              "fmt": "678.98M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQPNK_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQPNK_3M": [
+          {
+            "dataIdV2": "EQPNK",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 79765000.0,
+              "fmt": "79.77M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQQR7_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQQR7_TTM": [
+          {
+            "dataIdV2": "EQQR7",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -1312000.0,
+              "fmt": "-1.31M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQRIO_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQRIO_3M": [
+          {
+            "dataIdV2": "EQRIO",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1091652000.0,
+              "fmt": "1.09B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ4P8_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ4P8_3M": [
+          {
+            "dataIdV2": "EQ4P8",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.02691,
+              "fmt": "0.03"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQNIG_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQNIG_3M": [
+          {
+            "dataIdV2": "EQNIG",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -60039000.0,
+              "fmt": "-60.04M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ7WE_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ7WE_12M": [
+          {
+            "dataIdV2": "EQ7WE",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 760180000.0,
+              "fmt": "760.18M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQL8B_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQL8B_12M": [
+          {
+            "dataIdV2": "EQL8B",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -89004000.0,
+              "fmt": "-89.00M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQAW7_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQAW7_3M": [
+          {
+            "dataIdV2": "EQAW7",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 36979000.0,
+              "fmt": "36.98M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQNIG_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQNIG_12M": [
+          {
+            "dataIdV2": "EQNIG",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -247086000.0,
+              "fmt": "-247.09M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQU9Z_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQU9Z_12M": [
+          {
+            "dataIdV2": "EQU9Z",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 925445000.0,
+              "fmt": "925.45M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQAW7_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQAW7_TTM": [
+          {
+            "dataIdV2": "EQAW7",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 39782000.0,
+              "fmt": "39.78M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQHEI_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQHEI_3M": [
+          {
+            "dataIdV2": "EQHEI",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 440046000.0,
+              "fmt": "440.05M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQLYB_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQLYB_TTM": [
+          {
+            "dataIdV2": "EQLYB",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -5488000.0,
+              "fmt": "-5.49M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQBQ4_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQBQ4_TTM": [
+          {
+            "dataIdV2": "EQBQ4",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.10995,
+              "fmt": "0.11"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQT07_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQT07_3M": [
+          {
+            "dataIdV2": "EQT07",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1412596000.0,
+              "fmt": "1.41B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQU9Z_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQU9Z_3M": [
+          {
+            "dataIdV2": "EQU9Z",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 2277513000.0,
+              "fmt": "2.28B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQUZ0_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQUZ0_TTM": [
+          {
+            "dataIdV2": "EQUZ0",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 261854000.0,
+              "fmt": "261.85M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQYDI_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQYDI_TTM": [
+          {
+            "dataIdV2": "EQYDI",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -348778000.0,
+              "fmt": "-348.78M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQQWX_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQQWX_12M": [
+          {
+            "dataIdV2": "EQQWX",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1053128000.0,
+              "fmt": "1.05B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQVHZ_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQVHZ_TTM": [
+          {
+            "dataIdV2": "EQVHZ",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 954949000.0,
+              "fmt": "954.95M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQEZO_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQEZO_12M": [
+          {
+            "dataIdV2": "EQEZO",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 7786892000.0,
+              "fmt": "7.79B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQYSV_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQYSV_TTM": [
+          {
+            "dataIdV2": "EQYSV",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 17232000.0,
+              "fmt": "17.23M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQZNP_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQZNP_TTM": [
+          {
+            "dataIdV2": "EQZNP",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -447566000.0,
+              "fmt": "-447.57M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQHEI_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQHEI_12M": [
+          {
+            "dataIdV2": "EQHEI",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1177056000.0,
+              "fmt": "1.18B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ1HW_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQ1HW_TTM": [
+          {
+            "dataIdV2": "EQ1HW",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 371869000.0,
+              "fmt": "371.87M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ6JP_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ6JP_12M": [
+          {
+            "dataIdV2": "EQ6JP",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 859242000.0,
+              "fmt": "859.24M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQYWG_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQYWG_12M": [
+          {
+            "dataIdV2": "EQYWG",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -245420000.0,
+              "fmt": "-245.42M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQRIO_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQRIO_12M": [
+          {
+            "dataIdV2": "EQRIO",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 826140000.0,
+              "fmt": "826.14M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQHEI_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQHEI_TTM": [
+          {
+            "dataIdV2": "EQHEI",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1446165000.0,
+              "fmt": "1.45B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ1HW_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ1HW_12M": [
+          {
+            "dataIdV2": "EQ1HW",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -381046000.0,
+              "fmt": "-381.05M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ6JP_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQ6JP_TTM": [
+          {
+            "dataIdV2": "EQ6JP",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 953839000.0,
+              "fmt": "953.84M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQAW7_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQAW7_12M": [
+          {
+            "dataIdV2": "EQAW7",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 40737000.0,
+              "fmt": "40.74M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQLTG_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQLTG_3M": [
+          {
+            "dataIdV2": "EQLTG",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -4139000.0,
+              "fmt": "-4.14M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQBQ4_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQBQ4_3M": [
+          {
+            "dataIdV2": "EQBQ4",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.02691,
+              "fmt": "0.03"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQAFC_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQAFC_3M": [
+          {
+            "dataIdV2": "EQAFC",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 7786892000.0,
+              "fmt": "7.79B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQLYB_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQLYB_3M": [
+          {
+            "dataIdV2": "EQLYB",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -1755000.0,
+              "fmt": "-1.75M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQK97_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQK97_3M": [
+          {
+            "dataIdV2": "EQK97",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -377000.0,
+              "fmt": "-377.00k"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQEZO_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQEZO_TTM": [
+          {
+            "dataIdV2": "EQEZO",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 7786892000.0,
+              "fmt": "7.79B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ6JP_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ6JP_3M": [
+          {
+            "dataIdV2": "EQ6JP",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 329622000.0,
+              "fmt": "329.62M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQU9Z_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQU9Z_TTM": [
+          {
+            "dataIdV2": "EQU9Z",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 2277513000.0,
+              "fmt": "2.28B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ4RH_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ4RH_3M": [
+          {
+            "dataIdV2": "EQ4RH",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 4166787000.0,
+              "fmt": "4.17B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQHE5_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQHE5_12M": [
+          {
+            "dataIdV2": "EQHE5",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1055346000.0,
+              "fmt": "1.06B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQBM5_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQBM5_3M": [
+          {
+            "dataIdV2": "EQBM5",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.835933,
+              "fmt": "0.84"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ9HN_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQ9HN_TTM": [
+          {
+            "dataIdV2": "EQ9HN",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1299544000.0,
+              "fmt": "1.30B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQR8M_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQR8M_3M": [
+          {
+            "dataIdV2": "EQR8M",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 419342000.0,
+              "fmt": "419.34M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQL8B_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQL8B_TTM": [
+          {
+            "dataIdV2": "EQL8B",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -98755000.0,
+              "fmt": "-98.75M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQQWX_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQQWX_TTM": [
+          {
+            "dataIdV2": "EQQWX",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 1302555000.0,
+              "fmt": "1.30B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQYSV_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQYSV_12M": [
+          {
+            "dataIdV2": "EQYSV",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 20668000.0,
+              "fmt": "20.67M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ7WE_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ7WE_3M": [
+          {
+            "dataIdV2": "EQ7WE",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 209573000.0,
+              "fmt": "209.57M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQYZU_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQYZU_12M": [
+          {
+            "dataIdV2": "EQYZU",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 5706276000.0,
+              "fmt": "5.71B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQEO0_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQEO0_12M": [
+          {
+            "dataIdV2": "EQEO0",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 760180000.0,
+              "fmt": "760.18M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQQR7_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQQR7_12M": [
+          {
+            "dataIdV2": "EQQR7",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -1666000.0,
+              "fmt": "-1.67M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ7WE_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQ7WE_TTM": [
+          {
+            "dataIdV2": "EQ7WE",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 856194000.0,
+              "fmt": "856.19M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQT07_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQT07_TTM": [
+          {
+            "dataIdV2": "EQT07",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 5260327000.0,
+              "fmt": "5.26B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQEO0_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQEO0_TTM": [
+          {
+            "dataIdV2": "EQEO0",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 856194000.0,
+              "fmt": "856.19M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQF4S_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQF4S_TTM": [
+          {
+            "dataIdV2": "EQF4S",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -86679000.0,
+              "fmt": "-86.68M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQUVT_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQUVT_TTM": [
+          {
+            "dataIdV2": "EQUVT",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 856194000.0,
+              "fmt": "856.19M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ4P8_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQ4P8_TTM": [
+          {
+            "dataIdV2": "EQ4P8",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 0.10995,
+              "fmt": "0.11"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQVHZ_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQVHZ_12M": [
+          {
+            "dataIdV2": "EQVHZ",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 849184000.0,
+              "fmt": "849.18M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ1HW_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ1HW_3M": [
+          {
+            "dataIdV2": "EQ1HW",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 678979000.0,
+              "fmt": "678.98M"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQQR7_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQQR7_3M": [
+          {
+            "dataIdV2": "EQQR7",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -377000.0,
+              "fmt": "-377.00k"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQWXW_3M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQWXW_3M": [
+          {
+            "dataIdV2": "EQWXW",
+            "asOfDate": "2026-09-30",
+            "periodType": "3M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 2277513000.0,
+              "fmt": "2.28B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ1HC_12M"
+          ]
+        },
+        "timestamp": [
+          1767139200,
+          1774915200,
+          1782777600,
+          1790726400
+        ],
+        "EQ1HC_12M": [
+          {
+            "dataIdV2": "EQ1HC",
+            "asOfDate": "2025-12-31",
+            "periodType": "12M",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": 3333550000.0,
+              "fmt": "3.33B"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "symbol": [
+            "AADI.JK"
+          ],
+          "type": [
+            "EQ8Y4_TTM"
+          ]
+        },
+        "timestamp": [
+          1790726400
+        ],
+        "EQ8Y4_TTM": [
+          {
+            "dataIdV2": "EQ8Y4",
+            "asOfDate": "2026-09-30",
+            "periodType": "TTM",
+            "currencyCode": "USD",
+            "restatedValue": {
+              "raw": -3739857000.0,
+              "fmt": "-3.74B"
+            }
+          }
+        ]
+      }
+    ],
+    "error": null
+  }
+}
