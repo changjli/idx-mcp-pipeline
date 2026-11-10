@@ -29,6 +29,7 @@ import (
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/storage"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/tasks"
 	"github.com/nicholas-audric/idx-mcp-pipeline/internal/usecase"
+	"github.com/nicholas-audric/idx-mcp-pipeline/internal/yahoo"
 )
 
 func main() {
@@ -57,6 +58,7 @@ func main() {
 	shareholderCompositionRepo := repository.NewShareholderCompositionRepository(log)
 	indexSummaryRepo := repository.NewIndexSummaryRepository(log)
 	financialsRepo := repository.NewFinancialsRepository(log)
+	financialDepthRepo := repository.NewFinancialDepthRepository(log)
 
 	// source_status + alerts recorder: one shared instance every ingest stage
 	// reports its success/failure through (ADR-0006).
@@ -166,6 +168,23 @@ func main() {
 	mux.Handle(tasks.TypeFinancials, tasks.NewFinancialsHandler(
 		log,
 		usecase.NewFinancialsIngestUseCase(db, log, idxClient, financialsRepo),
+		recorder,
+	))
+	// idx:financials_depth (financials-v2 issue 05): monthly Yahoo/Morningstar
+	// depth sweep into the existing financial_statements rows. The same task
+	// serves the on-demand per-ticker path (issue 07) when the payload names a
+	// ticker. The MCP read path never fetches upstream.
+	yahooClient := yahoo.NewClient()
+	mux.Handle(tasks.TypeFinancialsDepth, tasks.NewFinancialDepthHandler(
+		log,
+		usecase.NewFinancialDepthUseCase(
+			db, log, yahooClient, financialDepthRepo, financialsRepo,
+			usecase.WithDepthPacing(
+				vip.GetInt("yahoo.concurrency"),
+				time.Duration(vip.GetInt("yahoo.request_spacing_ms"))*time.Millisecond,
+			),
+			usecase.WithDepthFallbackFXRate(vip.GetFloat64("financials.usd_idr_rate")),
+		),
 		recorder,
 	))
 	minADTV := vip.GetInt64("anomaly.min_adtv_value") // <= 0 → DefaultADTVMinValue in the constructor

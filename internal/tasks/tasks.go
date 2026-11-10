@@ -58,6 +58,12 @@ const (
 	// persisted to financial_statements / versions / the snapshot run ledger.
 	// A daily task no-ops once the month is recorded ok or suspect.
 	TypeFinancials = "idx:financials"
+	// TypeFinancialsDepth is the monthly Yahoo/Morningstar depth enrichment
+	// (financials-v2 issue 05): one small timeseries call per covered ticker,
+	// upserted into the existing financial_statements rows. The same task also
+	// serves the on-demand per-ticker path (issue 07) when the payload names a
+	// ticker.
+	TypeFinancialsDepth = "idx:financials_depth"
 )
 
 // TaskKey returns a dedup key for a task type and date.

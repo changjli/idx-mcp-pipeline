@@ -318,11 +318,25 @@ func (r *FinancialsRepository) UpsertRunTx(ex runExecutor, run *entity.Financial
 }
 
 // FindByTicker returns a ticker's stored statements, newest period first. It
-// is the read primitive ticket 03 builds the get_financials views on.
+// is the read primitive ticket 03 builds the get_financials views on. The
+// column list is explicit: the table also carries the *_q / *_ttm depth
+// families, which the row-shaped entity does not scan.
 func (r *FinancialsRepository) FindByTicker(db *sqlx.DB, ticker string) ([]entity.FinancialStatement, error) {
 	var rows []entity.FinancialStatement
 	err := db.Select(&rows,
-		`SELECT * FROM financial_statements WHERE ticker = $1 ORDER BY period_end DESC`, ticker)
+		`SELECT ticker, period_end, fiscal_year_end, duration_months,
+		        assets, liabilities, equity, revenue, ebt, net_profit, net_profit_parent,
+		        eps, book_value, roa, roe, npm, der,
+		        audit_status, opinion, source, value_basis, source_fs_date,
+		        first_seen_month, last_seen_month, revision_count, content_hash,
+		        stored_at, updated_at,
+		        cash, gross_profit, operating_profit, ebitda, cfo, capex, fcf,
+		        total_debt, interest_expense,
+		        currency, fx_rate, fx_date, period_basis, methodology,
+		        depth_status, depth_coverage, depth_raw, depth_conflicts, depth_fetched_at
+		   FROM financial_statements
+		  WHERE ticker = $1
+		  ORDER BY period_end DESC`, ticker)
 	if err != nil {
 		return nil, fmt.Errorf("financials: read %s: %w", ticker, err)
 	}

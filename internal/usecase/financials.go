@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -138,13 +139,18 @@ type FinancialStatementView struct {
 	NPM       *float64 `json:"npm"`        // percent, TTM profit / YTD sales (IDX's mixed basis)
 	PER       *float64 `json:"per"`        // close at period end / eps
 	PBV       *float64 `json:"pbv"`        // close at period end / book_value
-	// DebtToEquity is deliberately always null: the snapshot's der is
+	// DebtToEquity is computed from Tier-2 total debt over Tier-1 equity when
+	// both are present; it stays null at Tier 1 because the snapshot's der is
 	// liabilities/equity, not total-debt/equity, and must not be mislabelled.
 	DebtToEquity *float64 `json:"debt_to_equity"`
 	// LiabilitiesToEquity is the stored der, under its real meaning.
 	LiabilitiesToEquity *float64 `json:"liabilities_to_equity"`
 
 	Extra map[string]float64 `json:"extra,omitempty"`
+
+	// depthCoverage is the per-row Tier-2 coverage map used by
+	// financialCoverage; it is not part of the response shape.
+	depthCoverage map[string]string
 }
 
 // FinancialsResponse is the structured MCP tool result. Statements are newest
@@ -301,16 +307,26 @@ func financialStatementView(st entity.FinancialStatement, price *entity.DailyPri
 		NetProfitInclNCI:    rupiahFloat(st.NetProfit),
 		TotalAssets:         rupiahFloat(st.Assets),
 		TotalEquity:         rupiahFloat(st.Equity),
+		Cash:                copyFloat(st.Cash),
+		GrossProfit:         copyFloat(st.GrossProfit),
+		OperatingProfit:     copyFloat(st.OperatingProfit),
+		EBITDA:              copyFloat(st.EBITDA),
+		InterestExpense:     copyFloat(st.InterestExpense),
+		TotalDebt:           copyFloat(st.TotalDebt),
 		EPS:                 copyFloat(st.EPS),
 		BookValue:           copyFloat(st.BookValue),
 		ROE:                 copyFloat(st.ROE),
 		ROA:                 copyFloat(st.ROA),
 		NPM:                 copyFloat(st.NPM),
 		LiabilitiesToEquity: copyFloat(st.DER),
+		depthCoverage:       parseDepthCoverage(st.DepthCoverage),
 	}
-	// Cash, gross profit, operating profit, EBITDA, interest expense, debt and
-	// gross margin are unknown at Tier 1 — nil, never zero. DebtToEquity stays
-	// nil because der measures a different thing.
+	// Gross margin and debt/equity are derived at read time from the values
+	// actually held, so a missing denominator stays null rather than zero.
+	view.GrossProfitMargin = safeRatio(view.GrossProfit, view.Revenue)
+	view.DebtToEquity = safeRatio(view.TotalDebt, view.TotalEquity)
+	// Cash, operating profit, EBITDA, interest expense and debt are unknown at
+	// Tier 1 — nil, never zero. Tier 2 fills them when depth has run.
 	if price == nil || price.Close == nil {
 		return view
 	}
@@ -365,12 +381,44 @@ func financialCoverage(views []FinancialStatementView) map[string]FinancialField
 	add("per", func(v FinancialStatementView) *float64 { return v.PER })
 	add("pbv", func(v FinancialStatementView) *float64 { return v.PBV })
 
-	unknown := []string{
-		"gross_profit", "operating_profit", "ebitda", "interest_expense",
-		"cash", "short_term_borrowing", "long_term_borrowing", "total_debt",
-		"gross_profit_margin", "debt_to_equity",
+	// Tier-2 fields are coverage-aware: a bank's gross profit is
+	// not_applicable, while a general-list issuer that simply omitted the line
+	// stays unknown. A field is observed only when every returned row carries
+	// it; the per-row value and its coverage are both visible.
+	addDepth := func(field string, value func(FinancialStatementView) *float64) {
+		observed := 0
+		notApplicable := 0
+		for _, v := range views {
+			if value(v) != nil {
+				observed++
+				continue
+			}
+			if v.depthCoverage[field] == FinancialCoverageNotApplicable {
+				notApplicable++
+			}
+		}
+		status := FinancialCoverageUnknown
+		switch {
+		case len(views) > 0 && observed == len(views):
+			status = FinancialCoverageObserved
+		case len(views) > 0 && observed == 0 && notApplicable == len(views):
+			status = FinancialCoverageNotApplicable
+		}
+		cov[field] = FinancialFieldCoverage{
+			Status:       status,
+			ObservedRows: observed,
+			ReturnedRows: len(views),
+		}
 	}
-	for _, field := range unknown {
+	addDepth("gross_profit", func(v FinancialStatementView) *float64 { return v.GrossProfit })
+	addDepth("operating_profit", func(v FinancialStatementView) *float64 { return v.OperatingProfit })
+	addDepth("ebitda", func(v FinancialStatementView) *float64 { return v.EBITDA })
+	addDepth("interest_expense", func(v FinancialStatementView) *float64 { return v.InterestExpense })
+	addDepth("cash", func(v FinancialStatementView) *float64 { return v.Cash })
+	addDepth("total_debt", func(v FinancialStatementView) *float64 { return v.TotalDebt })
+	addDepth("gross_profit_margin", func(v FinancialStatementView) *float64 { return v.GrossProfitMargin })
+	addDepth("debt_to_equity", func(v FinancialStatementView) *float64 { return v.DebtToEquity })
+	for _, field := range []string{"short_term_borrowing", "long_term_borrowing"} {
 		cov[field] = FinancialFieldCoverage{
 			Status:       FinancialCoverageUnknown,
 			ObservedRows: 0,
@@ -420,6 +468,30 @@ func copyFloat(v *float64) *float64 {
 	}
 	f := *v
 	return &f
+}
+
+// safeRatio returns num/den when both are present and the denominator is
+// non-zero; nil means "not computable", never zero.
+func safeRatio(num, den *float64) *float64 {
+	if num == nil || den == nil || *den == 0 {
+		return nil
+	}
+	v := *num / *den
+	return &v
+}
+
+// parseDepthCoverage decodes the stored per-field depth coverage. A malformed
+// or absent document degrades to no coverage information (unknown), never to
+// observed.
+func parseDepthCoverage(raw *string) map[string]string {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return nil
+	}
+	var cov map[string]string
+	if err := json.Unmarshal([]byte(*raw), &cov); err != nil {
+		return nil
+	}
+	return cov
 }
 
 // compile-time check: the concrete repository satisfies the read seams.

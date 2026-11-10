@@ -107,26 +107,10 @@ func AliasesFor(c financials.Concept) []string {
 	return nil
 }
 
-// structuralNotApplicable is the set of concepts that do not exist by design in
-// a template. Only the gross-profit family is asserted here: a bank or insurer
-// has no cost-of-revenue / gross-profit line. Everything else that is missing
-// stays unknown until ticket 06 attaches the full per-taxonomy type list.
-var structuralNotApplicable = map[financials.Taxonomy]map[financials.Concept]bool{
-	financials.TaxonomyBank108: {
-		financials.ConceptCostOfRevenue: true,
-		financials.ConceptGrossProfit:   true,
-	},
-	financials.TaxonomyInsurance74: {
-		financials.ConceptCostOfRevenue: true,
-		financials.ConceptGrossProfit:   true,
-	},
-}
-
 // Applicable reports whether a concept exists in a template. A false result is
 // the not_applicable state; true only means "could exist", not "was reported".
+// The rule lives in internal/financials because the depth store must make the
+// same distinction without importing this adapter.
 func Applicable(taxonomy financials.Taxonomy, concept financials.Concept) bool {
-	if set, ok := structuralNotApplicable[taxonomy]; ok && set[concept] {
-		return false
-	}
-	return true
+	return financials.Applicable(taxonomy, concept)
 }

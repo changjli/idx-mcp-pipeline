@@ -33,6 +33,32 @@ type FinancialStatement struct {
 	ValueBasis   string    `db:"value_basis"`
 	SourceFSDate time.Time `db:"source_fs_date"`
 
+	// Tier-2 depth (financials-v2 issue 05). Money is IDR at the recorded
+	// fx_rate/fx_date; nil means unobserved or not_applicable, never zero. The
+	// original reporting-currency values and per-field coverage live in the
+	// JSONB columns below. The *_q / *_ttm families are not exposed on this
+	// struct because the read path returns one row per stored period.
+	Cash            *float64 `db:"cash"`
+	GrossProfit     *float64 `db:"gross_profit"`
+	OperatingProfit *float64 `db:"operating_profit"`
+	EBITDA          *float64 `db:"ebitda"`
+	CFO             *float64 `db:"cfo"`
+	CapEx           *float64 `db:"capex"`
+	FCF             *float64 `db:"fcf"`
+	TotalDebt       *float64 `db:"total_debt"`
+	InterestExpense *float64 `db:"interest_expense"`
+
+	DepthCurrency    *string    `db:"currency"`
+	DepthFXRate      *float64   `db:"fx_rate"`
+	DepthFXDate      *time.Time `db:"fx_date"`
+	DepthPeriodBasis *string    `db:"period_basis"`
+	DepthMethodology *string    `db:"methodology"`
+	DepthStatus      *string    `db:"depth_status"`
+	DepthCoverage    *string    `db:"depth_coverage"`
+	DepthRaw         *string    `db:"depth_raw"`
+	DepthConflicts   *string    `db:"depth_conflicts"`
+	DepthFetchedAt   *time.Time `db:"depth_fetched_at"`
+
 	FirstSeenMonth time.Time `db:"first_seen_month"`
 	LastSeenMonth  time.Time `db:"last_seen_month"`
 	RevisionCount  int       `db:"revision_count"`

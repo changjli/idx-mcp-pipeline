@@ -25,6 +25,16 @@ func TestSectorIndexCronSpec(t *testing.T) {
 	}
 }
 
+func TestFinancialDepthCronSpec(t *testing.T) {
+	// Pins the monthly depth sweep (issue 05): 9:00 PM WIB on the 5th, after the
+	// 8:05 PM daily wave and the publication-lag window. A drift silently changes
+	// the depth refresh cadence.
+	const want = "CRON_TZ=Asia/Jakarta 0 21 5 * *"
+	if FinancialDepthCronSpec != want {
+		t.Errorf("FinancialDepthCronSpec = %q, want %q", FinancialDepthCronSpec, want)
+	}
+}
+
 // TestTimeUntilWave pins the 20:05 WIB wave boundary used by the boot
 // self-heal: a boot before the wave schedules ahead; at/after the wave time
 // it must recover immediately (duration rolls to tomorrow).

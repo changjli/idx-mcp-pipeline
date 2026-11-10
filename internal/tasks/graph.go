@@ -271,6 +271,13 @@ var Graph = NewRegistry(
 		SelfHeal: true,
 	},
 	&Node{
+		Name: "financials-depth",
+		Type: TypeFinancialsDepth,
+		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
+			return EnqueueFinancialDepth(enq, day, argValue(args, "ticker"), argValue(args, "month"), opts...)
+		},
+	},
+	&Node{
 		Name: "cleanup",
 		Type: TypeCleanup,
 		Key:  dateKey(TypeCleanup),

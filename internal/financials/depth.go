@@ -246,3 +246,29 @@ func (s DepthStatement) CoverageOf(c Concept) CoverageState {
 	}
 	return CoverageUnknown
 }
+
+// structuralNotApplicable is the set of concepts that do not exist by design in
+// a template. Only the gross-profit family is asserted here: a bank or insurer
+// has no cost-of-revenue / gross-profit line. Everything else that is missing
+// stays unknown until the full per-taxonomy type list is attached (ticket 06).
+var structuralNotApplicable = map[Taxonomy]map[Concept]bool{
+	TaxonomyBank108: {
+		ConceptCostOfRevenue: true,
+		ConceptGrossProfit:   true,
+	},
+	TaxonomyInsurance74: {
+		ConceptCostOfRevenue: true,
+		ConceptGrossProfit:   true,
+	},
+}
+
+// Applicable reports whether a concept exists in a template. A false result is
+// the not_applicable state; true only means "could exist", not "was reported".
+// It is the source-neutral rule the adapter and the depth store both use, so a
+// bank's absent gross profit is never persisted as a missing general-list line.
+func Applicable(taxonomy Taxonomy, concept Concept) bool {
+	if set, ok := structuralNotApplicable[taxonomy]; ok && set[concept] {
+		return false
+	}
+	return true
+}

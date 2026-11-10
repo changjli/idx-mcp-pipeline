@@ -28,6 +28,14 @@ const (
 	// scheduled run (the snapshot is point-in-time, not incremental).
 	SectorIndexCronSpec = "CRON_TZ=Asia/Jakarta 0 22 1 3,8 *"
 
+	// FinancialDepthCronSpec fires the monthly Yahoo/Morningstar depth sweep
+	// (financials-v2 issue 05) at 9:00 PM WIB on the 5th, giving the daily
+	// idx:financials check a few days to publish and ingest the previous month's
+	// snapshot before depth enriches those rows. The 8:05 PM wave has drained by
+	// then. A missed fire is caught by a manual enqueue; the run ledger makes a
+	// repeat fire a no-op.
+	FinancialDepthCronSpec = "CRON_TZ=Asia/Jakarta 0 21 5 * *"
+
 	// archivedRequeueDelay is how long a recovered archived task waits before
 	// firing — gives transient upstream blocks (e.g. Cloudflare 403) time to
 	// lift. Shared by every self-heal-eligible node.
@@ -81,6 +89,15 @@ func RegisterDailyTasks(sched *asynq.Scheduler, log *logrus.Logger) {
 		log.Fatalf("failed to register sector/index seeder task: %v", err)
 	}
 	log.Infof("sector/index seeder task registered: entry=%s cron=%s", sectorIndexEntryID, SectorIndexCronSpec)
+
+	// The monthly depth sweep (issue 05) fires on the 5th; the handler derives
+	// the ledger month from the run date and the sweep is resumable.
+	depthTask := asynq.NewTask(tasks.TypeFinancialsDepth, nil)
+	depthEntryID, err := sched.Register(FinancialDepthCronSpec, depthTask)
+	if err != nil {
+		log.Fatalf("failed to register financial depth sweep task: %v", err)
+	}
+	log.Infof("financial depth sweep task registered: entry=%s cron=%s", depthEntryID, FinancialDepthCronSpec)
 }
 
 // LogNextFireTime logs the next fire time for all scheduler entries.

@@ -41,6 +41,7 @@ func TestDispatchTable(t *testing.T) {
 		{"extract", tasks.TypeExtractDisclosure, []string{"id=42"}, tasks.ExtractDisclosurePayload{DisclosureID: 42}},
 		{"broker-summary", tasks.TypeBrokerStockSummary, []string{"ticker=RAJA"}, tasks.BrokerStockSummaryPayload{Ticker: "RAJA", Date: "2026-08-30"}},
 		{"financials", tasks.TypeFinancials, nil, tasks.FinancialsPayload{Date: "2026-08-30"}},
+		{"financials-depth", tasks.TypeFinancialsDepth, []string{"ticker=RAJA", "month=2026-08"}, tasks.FinancialDepthPayload{Date: "2026-08-30", Ticker: "RAJA", Month: "2026-08"}},
 		{"pipeline", tasks.TypePipelineDaily, nil, nil},
 	}
 
