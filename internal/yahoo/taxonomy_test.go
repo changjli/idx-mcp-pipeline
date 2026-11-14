@@ -74,10 +74,12 @@ func TestClassifyResult_KnownSet(t *testing.T) {
 }
 
 func TestClassifyResult_Priority(t *testing.T) {
-	// A bank probe must beat a general marker even if both are populated.
+	// A general marker beats a bank probe. The 2026-11-10 population proved the
+	// bank probes are not exclusive: 17 general issuers populate them alongside
+	// gross profit. Treating those as banks was the bug this test now pins.
 	got := ClassifyResult(probeResult("EQFK8", "EQ46Q", "EQDBM"))
-	if got.Taxonomy != financials.TaxonomyBank108 {
-		t.Errorf("taxonomy = %q, want bank", got.Taxonomy)
+	if got.Taxonomy != financials.TaxonomyGeneral154 {
+		t.Errorf("taxonomy = %q, want general", got.Taxonomy)
 	}
 
 	// A general marker must beat the insurance fallback, so a general issuer
@@ -87,10 +89,14 @@ func TestClassifyResult_Priority(t *testing.T) {
 		t.Errorf("taxonomy = %q, want general", got.Taxonomy)
 	}
 
-	// BREN: general list, no gross profit, but general operating markers.
+	// EQDBM-only is the ambiguous insurance fallback (ABDA) or a bank that
+	// populates no bank code (KREN); the population page-verifies it.
 	got = ClassifyResult(probeResult("EQDBM"))
 	if got.Taxonomy != financials.TaxonomyInsurance74 {
 		t.Errorf("interest-only = %q, want insurance", got.Taxonomy)
+	}
+	if !got.Ambiguous() {
+		t.Error("EQDBM-only should be ambiguous")
 	}
 }
 
@@ -119,9 +125,47 @@ func TestClassifyResult_IgnoresStaleProbeFacts(t *testing.T) {
 func TestProbeTypes_IncludeAnnualAndTTM(t *testing.T) {
 	types := ProbeTypes()
 	joined := strings.Join(types, ",")
-	for _, code := range []string{"EQRD7", "EQFK8", "EQDBM", "EQ46Q", "EQ25Z"} {
+	for _, code := range []string{"EQRD7", "EQFK8", "EQ70F", "EQO3Z", "EQDBM", "EQ46Q", "EQ25Z"} {
 		if !strings.Contains(joined, code+"_12M") || !strings.Contains(joined, code+"_TTM") {
 			t.Errorf("probe types missing %s 12M/TTM: %v", code, types)
+		}
+	}
+}
+
+func TestClassification_Ambiguous(t *testing.T) {
+	cases := []struct {
+		name string
+		cls  *Classification
+		want bool
+	}{
+		{"nil", nil, true},
+		{"other", &Classification{Taxonomy: financials.TaxonomyOther}, true},
+		{"bank", &Classification{Taxonomy: financials.TaxonomyBank108}, false},
+		{"general", &Classification{Taxonomy: financials.TaxonomyGeneral154}, false},
+		{"eqdbm-only insurer", &Classification{
+			Taxonomy: financials.TaxonomyInsurance74,
+			Evidence: map[string]bool{"EQDBM": true},
+		}, true},
+		{"insurer with specific code", &Classification{
+			Taxonomy: financials.TaxonomyInsurance74,
+			Evidence: map[string]bool{"EQDBM": true, "EQF4S": true},
+		}, false},
+		{"bank with EQDBM only", &Classification{
+			Taxonomy: financials.TaxonomyBank108,
+			Evidence: map[string]bool{"EQDBM": true, "EQRD7": true},
+		}, false},
+		{"bank/insurer tie", &Classification{
+			Taxonomy: financials.TaxonomyBank108,
+			Evidence: map[string]bool{"EQRD7": true, "EQF4S": true},
+		}, true},
+		{"general with bank evidence", &Classification{
+			Taxonomy: financials.TaxonomyGeneral154,
+			Evidence: map[string]bool{"EQ46Q": true, "EQRD7": true, "EQF4S": true},
+		}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.cls.Ambiguous(); got != tc.want {
+			t.Errorf("%s: Ambiguous() = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

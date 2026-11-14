@@ -264,6 +264,15 @@ func TestDiscoverTypeList(t *testing.T) {
 	if len(list.URLs) != 2 {
 		t.Errorf("urls = %d, want 2", len(list.URLs))
 	}
+	if len(list.Groups) != 2 {
+		t.Fatalf("groups = %d, want 2", len(list.Groups))
+	}
+	if got := strings.Join(list.Groups[0].Types, ","); got != "EQT07_12M,EQ46Q_12M" {
+		t.Errorf("group 0 types = %s", got)
+	}
+	if got := strings.Join(list.Groups[1].Types, ","); got != "EQT07_TTM,EQT07_12M" {
+		t.Errorf("group 1 types = %s", got)
+	}
 }
 
 func TestDiscoverTypeList_NoList(t *testing.T) {

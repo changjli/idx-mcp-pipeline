@@ -248,17 +248,25 @@ func (s DepthStatement) CoverageOf(c Concept) CoverageState {
 }
 
 // structuralNotApplicable is the set of concepts that do not exist by design in
-// a template. Only the gross-profit family is asserted here: a bank or insurer
-// has no cost-of-revenue / gross-profit line. Everything else that is missing
-// stays unknown until the full per-taxonomy type list is attached (ticket 06).
+// a template. A bank or insurer has no cost-of-revenue / gross-profit line, and
+// no asset-retirement-obligation accretion.
+//
+// The full type-list matrix (ticket 06,
+// .scratch/financials-v2/evidence/yahoo-taxonomy-applicability.md) shows many
+// other mapped codes absent from the bank/insurance lists, but those templates
+// use different codes for the same business lines (operating profit, SG&A,
+// D&A, provisions). Marking those not_applicable would hide a real absence, so
+// they stay unknown until the bank/insurance codes are mapped.
 var structuralNotApplicable = map[Taxonomy]map[Concept]bool{
 	TaxonomyBank108: {
 		ConceptCostOfRevenue: true,
 		ConceptGrossProfit:   true,
+		ConceptAccretionARO:  true,
 	},
 	TaxonomyInsurance74: {
 		ConceptCostOfRevenue: true,
 		ConceptGrossProfit:   true,
+		ConceptAccretionARO:  true,
 	},
 }
 

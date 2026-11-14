@@ -569,11 +569,21 @@ func periodFromType(typeName string) string {
 }
 
 // TypeList is the embedded request's type list for one statement page. It is
-// discovery evidence, not a classification input.
+// discovery evidence, not a classification input. Types is the deduplicated
+// union across every fundamentals-timeseries data-url on the page; Groups keeps
+// each url's own list, because the income page also embeds a ~500-type combined
+// preload that must not be mistaken for the 154/108/74 statement list.
 type TypeList struct {
 	Statement string
 	Types     []string
 	URLs      []string
+	Groups    []TypeListGroup
+}
+
+// TypeListGroup is one data-url and the type tokens it requested.
+type TypeListGroup struct {
+	URL   string
+	Types []string
 }
 
 var dataURLPattern = regexp.MustCompile(`data-url="([^"]+)"`)
@@ -616,16 +626,21 @@ func (c *Client) DiscoverTypeList(ctx context.Context, ticker, statement string)
 			continue
 		}
 		list.URLs = append(list.URLs, raw)
+		group := TypeListGroup{URL: raw}
 		for _, typ := range strings.Split(types, ",") {
 			typ = strings.TrimSpace(typ)
 			if typ == "" {
 				continue
 			}
+			group.Types = append(group.Types, typ)
 			if _, ok := seen[typ]; ok {
 				continue
 			}
 			seen[typ] = struct{}{}
 			list.Types = append(list.Types, typ)
+		}
+		if len(group.Types) > 0 {
+			list.Groups = append(list.Groups, group)
 		}
 	}
 	if len(list.Types) == 0 {

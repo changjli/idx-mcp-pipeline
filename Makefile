@@ -28,6 +28,7 @@ build:
 	go build -o build/mcp-server ./cmd/mcp-server
 	go build -o build/enqueue-daily ./cmd/enqueue-daily
 	go build -o build/measure ./cmd/measure
+	go build -o build/financials-taxonomy ./cmd/financials-taxonomy
 
 build-all: build
 

@@ -22,11 +22,17 @@ const (
 // (BBCA/BBRI/BBNI/BMRI, ABDA/ASDM/AMAG/SMMA, PTBA/AADI/AALI/ADMF/LPPS/BREN)
 // plus TUGU.
 var (
-	// bankProbeCodes are populated by the bank template and absent from the
-	// general and insurance templates in the sample. EQOBD/EQBTD/EQ4LG also
-	// look bank-specific; the recency filter below is what keeps ABDA's stale
-	// 2018 EQOBD TTM value from outvoting its current insurance shape.
-	bankProbeCodes = []string{"EQRD7", "EQFK8", "EQOBD", "EQ4LG", "EQBTD"}
+	// bankProbeCodes are present in the bank (108) income list and absent from
+	// the general and insurance lists. They are not all exclusive to real
+	// banks: the 2026-11-10 650-ticker population found 17 general-list issuers
+	// that populate EQOBD/EQBTD/EQ4LG, so the general markers are checked first.
+	//
+	// EQ70F/EQO3Z were added in the same run: BRIS and BTPS are 108-shaped but
+	// populate none of the original probes, while both codes are present in the
+	// bank-only income list and absent from the general/insurance lists and
+	// preloads. The recency filter below is what keeps ABDA's stale 2018 EQOBD
+	// TTM value from outvoting its current insurance shape.
+	bankProbeCodes = []string{"EQRD7", "EQFK8", "EQOBD", "EQ4LG", "EQBTD", "EQ70F", "EQO3Z"}
 
 	// insuranceProbeCodes are populated only by some insurance issuers
 	// (AMAG/SMMA in the sample). They are positive evidence but not necessary:
@@ -70,6 +76,32 @@ type Classification struct {
 	Evidence map[string]bool
 }
 
+// Ambiguous reports whether the probe result is not strong enough to persist
+// without a page type-list check. The probe cannot separate an EQDBM-only bank
+// from an EQDBM-only insurer (KREN vs ABDA on 2026-11-10), and it has no
+// evidence at all for a bank that populates none of the bank codes. The
+// population tool uses this to fetch one page type list for the ambiguous
+// tickers; the default Classify path never does.
+func (c *Classification) Ambiguous() bool {
+	if c == nil {
+		return true
+	}
+	if c.Taxonomy == financials.TaxonomyOther {
+		return true
+	}
+	if c.Taxonomy != financials.TaxonomyBank108 && c.Taxonomy != financials.TaxonomyInsurance74 {
+		return false
+	}
+	if c.Taxonomy == financials.TaxonomyInsurance74 && !anyTrue(c.Evidence, insuranceProbeCodes) {
+		// EQDBM-only: could be an insurer (ABDA) or a bank that populates none
+		// of the bank codes (KREN).
+		return true
+	}
+	// A bank/insurer tie: both probe groups are populated and there is no
+	// general marker. CASA and PNLF hit this on 2026-11-10.
+	return anyTrue(c.Evidence, bankProbeCodes) && anyTrue(c.Evidence, insuranceProbeCodes)
+}
+
 // Classify fetches the discriminant probe and classifies the ticker. It makes
 // one small timeseries request — never a page fetch.
 func (c *Client) Classify(ctx context.Context, ticker string) (*Classification, error) {
@@ -98,18 +130,22 @@ func ClassifyResult(res *Result) *Classification {
 		Evidence: evidence,
 	}
 
-	// 1. A bank-only code is the strongest signal.
-	if anyTrue(evidence, bankProbeCodes) {
-		cls.Taxonomy = financials.TaxonomyBank108
+	// 1. General markers win. The original order put a bank probe first, but the
+	//    2026-11-10 650-ticker population showed that EQOBD/EQBTD/EQ4LG are also
+	//    populated by 17 general-list issuers (all with gross profit and the
+	//    other general markers). Gross profit is a stronger signal: a bank or
+	//    insurer does not report it. BREN (general list, no gross profit) is
+	//    still caught by the other general markers.
+	if anyTrue(evidence, generalProbeCodes) {
+		cls.Taxonomy = financials.TaxonomyGeneral154
 		return cls
 	}
 
-	// 2. General markers beat the insurance fallback. This keeps a general
-	//    issuer that happens to report interest income (EQDBM) from being
-	//    mistaken for an insurer, and keeps BREN (general list, no gross
-	//    profit) general.
-	if anyTrue(evidence, generalProbeCodes) {
-		cls.Taxonomy = financials.TaxonomyGeneral154
+	// 2. Bank probes. These are populated by the 108 shape and absent from the
+	//    general/insurance lists, but they are not all exclusive to real banks
+	//    (see Ambiguous for the bank/insurer tie).
+	if anyTrue(evidence, bankProbeCodes) {
+		cls.Taxonomy = financials.TaxonomyBank108
 		return cls
 	}
 

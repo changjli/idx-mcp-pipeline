@@ -149,6 +149,44 @@ func TestFinancialDepthRepository_ApplyIdempotent(t *testing.T) {
 	if err != nil || gotTax == nil || gotTax.Taxonomy != tax.Taxonomy {
 		t.Fatalf("taxonomy = %+v, err %v", gotTax, err)
 	}
+
+	// Ticket 06's seed must not reset the depth state the sweep owns. Change the
+	// taxonomy and assert only the classification/discovered_at move; a second
+	// seed with the same taxonomy must keep discovered_at too.
+	later := month.AddDate(0, 1, 0)
+	seed := &entity.TickerFinancialTaxonomy{
+		Ticker: "TESTFD", Taxonomy: string(financials.TaxonomyBank108),
+		DiscoveredAt: later, Source: "page_type_list", DepthStatus: financials.DepthStatusPending,
+	}
+	if err := repo.SeedTaxonomy(db, seed); err != nil {
+		t.Fatalf("SeedTaxonomy: %v", err)
+	}
+	gotTax, err = repo.FindTaxonomy(db, "TESTFD")
+	if err != nil || gotTax == nil {
+		t.Fatalf("taxonomy after seed = %+v, err %v", gotTax, err)
+	}
+	if gotTax.Taxonomy != seed.Taxonomy || gotTax.Source != seed.Source {
+		t.Errorf("seed taxonomy/source = %s/%s, want %s/%s", gotTax.Taxonomy, gotTax.Source, seed.Taxonomy, seed.Source)
+	}
+	if gotTax.DepthStatus != financials.DepthStatusObserved {
+		t.Errorf("seed reset depth_status to %q, want observed", gotTax.DepthStatus)
+	}
+	if gotTax.LastDepthMonth == nil || !gotTax.LastDepthMonth.Equal(month) {
+		t.Errorf("seed reset last_depth_month to %v, want %v", gotTax.LastDepthMonth, month)
+	}
+	if !gotTax.DiscoveredAt.Equal(later) {
+		t.Errorf("taxonomy change discovered_at = %v, want %v", gotTax.DiscoveredAt, later)
+	}
+
+	seed.DiscoveredAt = later.AddDate(0, 1, 0)
+	if err := repo.SeedTaxonomy(db, seed); err != nil {
+		t.Fatalf("SeedTaxonomy same taxonomy: %v", err)
+	}
+	gotTax, _ = repo.FindTaxonomy(db, "TESTFD")
+	if !gotTax.DiscoveredAt.Equal(later) {
+		t.Errorf("unchanged taxonomy discovered_at = %v, want %v", gotTax.DiscoveredAt, later)
+	}
+
 	run := &entity.FinancialDepthRun{
 		RunMonth: month, Ticker: "TESTFD", Status: financials.DepthStatusObserved,
 		RowsWritten: 1, Attempts: 1,

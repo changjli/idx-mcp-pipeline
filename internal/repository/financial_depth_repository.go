@@ -55,9 +55,33 @@ func (r *FinancialDepthRepository) FindTaxonomy(db *sqlx.DB, ticker string) (*en
 	return &row, nil
 }
 
+// SeedTaxonomy writes only the classification columns. It is the ticket-06
+// population path: on conflict it preserves depth_status, last_depth_month and
+// last_error, so re-running the seed after the monthly sweep does not reset a
+// ticker's observed/partial state and force a re-fetch. A taxonomy change
+// resets discovered_at; an unchanged classification keeps the original time.
+func (r *FinancialDepthRepository) SeedTaxonomy(db *sqlx.DB, row *entity.TickerFinancialTaxonomy) error {
+	const query = `
+		INSERT INTO ticker_financial_taxonomy (
+			ticker, taxonomy, discovered_at, source, depth_status
+		) VALUES ($1,$2,$3,$4,'pending')
+		ON CONFLICT (ticker) DO UPDATE SET
+			taxonomy         = EXCLUDED.taxonomy,
+			discovered_at    = CASE WHEN ticker_financial_taxonomy.taxonomy <> EXCLUDED.taxonomy
+			                        THEN EXCLUDED.discovered_at
+			                        ELSE ticker_financial_taxonomy.discovered_at END,
+			source           = EXCLUDED.source`
+	_, err := db.Exec(query, row.Ticker, row.Taxonomy, row.DiscoveredAt, row.Source)
+	if err != nil {
+		return fmt.Errorf("financial depth: seed taxonomy %s: %w", row.Ticker, err)
+	}
+	return nil
+}
+
 // UpsertTaxonomy records a classification and latest depth state. A taxonomy
 // change resets discovered_at; an unchanged classification keeps the original
-// discovery time.
+// discovery time. The monthly sweep owns the depth fields; ticket 06 uses
+// SeedTaxonomy so it cannot reset them.
 func (r *FinancialDepthRepository) UpsertTaxonomy(db *sqlx.DB, row *entity.TickerFinancialTaxonomy) error {
 	const query = `
 		INSERT INTO ticker_financial_taxonomy (

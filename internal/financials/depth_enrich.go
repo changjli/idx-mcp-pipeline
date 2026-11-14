@@ -15,6 +15,11 @@ import (
 // contract. observed/partial/not_covered are terminal for one run month; failed
 // and yahoo_lagging are retried on the next run of the same month.
 const (
+	// DepthStatusPending is the ticker_financial_taxonomy default. A
+	// classification probe (ticket 06) writes it because the probe proves the
+	// template, not that depth was observed or is fresh; the monthly sweep
+	// replaces it with one of the run outcomes below.
+	DepthStatusPending      = "pending"
 	DepthStatusObserved     = "observed"
 	DepthStatusPartial      = "partial"
 	DepthStatusFailed       = "failed"
