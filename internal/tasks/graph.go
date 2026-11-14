@@ -185,7 +185,8 @@ var Graph = NewRegistry(
 			stage := pipeline.NewIngestStage(TypeStockSummary, nil, enq, 3)
 			return stage.EnqueueWithOpts(TaskKey(TypeStockSummary, dateKey), StockSummaryPayload{Date: dateKey}, opts...)
 		},
-		Chain:    []string{TypeDetectAnomalies, TypeBrokerSummaryArchive},
+		// Chain:    []string{TypeDetectAnomalies, TypeBrokerSummaryArchive},
+		Chain:    []string{TypeDetectAnomalies},
 		SelfHeal: true,
 	},
 	&Node{
@@ -312,7 +313,8 @@ var Graph = NewRegistry(
 			stage := pipeline.NewIngestStage(TypeDetectAnomalies, nil, enq, 3)
 			return stage.Enqueue(TaskKey(TypeDetectAnomalies, dateKey), DetectAnomaliesPayload{Date: dateKey})
 		},
-		Chain: []string{TypeFilterDisclosures, TypeBrokerSummaryRefresh},
+		// Chain: []string{TypeFilterDisclosures, TypeBrokerSummaryRefresh},
+		Chain: []string{TypeFilterDisclosures},
 	},
 	&Node{
 		Name: "filter",
