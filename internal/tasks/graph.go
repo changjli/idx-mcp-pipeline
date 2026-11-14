@@ -157,6 +157,17 @@ func argValue(args []string, key string) string {
 	return ""
 }
 
+// argBool reads a boolean --arg key=value entry. Only "true"/"1"/"yes" (any
+// case) are truthy; everything else, including an absent entry, is false, so a
+// typo never silently forces a re-run.
+func argBool(args []string, key string) bool {
+	switch strings.ToLower(strings.TrimSpace(argValue(args, key))) {
+	case "true", "1", "yes":
+		return true
+	}
+	return false
+}
+
 // Graph is the declarative pipeline registry (ADR-0008). The chain edges are
 // stock_summary → detect:anomalies → filter:disclosures; pipeline:daily's Wave
 // is the fixed wave-1 fan-out. Per-row fan-outs (broker-summary per flagged
@@ -274,7 +285,7 @@ var Graph = NewRegistry(
 		Name: "financials-depth",
 		Type: TypeFinancialsDepth,
 		Enqueue: func(enq pipeline.Enqueuer, day time.Time, args []string, opts ...asynq.Option) (*asynq.TaskInfo, error) {
-			return EnqueueFinancialDepth(enq, day, argValue(args, "ticker"), argValue(args, "month"), opts...)
+			return EnqueueFinancialDepth(enq, day, argValue(args, "ticker"), argValue(args, "month"), argBool(args, "force"), opts...)
 		},
 	},
 	&Node{

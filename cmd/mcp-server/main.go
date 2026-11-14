@@ -356,7 +356,24 @@ func main() {
 	pipelineUC := usecase.NewPipelineUseCase(db, log, validate, sourceStatusRepo, alertRepo, brokerStockSummaryRepo, dailyPriceRepo)
 	// get_financials (financials-v2 issue 03): pure DB read over the persisted
 	// statement store the monthly snapshot ingestion and history backfill fill.
-	financialsUC := usecase.NewFinancialsUseCase(db, log, financialsRepo, dailyPriceRepo)
+	// The on-demand Tier-2 trigger (issue 07) rides along: when the newest
+	// statement has no depth yet, one idx:financials_depth task is enqueued
+	// (per-ticker cooldown) and the response reports depth_status pending — the
+	// request path still never calls Yahoo.
+	depthCooldown := time.Duration(vip.GetInt("financials.depth_cooldown_seconds")) * time.Second
+	if depthCooldown <= 0 {
+		depthCooldown = usecase.DefaultFinancialDepthCooldown
+	}
+	financialsUC := usecase.NewFinancialsUseCase(
+		db, log, financialsRepo, dailyPriceRepo,
+		usecase.WithFinancialDepthRequester(
+			usecase.NewFinancialDepthRequestUseCase(
+				db, log, financialDepthRepo,
+				tasks.NewFinancialDepthEnqueuer(asynqClient),
+				usecase.WithFinancialDepthCooldown(depthCooldown),
+			),
+		),
+	)
 	// backfill_stock_broker_summary (issue 12): async enqueue seam over the
 	// in-process asynq server; the worker consumes the range task.
 	brokerSummaryBackfillUC := usecase.NewBrokerSummaryBackfillUseCase(

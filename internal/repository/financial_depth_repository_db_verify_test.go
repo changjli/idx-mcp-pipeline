@@ -202,3 +202,52 @@ func TestFinancialDepthRepository_ApplyIdempotent(t *testing.T) {
 		t.Fatalf("run = %+v, err %v; want attempts 2", gotRun, err)
 	}
 }
+
+// TestFinancialDepthRepository_DepthRequestClock exercises issue 07's cooldown
+// store against a real Postgres: an absent request reads as nil, a stamp is
+// readable, and a second stamp moves the clock.
+func TestFinancialDepthRepository_DepthRequestClock(t *testing.T) {
+	dsn := os.Getenv("IDX_MCP_DB_DSN")
+	if dsn == "" {
+		t.Skip("IDX_MCP_DB_DSN not set; skipping DB-backed verification")
+	}
+	db := sqlx.MustConnect("pgx", dsn)
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+	repo := NewFinancialDepthRepository(log)
+
+	cleanup := func() {
+		db.MustExec(`DELETE FROM financial_depth_requests WHERE ticker = 'TESTDR'`)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	got, err := repo.FindDepthRequest(db, "TESTDR")
+	if err != nil {
+		t.Fatalf("FindDepthRequest (absent): %v", err)
+	}
+	if got != nil {
+		t.Fatalf("request = %+v, want nil before the first stamp", got)
+	}
+
+	first := time.Date(2095, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := repo.UpsertDepthRequest(db, "TESTDR", first); err != nil {
+		t.Fatalf("UpsertDepthRequest: %v", err)
+	}
+	got, err = repo.FindDepthRequest(db, "TESTDR")
+	if err != nil || got == nil {
+		t.Fatalf("FindDepthRequest: %+v, err %v", got, err)
+	}
+	if !got.RequestedAt.Equal(first) {
+		t.Errorf("requested_at = %v, want %v", got.RequestedAt, first)
+	}
+
+	second := first.Add(6 * time.Hour)
+	if err := repo.UpsertDepthRequest(db, "TESTDR", second); err != nil {
+		t.Fatalf("UpsertDepthRequest (update): %v", err)
+	}
+	got, _ = repo.FindDepthRequest(db, "TESTDR")
+	if !got.RequestedAt.Equal(second) {
+		t.Errorf("requested_at = %v, want the updated %v", got.RequestedAt, second)
+	}
+}

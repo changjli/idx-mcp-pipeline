@@ -53,6 +53,7 @@
     "request_spacing_ms": 800
   },
   "financials": {
-    "usd_idr_rate": 16999
+    "usd_idr_rate": 16999,
+    "depth_cooldown_seconds": 21600
   }
 }

@@ -17,6 +17,15 @@ type TickerFinancialTaxonomy struct {
 	LastError      *string    `db:"last_error"`
 }
 
+// FinancialDepthRequest is the last on-demand depth request for a ticker. The
+// read path stamps it when it enqueues an enrichment job, and an unexpired
+// stamp is the cooldown that stops a polling client from re-enqueueing. It is
+// per-ticker (not per-month): the job is deduped, the cooldown is not.
+type FinancialDepthRequest struct {
+	Ticker      string    `db:"ticker"`
+	RequestedAt time.Time `db:"requested_at"`
+}
+
 // FinancialDepthRun is one ticker's ledger row for one depth run month. The
 // pair is the resume cursor: terminal statuses are skipped on a repeat run,
 // failed/yahoo_lagging are retried.

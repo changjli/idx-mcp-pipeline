@@ -68,6 +68,15 @@ type FinancialPriceReader interface {
 	FindLatestClose(db *sqlx.DB, ticker string) (*entity.DailyPrice, error)
 }
 
+// FinancialDepthRequester is the on-demand Tier-2 seam (issue 07). It reports
+// the ticker's response-level depth_status and, when depth is missing and the
+// cooldown allows, enqueues one async enrichment job. It never performs an
+// upstream call, so the read path never blocks on Yahoo.
+// *usecase.FinancialDepthRequestUseCase satisfies it.
+type FinancialDepthRequester interface {
+	RequireDepth(ctx context.Context, ticker string, depthMissing bool) (string, error)
+}
+
 // FinancialsUseCase answers get_financials from the persisted statement store.
 // It is a pure DB read: the MCP request path never touches IPOT or IDX (Heroku
 // H12 constraint, ADR-0009). The store is populated by the monthly snapshot
@@ -79,9 +88,23 @@ type FinancialsUseCase struct {
 	// Prices supplies the close on/before each statement's period end (per/pbv)
 	// and the ticker's latest stored close (last_price).
 	Prices FinancialPriceReader
+	// Depth is the on-demand Tier-2 trigger. Nil disables the trigger (the
+	// status is then derived from coverage alone); the MCP server always wires
+	// it.
+	Depth FinancialDepthRequester
 	// Now is the clock per-ticker staleness is judged against; nil means
 	// time.Now.
 	Now func() time.Time
+}
+
+// FinancialsOption configures the read usecase.
+type FinancialsOption func(*FinancialsUseCase)
+
+// WithFinancialDepthRequester wires the on-demand Tier-2 trigger.
+func WithFinancialDepthRequester(depth FinancialDepthRequester) FinancialsOption {
+	return func(uc *FinancialsUseCase) {
+		uc.Depth = depth
+	}
 }
 
 func NewFinancialsUseCase(
@@ -89,8 +112,15 @@ func NewFinancialsUseCase(
 	log *logrus.Logger,
 	repo FinancialStatementsReader,
 	prices FinancialPriceReader,
+	opts ...FinancialsOption,
 ) *FinancialsUseCase {
-	return &FinancialsUseCase{DB: db, Log: log, Repo: repo, Prices: prices}
+	uc := &FinancialsUseCase{DB: db, Log: log, Repo: repo, Prices: prices}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(uc)
+		}
+	}
+	return uc
 }
 
 // FinancialFieldCoverage is one field's coverage across the returned
@@ -169,6 +199,13 @@ type FinancialsResponse struct {
 	Statements      []FinancialStatementView          `json:"statements"`
 	Coverage        map[string]FinancialFieldCoverage `json:"coverage"`
 
+	// DepthStatus is the Tier-2 on-demand state (issue 07): observed when the
+	// newest statement already carries depth, pending while an enrichment job
+	// is queued or cooling down, failed after a failed attempt, not_covered
+	// when the vendor carries no data for the ticker. Empty when the ticker has
+	// no stored statements.
+	DepthStatus string `json:"depth_status,omitempty"`
+
 	PeriodStale bool `json:"-"`
 }
 
@@ -176,7 +213,10 @@ type FinancialsResponse struct {
 // view. period defaults to "recent" (latest ~2 years, all durations);
 // "quarterly" selects every interim statement (3M/6M/9M) over full history;
 // "annual" selects every 12M statement. Periods are cumulative YTD and
-// comparable only within the same duration_months. This is a pure DB read.
+// comparable only within the same duration_months. The statement data is a
+// pure DB read; the only side effect is the Tier-2 trigger (issue 07), which
+// may enqueue one depth enrichment job when the newest statement has no depth
+// yet — it never fetches upstream.
 func (uc *FinancialsUseCase) GetFinancials(ctx context.Context, ticker, period string) (*FinancialsResponse, error) {
 	ticker = strings.ToUpper(strings.TrimSpace(ticker))
 	if !tickerPattern.MatchString(ticker) {
@@ -241,6 +281,27 @@ func (uc *FinancialsUseCase) GetFinancials(ctx context.Context, ticker, period s
 		now = uc.Now()
 	}
 	resp.PeriodStale = latest.IsZero() || latest.AddDate(0, financialsStaleMonths, 0).Before(now)
+
+	// Tier-2 on-demand trigger (issue 07). The read stays a store read: when
+	// the newest stored statement has no depth yet, this enqueues one async
+	// enrichment job (subject to the per-ticker cooldown) and reports pending.
+	// The client polls the same call; a later poll is a store hit.
+	if len(rows) > 0 {
+		depthMissing := financialStatementsDepthMissing(rows)
+		resp.DepthStatus = FinancialDepthObserved
+		if depthMissing {
+			resp.DepthStatus = FinancialDepthPending
+		}
+		if uc.Depth != nil {
+			status, derr := uc.Depth.RequireDepth(ctx, ticker, depthMissing)
+			if derr != nil && uc.Log != nil {
+				uc.Log.Warnf("get_financials: depth request %s: %v", ticker, derr)
+			}
+			if status != "" {
+				resp.DepthStatus = status
+			}
+		}
+	}
 	return resp, nil
 }
 
@@ -492,6 +553,27 @@ func parseDepthCoverage(raw *string) map[string]string {
 		return nil
 	}
 	return cov
+}
+
+// financialStatementsDepthMissing reports whether the ticker's newest stored
+// statement row still lacks usable Tier-2 depth. The depth coverage document is
+// written by the depth store on every row it enriches, so its presence alone
+// would mark a row that only carries unknown/not_applicable concepts; a usable
+// value is at least one `observed` entry. Rows are newest-first.
+func financialStatementsDepthMissing(rows []entity.FinancialStatement) bool {
+	if len(rows) == 0 {
+		return false
+	}
+	coverage := parseDepthCoverage(rows[0].DepthCoverage)
+	if coverage == nil {
+		return true
+	}
+	for _, state := range coverage {
+		if state == FinancialCoverageObserved {
+			return false
+		}
+	}
+	return true
 }
 
 // compile-time check: the concrete repository satisfies the read seams.

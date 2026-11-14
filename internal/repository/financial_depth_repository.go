@@ -106,6 +106,34 @@ func (r *FinancialDepthRepository) UpsertTaxonomy(db *sqlx.DB, row *entity.Ticke
 	return nil
 }
 
+// FindDepthRequest returns a ticker's last on-demand depth request, or nil
+// when the read path has never enqueued one.
+func (r *FinancialDepthRepository) FindDepthRequest(db *sqlx.DB, ticker string) (*entity.FinancialDepthRequest, error) {
+	var row entity.FinancialDepthRequest
+	err := db.Get(&row, `SELECT * FROM financial_depth_requests WHERE ticker = $1`, ticker)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("financial depth: read request %s: %w", ticker, err)
+	}
+	return &row, nil
+}
+
+// UpsertDepthRequest stamps a ticker's on-demand request. It is the cooldown
+// clock the read path checks before enqueueing another enrichment job; the
+// worker never writes it.
+func (r *FinancialDepthRepository) UpsertDepthRequest(db *sqlx.DB, ticker string, at time.Time) error {
+	const query = `
+		INSERT INTO financial_depth_requests (ticker, requested_at)
+		VALUES ($1, $2)
+		ON CONFLICT (ticker) DO UPDATE SET requested_at = EXCLUDED.requested_at`
+	if _, err := db.Exec(query, ticker, at); err != nil {
+		return fmt.Errorf("financial depth: record request %s: %w", ticker, err)
+	}
+	return nil
+}
+
 // FindDepthRun returns one (month, ticker) ledger row, or nil when absent.
 func (r *FinancialDepthRepository) FindDepthRun(db *sqlx.DB, month time.Time, ticker string) (*entity.FinancialDepthRun, error) {
 	var row entity.FinancialDepthRun

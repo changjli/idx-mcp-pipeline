@@ -108,6 +108,12 @@ func TestHandleGetFinancialsSuccess(t *testing.T) {
 	if got.Coverage["cash"].Status != "unknown" {
 		t.Errorf("cash coverage = %+v, want unknown", got.Coverage["cash"])
 	}
+	// The fixture rows carry no depth coverage, so depth_status reports pending.
+	// This handler test wires no depth requester, so it exercises the
+	// coverage-derived fallback.
+	if got.DepthStatus != "pending" {
+		t.Errorf("depth_status = %q, want pending", got.DepthStatus)
+	}
 }
 
 // TestHandleGetFinancialsErrors checks the envelope paths: invalid ticker and

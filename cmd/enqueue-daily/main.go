@@ -41,7 +41,7 @@ func main() {
 	toMonthStr := flag.String("to", "", "financials backfill opposite month bound in YYYY-MM format (default: 2021-01, the floor)")
 	force := flag.Bool("force", false, "with financials backfill, reprocess months already recorded ok or suspect")
 	var args argList
-	flag.Var(&args, "arg", "per-task argument, repeatable: broker-summary requires ticker=<code>; extract requires id=<disclosure id>")
+	flag.Var(&args, "arg", "per-task argument, repeatable: broker-summary requires ticker=<code>; extract requires id=<disclosure id>; financials-depth accepts ticker=<code>, month=YYYY-MM and force=true (re-run a not_covered ticker)")
 	flag.Parse()
 
 	vip := config.NewViper()

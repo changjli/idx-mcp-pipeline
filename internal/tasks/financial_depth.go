@@ -16,11 +16,14 @@ import (
 // FinancialDepthPayload is the payload for an idx:financials_depth task.
 // Date is the run date. An empty Ticker runs the monthly sweep; a ticker runs
 // the on-demand single-ticker path (issue 07). Month pins the ledger month
-// (YYYY-MM); empty derives it from the mode.
+// (YYYY-MM); empty derives it from the mode. Force re-runs a ticker whose
+// ledger row is already terminal — the manual/quarterly retry path for a
+// not_covered ticker (issue 07).
 type FinancialDepthPayload struct {
 	Date   string `json:"date"`
 	Ticker string `json:"ticker,omitempty"`
 	Month  string `json:"month,omitempty"`
+	Force  bool   `json:"force,omitempty"`
 }
 
 // NewFinancialDepthHandler returns an asynq handler for the depth task. The
@@ -53,14 +56,16 @@ func NewFinancialDepthHandler(
 
 		ticker := p.Ticker
 		if ticker != "" {
-			return runDepthTicker(ctx, log, uc, recorder, ticker, p.Month, runDate)
+			return runDepthTicker(ctx, log, uc, recorder, ticker, p.Month, runDate, p.Force)
 		}
 
 		month, err := depthRunMonth(p.Month, runDate, false)
 		if err != nil {
 			return err
 		}
-		res, sweepErr := uc.Sweep(ctx, month, false)
+		// Force re-walks not_covered tickers: the manual/quarterly retry path
+		// (issue 07). The default sweep skips them.
+		res, sweepErr := uc.Sweep(ctx, month, p.Force)
 		if sweepErr != nil {
 			recorder.Failure(usecase.YahooFinancialsSource, usecase.YahooFinancialsMaxAgeSeconds, runDateKey, sweepErr)
 			return sweepErr
@@ -93,12 +98,13 @@ func runDepthTicker(
 	recorder *pipeline.SourceStatusRecorder,
 	ticker, monthRaw string,
 	runDate time.Time,
+	force bool,
 ) error {
 	month, err := depthRunMonth(monthRaw, runDate, true)
 	if err != nil {
 		return err
 	}
-	res, err := uc.EnrichTicker(ctx, ticker, month, false)
+	res, err := uc.EnrichTicker(ctx, ticker, month, force)
 	if err != nil {
 		recorder.Failure(usecase.YahooFinancialsSource, usecase.YahooFinancialsMaxAgeSeconds,
 			runDate.Format("2006-01-02"), err)
