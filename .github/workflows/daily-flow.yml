@@ -39,10 +39,11 @@ jobs:
     env:
       TZ: Asia/Jakarta
       MCP_TOKEN: ${{ secrets.MCP_TOKEN }}
-      # OpenCode Go is a subscription API key (not an env-var provider key).
-      # Export it locally and import it here; see .github/automation.md.
+      # Ollama Cloud is a stored credential (not an env-var provider key).
+      # Export it locally with `opencode auth export` and import it here;
+      # see .github/automation.md.
       OPENCODE_AUTH: ${{ secrets.OPENCODE_AUTH }}
-      OPENCODE_MODEL: ${{ vars.OPENCODE_MODEL || 'opencode-go/deepseek-v4.1-flash' }}
+      OPENCODE_MODEL: ${{ vars.OPENCODE_MODEL || 'ollama-cloud/deepseek-v4.1-flash:1017' }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
@@ -59,9 +60,8 @@ jobs:
           npm install -g @opencode/cli
           opencode --version
 
-      - name: Import OpenCode Go credentials
-        # OpenCode Go is a $10/mo subscription keyed by its own API key — no
-        # Anthropic account needed. It is a stored credential, so import the
+      - name: Import Ollama Cloud credentials
+        # Ollama Cloud is a stored credential, so import the
         # `opencode auth export` JSON from the OPENCODE_AUTH secret.
         run: printf '%s' "$OPENCODE_AUTH" | opencode auth import --standalone
 

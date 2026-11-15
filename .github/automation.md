@@ -65,7 +65,7 @@ Settings → Secrets and variables → Actions → **Secrets** (or `gh`, below).
 | Secret | What |
 |---|---|
 | `MCP_TOKEN` | The `Authorization: Bearer …` token for your Heroku MCP. |
-| `OPENCODE_AUTH` | Your OpenCode Go credential, as `opencode auth export` JSON (below). |
+| `OPENCODE_AUTH` | Your Ollama Cloud credential, as `opencode auth export` JSON (below). |
 | `TELEGRAM_BOT_TOKEN` | From step 3. |
 | `TELEGRAM_CHAT_ID` | From step 3. |
 
@@ -75,9 +75,9 @@ gh secret set TELEGRAM_BOT_TOKEN
 gh secret set TELEGRAM_CHAT_ID
 ```
 
-**OpenCode Go credential (no Anthropic account needed).** Go is a $10/mo
-subscription keyed by its own API key, stored as a *credential* — not an
-`ANTHROPIC_API_KEY` env var. Export it from the machine where Go is connected:
+**Ollama Cloud credential.** Ollama Cloud is keyed by its own API key, stored as
+a *credential* (not an env var). Export it from the machine where Ollama Cloud
+is connected:
 
 ```sh
 opencode auth export > /tmp/opencode-auth.json     # contains your secret
@@ -88,18 +88,25 @@ rm /tmp/opencode-auth.json
 The workflow imports it with `opencode auth import` before the flow. Rotate by
 re-exporting and re-setting the secret.
 
+Export **everything**, not just the `ollama-cloud` entry: the `opencode`
+integration credential is what loads the model catalog. A secret holding only
+`ollama-cloud` imports fine but every run then dies with
+`Model unavailable: ollama-cloud/…`. Check with
+`opencode auth list` (you should see both `Ollama Cloud` and `OpenCode Console`
+as stored).
+
 ### 5. Choose the model (optional)
 
-Variable `OPENCODE_MODEL` defaults to `opencode-go/deepseek-v4.1-flash`. Other Go
-models share the prefix:
+Variable `OPENCODE_MODEL` defaults to `ollama-cloud/deepseek-v4.1-flash:1017`.
+Other Ollama Cloud models share the prefix:
 
 ```sh
-gh variable set OPENCODE_MODEL --body "opencode-go/deepseek-v4-pro"           # stronger
-gh variable set OPENCODE_MODEL --body "opencode-go/longcat-2.5-preview-free"  # free, limited time
+gh variable set OPENCODE_MODEL --body "ollama-cloud/deepseek-v4-pro:0813"  # stronger
+gh variable set OPENCODE_MODEL --body "ollama-cloud/glm-5.3"               # alternative
 ```
 
-The Go plan's per-model monthly usage limits apply. A single screen + 3 deep
-dives per day is a tiny fraction of DeepSeek V4.1 Flash's allowance.
+Your Ollama Cloud plan's usage limits apply. A single screen + a deep dive per
+survivor is small relative to DeepSeek V4.1 Flash's allowance.
 
 ### 6. Test with a manual run
 
@@ -184,8 +191,8 @@ a public repo no longer risks exposing your verdicts.
 - One run/day ≈ one screen + **a deep dive per survivor** (only the 3 strongest
   are journaled). Token spend scales with the survivor count; Deep-dive's `get_financials` is a
   stored DB read, but a slow/hung MCP call (broker fetch or PDF extraction) is
-  still the main failure mode (the job has a 120-minute ceiling). On the Go plan, watch the
-  chosen model's monthly allowance if survivor counts run high.
+  still the main failure mode (the job has a 120-minute ceiling). On Ollama Cloud,
+  watch the chosen model's usage/credit allowance if survivor counts run high.
 - `--auto` auto-approves permissions that are not explicitly denied, so the run
   never blocks on an approval prompt. `--standalone` gives it a private server.
 - Secrets (`MCP_TOKEN`, `OPENCODE_AUTH`) are injected via env, never written into
@@ -211,6 +218,9 @@ a public repo no longer risks exposing your verdicts.
 - **Journal empty after a run**: the screen returned no survivors (a valid
   result) or the run aborted at the freshness gate.
 - **`No model is available for session …` / auth error**: `OPENCODE_AUTH` is
-  missing or stale. Re-run `opencode auth export` locally and re-set the secret.
+  missing or stale, or `OPENCODE_MODEL` names a provider you no longer have a
+  subscription for (e.g. `opencode-go/*` after moving to Ollama). Re-run
+  `opencode auth export` locally and re-set the secret; check
+  `gh variable list`.
 - **`opencode auth import` fails**: the secret must be the raw JSON from
   `opencode auth export` (an array), not a hand-edited `{"apiKey": …}` object.
