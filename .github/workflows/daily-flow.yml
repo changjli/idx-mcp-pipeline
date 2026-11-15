@@ -39,10 +39,10 @@ jobs:
     env:
       TZ: Asia/Jakarta
       MCP_TOKEN: ${{ secrets.MCP_TOKEN }}
-      # Ollama Cloud is a stored credential (not an env-var provider key).
-      # Export it locally with `opencode auth export` and import it here;
-      # see .github/automation.md.
-      OPENCODE_AUTH: ${{ secrets.OPENCODE_AUTH }}
+      # A plain Ollama Cloud API key (dashboard -> API keys), dedicated to CI.
+      # No credential export/import: the provider is declared inline in the
+      # generated opencode.json below and reads this env var. See automation.md.
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
       OPENCODE_MODEL: ${{ vars.OPENCODE_MODEL || 'ollama-cloud/deepseek-v4.1-flash:1017' }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -60,30 +60,50 @@ jobs:
           npm install -g @opencode/cli
           opencode --version
 
-      - name: Import Ollama Cloud credentials
-        # Ollama Cloud is a stored credential, so import the
-        # `opencode auth export` JSON from the OPENCODE_AUTH secret.
-        run: printf '%s' "$OPENCODE_AUTH" | opencode auth import --standalone
-
-      - name: Configure MCP from secret
-        # opencode.json is not tracked (it holds a token locally). The runner is
-        # ephemeral, so generate it here; the token comes from the environment.
+      - name: Check credentials
         run: |
-          cat > opencode.json <<'JSON'
-          {
+          if [ -z "${OLLAMA_API_KEY:-}" ]; then
+            echo "::error::OLLAMA_API_KEY secret is not set"
+            exit 1
+          fi
+
+      - name: Configure OpenCode (MCP + Ollama Cloud provider)
+        # opencode.json is not tracked (it holds a token locally). The runner is
+        # ephemeral, so generate it here. The provider is declared explicitly so
+        # no `opencode auth` credential store is needed in CI: the API key comes
+        # from OLLAMA_API_KEY. Model metadata (1M context / 384k output) mirrors
+        # models.dev for deepseek-v4.1-flash:1017; add a block here to use
+        # another model.
+        run: |
+          model="${OPENCODE_MODEL#ollama-cloud/}"
+          if [ "$model" = "$OPENCODE_MODEL" ]; then
+            echo "::error::OPENCODE_MODEL must be ollama-cloud/<model> (got: $OPENCODE_MODEL)"
+            exit 1
+          fi
+          jq -n --arg model "$model" '{
             "$schema": "https://opencode.ai/config.json",
-            "mcp": {
-              "servers": {
-                "idx-pipeline": {
-                  "type": "remote",
-                  "url": "https://idx-mcp-pipeline-e9100439789e.herokuapp.com/mcp",
-                  "oauth": false,
-                  "headers": { "Authorization": "Bearer {env:MCP_TOKEN}" }
-                }
+            mcp: { servers: { "idx-pipeline": {
+              type: "remote",
+              url: "https://idx-mcp-pipeline-e9100439789e.herokuapp.com/mcp",
+              oauth: false,
+              headers: { Authorization: "Bearer {env:MCP_TOKEN}" }
+            } } },
+            providers: {
+              "ollama-cloud": {
+                name: "Ollama Cloud",
+                env: ["OLLAMA_API_KEY"],
+                package: "@opencode/ai/providers/openai-compatible",
+                settings: { baseURL: "https://ollama.com/v1" },
+                models: { ($model): {
+                  name: $model,
+                  modelID: $model,
+                  limit: { context: 1048576, output: 384000 },
+                  capabilities: { tools: true, input: ["text", "image"], output: ["text"] }
+                } }
               }
             }
-          }
-          JSON
+          }' > opencode.json
+          jq -e '.providers["ollama-cloud"].models | keys' opencode.json
 
       - name: Run daily flow
         run: |

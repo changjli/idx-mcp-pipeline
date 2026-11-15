@@ -65,35 +65,36 @@ Settings → Secrets and variables → Actions → **Secrets** (or `gh`, below).
 | Secret | What |
 |---|---|
 | `MCP_TOKEN` | The `Authorization: Bearer …` token for your Heroku MCP. |
-| `OPENCODE_AUTH` | Your Ollama Cloud credential, as `opencode auth export` JSON (below). |
+| `OLLAMA_API_KEY` | An Ollama Cloud API key (dashboard → **API keys**), dedicated to CI. |
 | `TELEGRAM_BOT_TOKEN` | From step 3. |
 | `TELEGRAM_CHAT_ID` | From step 3. |
 
 ```sh
 gh secret set MCP_TOKEN            # prompts, hidden; paste your Heroku MCP token
+gh secret set OLLAMA_API_KEY       # prompts, hidden; paste the Ollama key
 gh secret set TELEGRAM_BOT_TOKEN
 gh secret set TELEGRAM_CHAT_ID
 ```
 
-**Ollama Cloud credential.** Ollama Cloud is keyed by its own API key, stored as
-a *credential* (not an env var). Export it from the machine where Ollama Cloud
-is connected:
+**Why a plain API key and not `opencode auth export`.** The runner boots with an
+empty credential store, so the workflow declares the Ollama provider inline in
+the generated `opencode.json` and the key arrives as `OLLAMA_API_KEY`. Nothing is
+exported from a developer machine, and the CI key can be a separate, revocable
+key from the one on your laptop.
 
-```sh
-opencode auth export > /tmp/opencode-auth.json     # contains your secret
-gh secret set OPENCODE_AUTH < /tmp/opencode-auth.json
-rm /tmp/opencode-auth.json
-```
+Two things make that work, both easy to break:
 
-The workflow imports it with `opencode auth import` before the flow. Rotate by
-re-exporting and re-setting the secret.
+- The provider block must name `@opencode/ai/providers/openai-compatible` with
+  `settings.baseURL = https://ollama.com/v1`; that pair is what the `ollama-cloud`
+  catalog entry uses.
+- The model must be listed under `providers["ollama-cloud"].models` with its
+  limits. Unlike the credential-store path, there is no catalog lookup, so a
+  model that is not declared fails with `Model unavailable`.
 
-Export **everything**, not just the `ollama-cloud` entry: the `opencode`
-integration credential is what loads the model catalog. A secret holding only
-`ollama-cloud` imports fine but every run then dies with
-`Model unavailable: ollama-cloud/…`. Check with
-`opencode auth list` (you should see both `Ollama Cloud` and `OpenCode Console`
-as stored).
+The provider block only declares the model in `OPENCODE_MODEL` (read at run time),
+so changing the variable needs no workflow edit — but the declared limits
+(1M context / 384k output) are DeepSeek V4.1 Flash's. Check models.dev before
+switching to a model with a smaller window.
 
 ### 5. Choose the model (optional)
 
@@ -195,7 +196,7 @@ a public repo no longer risks exposing your verdicts.
   watch the chosen model's usage/credit allowance if survivor counts run high.
 - `--auto` auto-approves permissions that are not explicitly denied, so the run
   never blocks on an approval prompt. `--standalone` gives it a private server.
-- Secrets (`MCP_TOKEN`, `OPENCODE_AUTH`) are injected via env, never written into
+- Secrets (`MCP_TOKEN`, `OLLAMA_API_KEY`) are injected via env, never written into
   a tracked file.
 
 ## Repo changes this relies on
@@ -204,7 +205,8 @@ a public repo no longer risks exposing your verdicts.
   discovers project skills there, and CI needs them). They already are.
 - **`opencode.json` is ignored**, with a token-free `opencode.json.example`
   committed, so the local bearer token cannot be accidentally committed. CI
-  generates its own `opencode.json` from the `MCP_TOKEN` secret.
+  generates its own `opencode.json` from the `MCP_TOKEN` and `OLLAMA_API_KEY`
+  secrets (MCP endpoint + inline Ollama provider).
 
 ## Troubleshooting
 
@@ -217,10 +219,8 @@ a public repo no longer risks exposing your verdicts.
   (a weekend `no missing daily_prices day` no-op is expected, not a failure).
 - **Journal empty after a run**: the screen returned no survivors (a valid
   result) or the run aborted at the freshness gate.
-- **`No model is available for session …` / auth error**: `OPENCODE_AUTH` is
-  missing or stale, or `OPENCODE_MODEL` names a provider you no longer have a
-  subscription for (e.g. `opencode-go/*` after moving to Ollama). Re-run
-  `opencode auth export` locally and re-set the secret; check
-  `gh variable list`.
-- **`opencode auth import` fails**: the secret must be the raw JSON from
-  `opencode auth export` (an array), not a hand-edited `{"apiKey": …}` object.
+- **`Model unavailable: ollama-cloud/…`**: the model in `OPENCODE_MODEL` is not
+  the one declared in the generated provider block, or the key has no access to
+  it. Check `gh variable list` and the "Configure OpenCode" step's `jq` output.
+- **`OLLAMA_API_KEY secret is not set`**: add it (`gh secret set OLLAMA_API_KEY`);
+  the workflow fails fast on purpose instead of dying inside the agent run.
